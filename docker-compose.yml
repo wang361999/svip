@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: eth-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: eth_trading
+      POSTGRES_USER: eth
+      POSTGRES_PASSWORD: eth_secret_2024
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eth -d eth_trading"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    # 不对外暴露端口，仅内部网络访问（更安全）
+
+  app:
+    build: .
+    container_name: eth-app
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: "postgresql://eth:eth_secret_2024@postgres:5432/eth_trading?schema=public"
+      JWT_SECRET: "eth-trading-jwt-secret-2024-change-me"
+      NEXT_PUBLIC_APP_URL: "http://localhost:3000"
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
