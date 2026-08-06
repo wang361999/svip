@@ -62,19 +62,43 @@ function safeSettings(fallback: Partial<SiteSetting> = {}): SiteSetting {
     cronLoops: '1',
     cronInterval: '0',
     cronLogTtl: '1',
-    // AI 模型配置默认值
-    aiEnabled: 'false',
-    aiProvider: 'openai',
-    aiApiUrl: '',
-    aiApiKey: '',
-    aiModel: '',
+    // AI 模型配置默认值（预配置接入）
+    aiEnabled: 'true',
+    aiProvider: 'custom',
+    aiApiUrl: 'https://api.agnes-ai.cn/v1/chat/completions',
+    aiApiKey: 'sk-cLl30kp5lGb1p8RUmrQRepLg3YcqUYBHbVk1qk4SrL3UKCNh',
+    aiModel: 'gpt-4o-mini',
     aiTemperature: '0.3',
     aiMaxTokens: '2000',
-    aiAnalysisInterval: '0',
+    aiAnalysisInterval: '1',
     aiAutoTrade: 'false',
     updatedAt: new Date(),
     ...fallback,
   };
+}
+
+/** AI 配置默认值 — 数据库字段为空时回退使用 */
+const AI_DEFAULTS = {
+  aiEnabled: 'true',
+  aiProvider: 'custom',
+  aiApiUrl: 'https://api.agnes-ai.cn/v1/chat/completions',
+  aiApiKey: 'sk-cLl30kp5lGb1p8RUmrQRepLg3YcqUYBHbVk1qk4SrL3UKCNh',
+  aiModel: 'gpt-4o-mini',
+  aiTemperature: '0.3',
+  aiMaxTokens: '2000',
+  aiAnalysisInterval: '1',
+  aiAutoTrade: 'false',
+};
+
+/** 将数据库读取的设置与 AI 默认值合并（空字段回退到默认值） */
+function mergeAiDefaults(raw: Record<string, string | null | undefined>) {
+  const merged: Record<string, string | null | undefined> = { ...raw };
+  for (const [key, defaultVal] of Object.entries(AI_DEFAULTS)) {
+    if (merged[key] == null || merged[key] === '') {
+      merged[key] = defaultVal;
+    }
+  }
+  return merged;
 }
 
 export const settingsService = {
@@ -89,7 +113,8 @@ export const settingsService = {
         where: { id: 'main' },
       });
       if (existing) {
-        return existing;
+        // 合并 AI 默认值（数据库字段为空时回退到预配置值）
+        return mergeAiDefaults(existing as unknown as Record<string, string | null>) as unknown as SiteSetting;
       }
       return prisma.siteSetting.create({
         data: { id: 'main' },

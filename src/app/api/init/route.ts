@@ -322,7 +322,7 @@ const CREATE_TABLE_STATEMENTS: { label: string; sql: string }[] = [
   { label: 'ALTER TABLE SiteSetting ADD aiModel', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiModel" TEXT` },
   { label: 'ALTER TABLE SiteSetting ADD aiTemperature', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiTemperature" TEXT NOT NULL DEFAULT '0.3'` },
   { label: 'ALTER TABLE SiteSetting ADD aiMaxTokens', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiMaxTokens" TEXT NOT NULL DEFAULT '2000'` },
-  { label: 'ALTER TABLE SiteSetting ADD aiAnalysisInterval', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiAnalysisInterval" TEXT NOT NULL DEFAULT '0'` },
+  { label: 'ALTER TABLE SiteSetting ADD aiAnalysisInterval', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiAnalysisInterval" TEXT NOT NULL DEFAULT '1'` },
   { label: 'ALTER TABLE SiteSetting ADD aiAutoTrade', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiAutoTrade" TEXT NOT NULL DEFAULT 'false'` },
   // ---------- TradingSymbol 表（币种管理） ----------
   {

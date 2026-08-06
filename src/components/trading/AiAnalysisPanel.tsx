@@ -51,16 +51,23 @@ export default function AiAnalysisPanel() {
   const [error, setError] = useState('');
   const [showReasoning, setShowReasoning] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [autoAnalyze, setAutoAnalyze] = useState(true);
+  const [intervalSec, setIntervalSec] = useState(60); // 默认 60 秒（1 分钟）
+  const [nextAnalyzeIn, setNextAnalyzeIn] = useState(60); // 倒计时秒数
 
   const fetchAnalysis = useCallback(async () => {
-    setLoading(true);
-    setError('');
     try {
-      const data = await apiGet<{ latest: AiAnalysis | null; history: HistoryItem[] }>(
+      const data = await apiGet<{ latest: AiAnalysis | null; history: HistoryItem[]; analysisIntervalMin?: number }>(
         `/api/ai-analysis?symbol=${symbol}`,
       );
       setAnalysis(data.latest);
       setHistory(data.history || []);
+      // 从后端读取分析间隔（分钟），转换为秒
+      if (data.analysisIntervalMin && data.analysisIntervalMin > 0) {
+        const sec = data.analysisIntervalMin * 60;
+        setIntervalSec(sec);
+        setNextAnalyzeIn(sec);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : '获取分析失败');
     } finally {
@@ -68,12 +75,9 @@ export default function AiAnalysisPanel() {
     }
   }, [symbol]);
 
-  useEffect(() => {
-    fetchAnalysis();
-  }, [fetchAnalysis]);
-
-  const handleAnalyze = async () => {
-    setAnalyzing(true);
+  /** 触发 AI 分析 */
+  const triggerAnalysis = useCallback(async (silent = false) => {
+    if (!silent) setAnalyzing(true);
     setError('');
     try {
       const result = await apiPost<AiAnalysis>('/api/ai-analysis', {
@@ -83,14 +87,52 @@ export default function AiAnalysisPanel() {
         currentPrice: currentPrice > 0 ? currentPrice : undefined,
       });
       setAnalysis(result);
-      // 刷新历史
-      fetchAnalysis();
+      // 刷新历史列表
+      const data = await apiGet<{ latest: AiAnalysis | null; history: HistoryItem[] }>(
+        `/api/ai-analysis?symbol=${symbol}`,
+      );
+      setHistory(data.history || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : '分析失败');
     } finally {
       setAnalyzing(false);
+      setNextAnalyzeIn(intervalSec); // 重置倒计时
     }
-  };
+  }, [symbol, okxId, label, currentPrice, intervalSec]);
+
+  // 初始加载：获取已有分析 → 如果没有则自动触发
+  useEffect(() => {
+    setLoading(true);
+    fetchAnalysis().then(() => {
+      // 加载完成后检查是否需要自动分析
+      setAnalysis((prev) => {
+        if (!prev && autoAnalyze) {
+          // 没有分析记录，立即触发
+          triggerAnalysis(true);
+        }
+        return prev;
+      });
+    });
+  }, [fetchAnalysis]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 自动定时分析：按配置间隔触发
+  useEffect(() => {
+    if (!autoAnalyze) return;
+
+    // 倒计时
+    const timer = setInterval(() => {
+      setNextAnalyzeIn((prev) => {
+        if (prev <= 1) {
+          // 倒计时归零，触发分析
+          triggerAnalysis(true);
+          return intervalSec;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [autoAnalyze, triggerAnalysis, intervalSec]);
 
   const dir = analysis ? directionConfig[analysis.direction] : null;
 
@@ -121,26 +163,48 @@ export default function AiAnalysisPanel() {
           </svg>
           <h2 className="text-lg font-semibold text-white">AI 行情分析</h2>
           <span className="text-xs text-dark-500">{label}</span>
-        </div>
-        <button
-          onClick={handleAnalyze}
-          disabled={analyzing}
-          className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-        >
-          {analyzing ? (
-            <>
-              <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              分析中...
-            </>
-          ) : (
-            <>
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-              立即分析
-            </>
+          {/* 自动分析状态 */}
+          {autoAnalyze && (
+            <span className="flex items-center gap-1 text-xs text-green-400">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+              自动分析中 {Math.floor(nextAnalyzeIn / 60)}:{String(nextAnalyzeIn % 60).padStart(2, '0')}
+            </span>
           )}
-        </button>
+        </div>
+        <div className="flex items-center gap-2">
+          {/* 自动/手动切换 */}
+          <button
+            onClick={() => setAutoAnalyze(!autoAnalyze)}
+            className={`px-3 py-2 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 ${
+              autoAnalyze
+                ? 'bg-green-600/20 text-green-400 border border-green-500/30'
+                : 'bg-dark-800 text-dark-400 border border-dark-700'
+            }`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full ${autoAnalyze ? 'bg-green-400 animate-pulse' : 'bg-dark-500'}`} />
+            {autoAnalyze ? '自动' : '手动'}
+          </button>
+          {/* 手动触发按钮 */}
+          <button
+            onClick={() => triggerAnalysis(false)}
+            disabled={analyzing}
+            className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+          >
+            {analyzing ? (
+              <>
+                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                分析中...
+              </>
+            ) : (
+              <>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                立即分析
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* 错误提示 */}

@@ -90,7 +90,7 @@ export default function AdminSettingsPage() {
     aiModel: '',
     aiTemperature: '0.3',
     aiMaxTokens: '2000',
-    aiAnalysisInterval: '0',
+    aiAnalysisInterval: '1',
     aiAutoTrade: 'false',
   });
   const [loading, setLoading] = useState(true);
@@ -126,7 +126,7 @@ export default function AdminSettingsPage() {
           aiModel: data.aiModel || '',
           aiTemperature: data.aiTemperature || '0.3',
           aiMaxTokens: data.aiMaxTokens || '2000',
-          aiAnalysisInterval: data.aiAnalysisInterval || '0',
+          aiAnalysisInterval: data.aiAnalysisInterval || '1',
           aiAutoTrade: data.aiAutoTrade || 'false',
         });
       } catch (err) {
@@ -507,17 +507,17 @@ export default function AdminSettingsPage() {
 
                 {/* 自动分析间隔 */}
                 <div>
-                  <label className="block text-sm font-medium text-dark-300 mb-2">自动分析间隔</label>
+                  <label className="block text-sm font-medium text-dark-300 mb-2">自动分析间隔（分钟）</label>
                   <input
                     type="number"
                     min="0"
-                    max="10"
+                    max="60"
                     value={settings.aiAnalysisInterval}
                     onChange={(e) => setSettings({ ...settings, aiAnalysisInterval: e.target.value })}
                     className="input-dark"
                   />
                   <p className="text-dark-500 text-xs mt-1">
-                    Cron 引擎每执行 N 次循环时触发一次 AI 分析（0=不自动分析，仅手动触发）
+                    每 N 分钟自动触发一次 AI 行情分析（0=不自动分析，仅手动触发，1=每分钟实时分析）
                   </p>
                 </div>
 
