@@ -66,6 +66,16 @@ export const updateSettingsSchema = z.object({
   cronLoops: z.string().optional(),
   cronInterval: z.string().optional(),
   cronLogTtl: z.string().optional(),
+  // AI 模型配置
+  aiEnabled: z.string().optional(),
+  aiProvider: z.string().optional(),
+  aiApiUrl: z.string().optional(),
+  aiApiKey: z.string().optional(),
+  aiModel: z.string().optional(),
+  aiTemperature: z.string().optional(),
+  aiMaxTokens: z.string().optional(),
+  aiAnalysisInterval: z.string().optional(),
+  aiAutoTrade: z.string().optional(),
 });
 
 export type UpdateSettingsInput = z.infer<typeof updateSettingsSchema>;

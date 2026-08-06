@@ -8,6 +8,7 @@ import PriceTicker from '@/components/trading/PriceTicker';
 import KlineChart from '@/components/trading/KlineChart';
 import StrategyPanel from '@/components/trading/StrategyPanel';
 import PaperTradingPanel from '@/components/trading/PaperTradingPanel';
+import AiAnalysisPanel from '@/components/trading/AiAnalysisPanel';
 import ErrorBoundary from '@/components/ErrorBoundary';
 import useAuthStore from '@/store/authStore';
 import { apiGet } from '@/shared/api/client';
@@ -18,6 +19,7 @@ export default function TradingPage() {
   const [checking, setChecking] = useState(true);
   const [showPriceCard, setShowPriceCard] = useState(true);
   const [paperTradingEnabled, setPaperTradingEnabled] = useState(false);
+  const [aiEnabled, setAiEnabled] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
@@ -44,6 +46,7 @@ export default function TradingPage() {
         if (!cancelled) {
           setShowPriceCard(settings.showPriceCard !== 'false');
           setPaperTradingEnabled(settings.paperTradingEnabled === 'true');
+          setAiEnabled(settings.aiEnabled === 'true');
         }
       } catch {}
     })();
@@ -123,6 +126,13 @@ export default function TradingPage() {
           {!isFullscreen && (
             <ErrorBoundary>
               <StrategyPanel />
+            </ErrorBoundary>
+          )}
+
+          {/* AI 行情分析面板（后台开关控制） */}
+          {!isFullscreen && aiEnabled && (
+            <ErrorBoundary>
+              <AiAnalysisPanel />
             </ErrorBoundary>
           )}
 

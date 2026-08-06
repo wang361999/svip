@@ -14,7 +14,63 @@ interface SiteSettings {
   primaryColor: string;
   enableRegistration: string;
   paperTradingEnabled: string;
+  // AI 配置
+  aiEnabled: string;
+  aiProvider: string;
+  aiApiUrl: string;
+  aiApiKey: string;
+  aiModel: string;
+  aiTemperature: string;
+  aiMaxTokens: string;
+  aiAnalysisInterval: string;
+  aiAutoTrade: string;
 }
+
+interface AiProviderMeta {
+  id: string;
+  label: string;
+  defaultApiUrl: string;
+  defaultModel: string;
+  models: string[];
+}
+
+const AI_PROVIDERS: AiProviderMeta[] = [
+  {
+    id: 'openai',
+    label: 'OpenAI',
+    defaultApiUrl: 'https://api.openai.com/v1/chat/completions',
+    defaultModel: 'gpt-4o-mini',
+    models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
+  },
+  {
+    id: 'deepseek',
+    label: 'DeepSeek',
+    defaultApiUrl: 'https://api.deepseek.com/v1/chat/completions',
+    defaultModel: 'deepseek-chat',
+    models: ['deepseek-chat', 'deepseek-reasoner'],
+  },
+  {
+    id: 'qwen',
+    label: '通义千问 (Qwen)',
+    defaultApiUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+    defaultModel: 'qwen-plus',
+    models: ['qwen-plus', 'qwen-turbo', 'qwen-max'],
+  },
+  {
+    id: 'moonshot',
+    label: 'Moonshot (Kimi)',
+    defaultApiUrl: 'https://api.moonshot.cn/v1/chat/completions',
+    defaultModel: 'moonshot-v1-8k',
+    models: ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'],
+  },
+  {
+    id: 'custom',
+    label: '自定义 (Custom)',
+    defaultApiUrl: '',
+    defaultModel: '',
+    models: [],
+  },
+];
 
 export default function AdminSettingsPage() {
   const router = useRouter();
@@ -27,10 +83,20 @@ export default function AdminSettingsPage() {
     primaryColor: '#3b82f6',
     enableRegistration: 'true',
     paperTradingEnabled: 'false',
+    aiEnabled: 'false',
+    aiProvider: 'openai',
+    aiApiUrl: '',
+    aiApiKey: '',
+    aiModel: '',
+    aiTemperature: '0.3',
+    aiMaxTokens: '2000',
+    aiAnalysisInterval: '0',
+    aiAutoTrade: 'false',
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
+  const [showApiKey, setShowApiKey] = useState(false);
 
   useEffect(() => {
     if (isAuthenticated && user?.role !== 'admin') {
@@ -53,6 +119,15 @@ export default function AdminSettingsPage() {
           primaryColor: data.primaryColor || '#3b82f6',
           enableRegistration: data.enableRegistration || 'true',
           paperTradingEnabled: data.paperTradingEnabled || 'false',
+          aiEnabled: data.aiEnabled || 'false',
+          aiProvider: data.aiProvider || 'openai',
+          aiApiUrl: data.aiApiUrl || '',
+          aiApiKey: data.aiApiKey || '',
+          aiModel: data.aiModel || '',
+          aiTemperature: data.aiTemperature || '0.3',
+          aiMaxTokens: data.aiMaxTokens || '2000',
+          aiAnalysisInterval: data.aiAnalysisInterval || '0',
+          aiAutoTrade: data.aiAutoTrade || 'false',
         });
       } catch (err) {
         setMessage(err instanceof Error ? err.message : '获取设置失败');
@@ -92,7 +167,34 @@ export default function AdminSettingsPage() {
     }));
   };
 
+  const toggleAi = () => {
+    setSettings((prev) => ({
+      ...prev,
+      aiEnabled: prev.aiEnabled === 'true' ? 'false' : 'true',
+    }));
+  };
+
+  const toggleAiAutoTrade = () => {
+    setSettings((prev) => ({
+      ...prev,
+      aiAutoTrade: prev.aiAutoTrade === 'true' ? 'false' : 'true',
+    }));
+  };
+
+  /** 切换供应商时自动填充默认 API URL 和模型 */
+  const handleProviderChange = (providerId: string) => {
+    const meta = AI_PROVIDERS.find((p) => p.id === providerId);
+    setSettings((prev) => ({
+      ...prev,
+      aiProvider: providerId,
+      aiApiUrl: meta?.defaultApiUrl || '',
+      aiModel: meta?.defaultModel || '',
+    }));
+  };
+
   if (!isAuthenticated || user?.role !== 'admin') return null;
+
+  const currentProvider = AI_PROVIDERS.find((p) => p.id === settings.aiProvider);
 
   return (
     <div className="flex bg-dark-950 min-h-screen">
@@ -246,6 +348,208 @@ export default function AdminSettingsPage() {
                   }`}>
                     <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
                       settings.paperTradingEnabled === 'true' ? 'translate-x-6' : 'translate-x-1'
+                    }`} />
+                  </div>
+                </div>
+              </div>
+
+              {/* AI 模型配置 */}
+              <div className="glass-card p-6 space-y-5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-lg font-semibold text-white">AI 模型配置</h2>
+                    <p className="text-dark-400 text-sm mt-1">接入 AI 模型进行实时行情分析</p>
+                  </div>
+                  <div
+                    className={`flex items-center justify-between p-3 rounded-lg border transition-all cursor-pointer ${
+                      settings.aiEnabled === 'true'
+                        ? 'bg-emerald-600/10 border-emerald-500/30'
+                        : 'bg-dark-800/30 border-dark-700/30 hover:border-dark-600'
+                    }`}
+                    onClick={toggleAi}
+                  >
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium mr-2 ${
+                      settings.aiEnabled === 'true' ? 'bg-green-500/20 text-green-400' : 'bg-dark-700 text-dark-400'
+                    }`}>
+                      {settings.aiEnabled === 'true' ? '已启用' : '未启用'}
+                    </span>
+                    <div className={`w-11 h-6 rounded-full relative transition-colors ${
+                      settings.aiEnabled === 'true' ? 'bg-emerald-600' : 'bg-dark-600'
+                    }`}>
+                      <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                        settings.aiEnabled === 'true' ? 'translate-x-6' : 'translate-x-1'
+                      }`} />
+                    </div>
+                  </div>
+                </div>
+
+                {/* 供应商选择 */}
+                <div>
+                  <label className="block text-sm font-medium text-dark-300 mb-2">模型供应商</label>
+                  <select
+                    value={settings.aiProvider}
+                    onChange={(e) => handleProviderChange(e.target.value)}
+                    className="input-dark"
+                  >
+                    {AI_PROVIDERS.map((p) => (
+                      <option key={p.id} value={p.id}>{p.label}</option>
+                    ))}
+                  </select>
+                  <p className="text-dark-500 text-xs mt-1">
+                    选择供应商后会自动填充默认 API 地址和模型名称，可手动修改
+                  </p>
+                </div>
+
+                {/* API 地址 */}
+                <div>
+                  <label className="block text-sm font-medium text-dark-300 mb-2">API 地址</label>
+                  <input
+                    type="text"
+                    value={settings.aiApiUrl}
+                    onChange={(e) => setSettings({ ...settings, aiApiUrl: e.target.value })}
+                    placeholder="https://api.openai.com/v1/chat/completions"
+                    className="input-dark"
+                  />
+                  <p className="text-dark-500 text-xs mt-1">兼容 OpenAI Chat Completions 格式的 API 端点</p>
+                </div>
+
+                {/* API Key */}
+                <div>
+                  <label className="block text-sm font-medium text-dark-300 mb-2">API Key</label>
+                  <div className="relative">
+                    <input
+                      type={showApiKey ? 'text' : 'password'}
+                      value={settings.aiApiKey}
+                      onChange={(e) => setSettings({ ...settings, aiApiKey: e.target.value })}
+                      placeholder="sk-..."
+                      className="input-dark pr-20"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowApiKey(!showApiKey)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-dark-400 hover:text-white px-2 py-1"
+                    >
+                      {showApiKey ? '隐藏' : '显示'}
+                    </button>
+                  </div>
+                  <p className="text-dark-500 text-xs mt-1">你的 API 密钥，将安全存储在数据库中</p>
+                </div>
+
+                {/* 模型名称 */}
+                <div>
+                  <label className="block text-sm font-medium text-dark-300 mb-2">模型名称</label>
+                  {currentProvider && currentProvider.models.length > 0 ? (
+                    <div className="space-y-2">
+                      <input
+                        type="text"
+                        value={settings.aiModel}
+                        onChange={(e) => setSettings({ ...settings, aiModel: e.target.value })}
+                        placeholder="gpt-4o-mini"
+                        className="input-dark"
+                      />
+                      <div className="flex flex-wrap gap-2">
+                        {currentProvider.models.map((m) => (
+                          <button
+                            key={m}
+                            type="button"
+                            onClick={() => setSettings({ ...settings, aiModel: m })}
+                            className={`text-xs px-3 py-1 rounded-full border transition-all ${
+                              settings.aiModel === m
+                                ? 'bg-blue-600/20 border-blue-500/40 text-blue-400'
+                                : 'bg-dark-800 border-dark-700 text-dark-400 hover:border-dark-600'
+                            }`}
+                          >
+                            {m}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <input
+                      type="text"
+                      value={settings.aiModel}
+                      onChange={(e) => setSettings({ ...settings, aiModel: e.target.value })}
+                      placeholder="输入模型名称"
+                      className="input-dark"
+                    />
+                  )}
+                </div>
+
+                {/* 温度和 Max Tokens */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-dark-300 mb-2">温度 (Temperature)</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      max="2"
+                      value={settings.aiTemperature}
+                      onChange={(e) => setSettings({ ...settings, aiTemperature: e.target.value })}
+                      className="input-dark"
+                    />
+                    <p className="text-dark-500 text-xs mt-1">0=精确, 2=创造性，建议 0.1-0.5</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-dark-300 mb-2">最大 Tokens</label>
+                    <input
+                      type="number"
+                      min="500"
+                      max="8000"
+                      step="100"
+                      value={settings.aiMaxTokens}
+                      onChange={(e) => setSettings({ ...settings, aiMaxTokens: e.target.value })}
+                      className="input-dark"
+                    />
+                    <p className="text-dark-500 text-xs mt-1">建议 1000-4000</p>
+                  </div>
+                </div>
+
+                {/* 自动分析间隔 */}
+                <div>
+                  <label className="block text-sm font-medium text-dark-300 mb-2">自动分析间隔</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="10"
+                    value={settings.aiAnalysisInterval}
+                    onChange={(e) => setSettings({ ...settings, aiAnalysisInterval: e.target.value })}
+                    className="input-dark"
+                  />
+                  <p className="text-dark-500 text-xs mt-1">
+                    Cron 引擎每执行 N 次循环时触发一次 AI 分析（0=不自动分析，仅手动触发）
+                  </p>
+                </div>
+
+                {/* AI 自动交易开关 */}
+                <div
+                  className={`flex items-center justify-between p-4 rounded-lg border transition-all cursor-pointer ${
+                    settings.aiAutoTrade === 'true'
+                      ? 'bg-amber-600/10 border-amber-500/30'
+                      : 'bg-dark-800/30 border-dark-700/30 hover:border-dark-600'
+                  }`}
+                  onClick={toggleAiAutoTrade}
+                >
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-white font-medium">AI 信号自动开仓</span>
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                        settings.aiAutoTrade === 'true' ? 'bg-amber-500/20 text-amber-400' : 'bg-dark-700 text-dark-400'
+                      }`}>
+                        {settings.aiAutoTrade === 'true' ? '开启' : '关闭'}
+                      </span>
+                    </div>
+                    <p className="text-dark-400 text-xs mt-1">
+                      {settings.aiAutoTrade === 'true'
+                        ? 'AI 分析给出做多/做空建议时，自动在模拟盘开仓（需同时开启模拟盘自动交易）'
+                        : 'AI 仅提供分析建议，不会自动开仓'}
+                    </p>
+                  </div>
+                  <div className={`w-11 h-6 rounded-full relative transition-colors flex-shrink-0 ${
+                    settings.aiAutoTrade === 'true' ? 'bg-amber-600' : 'bg-dark-600'
+                  }`}>
+                    <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                      settings.aiAutoTrade === 'true' ? 'translate-x-6' : 'translate-x-1'
                     }`} />
                   </div>
                 </div>

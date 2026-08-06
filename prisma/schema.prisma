@@ -157,6 +157,16 @@ model SiteSetting {
   cronLoops              String?  @default("1")    // 每次请求循环次数 (1-3)
   cronInterval           String?  @default("0")    // 循环间隔毫秒
   cronLogTtl             String?  @default("1")    // 日志保留小时数 (1-72)
+  // AI 模型配置
+  aiEnabled              String   @default("false")   // 是否启用 AI 分析
+  aiProvider             String   @default("openai")  // 供应商: openai / deepseek / qwen / moonshot / custom
+  aiApiUrl               String?                       // API 地址
+  aiApiKey               String?                       // API Key
+  aiModel                String?                       // 模型名称
+  aiTemperature          String   @default("0.3")     // 温度参数 (0-2)
+  aiMaxTokens            String   @default("2000")     // 最大 token 数
+  aiAnalysisInterval     String   @default("0")        // 自动分析间隔（引擎循环次数，0=不自动）
+  aiAutoTrade            String   @default("false")    // AI 信号是否触发自动开仓
 
   updatedAt              DateTime @updatedAt
 }
@@ -297,4 +307,29 @@ model TradingSymbol {
   @@index([autoTrade])
   @@index([isPopular])
   @@index([sortOrder])
+}
+
+// ==================== AI 行情分析 ====================
+
+model AiAnalysis {
+  id            String   @id @default(cuid())
+  symbol        String                         // 交易对 e.g. ETHUSDT
+  direction     String                         // 'long' | 'short' | 'neutral'
+  confidence    Int                            // 置信度 0-100
+  summary       String   @db.Text              // AI 总结
+  entryPrice    Float?                         // 建议入场价
+  stopLoss      Float?                         // 建议止损价
+  takeProfit1   Float?                         // 止盈1
+  takeProfit2   Float?                         // 止盈2
+  reasoning     String   @db.Text              // 详细分析逻辑
+  keyLevels     String?                        // 关键价位 JSON
+  riskWarning   String?                        // 风险提示
+  provider      String?                        // 使用的 AI 供应商
+  model         String?                        // 使用的模型名称
+  rawResponse   String?  @db.Text              // 原始响应（调试用）
+  createdAt     DateTime @default(now())
+
+  @@index([symbol])
+  @@index([createdAt])
+  @@index([direction])
 }

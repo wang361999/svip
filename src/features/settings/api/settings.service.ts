@@ -62,6 +62,16 @@ function safeSettings(fallback: Partial<SiteSetting> = {}): SiteSetting {
     cronLoops: '1',
     cronInterval: '0',
     cronLogTtl: '1',
+    // AI 模型配置默认值
+    aiEnabled: 'false',
+    aiProvider: 'openai',
+    aiApiUrl: '',
+    aiApiKey: '',
+    aiModel: '',
+    aiTemperature: '0.3',
+    aiMaxTokens: '2000',
+    aiAnalysisInterval: '0',
+    aiAutoTrade: 'false',
     updatedAt: new Date(),
     ...fallback,
   };

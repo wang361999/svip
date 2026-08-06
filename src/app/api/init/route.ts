@@ -314,6 +314,16 @@ const CREATE_TABLE_STATEMENTS: { label: string; sql: string }[] = [
   { label: 'ALTER TABLE SiteSetting ADD cronLoops', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "cronLoops" TEXT DEFAULT '1'` },
   { label: 'ALTER TABLE SiteSetting ADD cronInterval', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "cronInterval" TEXT DEFAULT '0'` },
   { label: 'ALTER TABLE SiteSetting ADD cronLogTtl', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "cronLogTtl" TEXT DEFAULT '1'` },
+  // ---------- AI 配置列（兼容已有数据库） ----------
+  { label: 'ALTER TABLE SiteSetting ADD aiEnabled', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiEnabled" TEXT NOT NULL DEFAULT 'false'` },
+  { label: 'ALTER TABLE SiteSetting ADD aiProvider', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiProvider" TEXT NOT NULL DEFAULT 'openai'` },
+  { label: 'ALTER TABLE SiteSetting ADD aiApiUrl', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiApiUrl" TEXT` },
+  { label: 'ALTER TABLE SiteSetting ADD aiApiKey', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiApiKey" TEXT` },
+  { label: 'ALTER TABLE SiteSetting ADD aiModel', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiModel" TEXT` },
+  { label: 'ALTER TABLE SiteSetting ADD aiTemperature', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiTemperature" TEXT NOT NULL DEFAULT '0.3'` },
+  { label: 'ALTER TABLE SiteSetting ADD aiMaxTokens', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiMaxTokens" TEXT NOT NULL DEFAULT '2000'` },
+  { label: 'ALTER TABLE SiteSetting ADD aiAnalysisInterval', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiAnalysisInterval" TEXT NOT NULL DEFAULT '0'` },
+  { label: 'ALTER TABLE SiteSetting ADD aiAutoTrade', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiAutoTrade" TEXT NOT NULL DEFAULT 'false'` },
   // ---------- TradingSymbol 表（币种管理） ----------
   {
     label: 'CREATE TABLE TradingSymbol',
@@ -365,6 +375,32 @@ const CREATE_TABLE_STATEMENTS: { label: string; sql: string }[] = [
   { label: 'CREATE INDEX TradingSymbol_autoTrade_idx', sql: `CREATE INDEX IF NOT EXISTS "TradingSymbol_autoTrade_idx" ON "TradingSymbol"("autoTrade")` },
   { label: 'CREATE INDEX TradingSymbol_isPopular_idx', sql: `CREATE INDEX IF NOT EXISTS "TradingSymbol_isPopular_idx" ON "TradingSymbol"("isPopular")` },
   { label: 'CREATE INDEX TradingSymbol_sortOrder_idx', sql: `CREATE INDEX IF NOT EXISTS "TradingSymbol_sortOrder_idx" ON "TradingSymbol"("sortOrder")` },
+  // ---------- AiAnalysis 表（AI 行情分析记录） ----------
+  {
+    label: 'CREATE TABLE AiAnalysis',
+    sql: `CREATE TABLE IF NOT EXISTS "AiAnalysis" (
+      "id" TEXT NOT NULL,
+      "symbol" TEXT NOT NULL,
+      "direction" TEXT NOT NULL,
+      "confidence" INTEGER NOT NULL,
+      "summary" TEXT NOT NULL,
+      "entryPrice" DOUBLE PRECISION,
+      "stopLoss" DOUBLE PRECISION,
+      "takeProfit1" DOUBLE PRECISION,
+      "takeProfit2" DOUBLE PRECISION,
+      "reasoning" TEXT NOT NULL,
+      "keyLevels" TEXT,
+      "riskWarning" TEXT,
+      "provider" TEXT,
+      "model" TEXT,
+      "rawResponse" TEXT,
+      "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT "AiAnalysis_pkey" PRIMARY KEY ("id")
+    )`,
+  },
+  { label: 'CREATE INDEX AiAnalysis_symbol_idx', sql: `CREATE INDEX IF NOT EXISTS "AiAnalysis_symbol_idx" ON "AiAnalysis"("symbol")` },
+  { label: 'CREATE INDEX AiAnalysis_createdAt_idx', sql: `CREATE INDEX IF NOT EXISTS "AiAnalysis_createdAt_idx" ON "AiAnalysis"("createdAt")` },
+  { label: 'CREATE INDEX AiAnalysis_direction_idx', sql: `CREATE INDEX IF NOT EXISTS "AiAnalysis_direction_idx" ON "AiAnalysis"("direction")` },
 ];
 
 /**

@@ -710,6 +710,65 @@ export async function runEngine(userId: string): Promise<{
       }
     }
 
+    // 4b. AI 信号自动开仓（如果开启 aiAutoTrade）
+    try {
+      const { settingsService } = await import('@/features/settings/api/settings.service');
+      const { parseAiConfig } = await import('./ai-analysis');
+      const settings = await settingsService.getSettings();
+      const aiConfig = parseAiConfig(settings as unknown as Record<string, string | null>);
+
+      if (aiConfig.enabled && aiConfig.autoTrade && account.autoTrade) {
+        for (const sym of symbols) {
+          // 限制最大持仓数
+          const openCount = await prisma.paperPosition.count({
+            where: { userId, status: 'open' },
+          });
+          if (openCount >= 5) break;
+
+          // 获取该币种最新的 AI 分析记录
+          const latestAi = await prisma.aiAnalysis.findFirst({
+            where: { symbol: sym.symbol },
+            orderBy: { createdAt: 'desc' },
+          });
+
+          // 只使用 1 小时内的分析结果
+          if (!latestAi) continue;
+          const ageMs = Date.now() - latestAi.createdAt.getTime();
+          if (ageMs > 3600000) continue; // 超过 1 小时的分析不使用
+
+          // 只在方向明确且置信度 >= 60 时开仓
+          if (latestAi.direction === 'neutral' || latestAi.confidence < 60) continue;
+
+          // 检查该币种同方向是否已有持仓
+          const sameDir = positions.some(
+            (p) => p.side === latestAi.direction && p.symbol === sym.symbol && p.status === 'open',
+          );
+          if (sameDir) continue;
+
+          const price = priceMap[sym.symbol];
+          if (!price || price <= 0) continue;
+
+          try {
+            await openPosition(userId, {
+              symbol: sym.symbol,
+              side: latestAi.direction as 'long' | 'short',
+              entryPrice: price, // 以当前价格入场（AI 分析时可能已变化）
+              stopLoss: latestAi.stopLoss || undefined,
+              takeProfit1: latestAi.takeProfit1 || undefined,
+              takeProfit2: latestAi.takeProfit2 || undefined,
+              strategyId: `ai_${latestAi.provider}`,
+              signalPrice: latestAi.entryPrice || price,
+            });
+            result.opened++;
+          } catch (err) {
+            result.errors.push(`${sym.symbol} AI 自动开仓失败: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+      }
+    } catch (err) {
+      result.errors.push(`AI 信号处理异常: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // 5. 每次引擎执行都记录日志（方便排查 Cron 触发是否正常）
     try {
       await prisma.paperTradeLog.create({
