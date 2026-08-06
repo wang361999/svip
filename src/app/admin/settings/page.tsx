@@ -32,6 +32,7 @@ interface AiProviderMeta {
   defaultApiUrl: string;
   defaultModel: string;
   models: string[];
+  hasPreset: boolean; // 是否有预配置凭证
 }
 
 const AI_PROVIDERS: AiProviderMeta[] = [
@@ -41,6 +42,7 @@ const AI_PROVIDERS: AiProviderMeta[] = [
     defaultApiUrl: 'https://api.openai.com/v1/chat/completions',
     defaultModel: 'gpt-4o-mini',
     models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
+    hasPreset: false,
   },
   {
     id: 'deepseek',
@@ -48,6 +50,7 @@ const AI_PROVIDERS: AiProviderMeta[] = [
     defaultApiUrl: 'https://api.deepseek.com/v1/chat/completions',
     defaultModel: 'deepseek-chat',
     models: ['deepseek-chat', 'deepseek-reasoner'],
+    hasPreset: false,
   },
   {
     id: 'qwen',
@@ -55,6 +58,7 @@ const AI_PROVIDERS: AiProviderMeta[] = [
     defaultApiUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
     defaultModel: 'qwen-plus',
     models: ['qwen-plus', 'qwen-turbo', 'qwen-max'],
+    hasPreset: false,
   },
   {
     id: 'moonshot',
@@ -62,13 +66,23 @@ const AI_PROVIDERS: AiProviderMeta[] = [
     defaultApiUrl: 'https://api.moonshot.cn/v1/chat/completions',
     defaultModel: 'moonshot-v1-8k',
     models: ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'],
+    hasPreset: false,
+  },
+  {
+    id: 'nvidia',
+    label: 'NVIDIA GLM-5.2 (智谱) ⚡预配置',
+    defaultApiUrl: 'https://integrate.api.nvidia.com/v1/chat/completions',
+    defaultModel: 'z-ai/glm-5.2',
+    models: ['z-ai/glm-5.2'],
+    hasPreset: true,
   },
   {
     id: 'custom',
-    label: '自定义 (Custom)',
-    defaultApiUrl: '',
-    defaultModel: '',
-    models: [],
+    label: 'Agnes-AI (gpt-4o-mini) ⚡预配置',
+    defaultApiUrl: 'https://api.agnes-ai.cn/v1/chat/completions',
+    defaultModel: 'gpt-4o-mini',
+    models: ['gpt-4o-mini', 'gpt-4o'],
+    hasPreset: true,
   },
 ];
 
@@ -84,10 +98,10 @@ export default function AdminSettingsPage() {
     enableRegistration: 'true',
     paperTradingEnabled: 'false',
     aiEnabled: 'false',
-    aiProvider: 'openai',
-    aiApiUrl: '',
+    aiProvider: 'custom',
+    aiApiUrl: 'https://api.agnes-ai.cn/v1/chat/completions',
     aiApiKey: '',
-    aiModel: '',
+    aiModel: 'gpt-4o-mini',
     aiTemperature: '0.3',
     aiMaxTokens: '2000',
     aiAnalysisInterval: '1',
@@ -120,10 +134,10 @@ export default function AdminSettingsPage() {
           enableRegistration: data.enableRegistration || 'true',
           paperTradingEnabled: data.paperTradingEnabled || 'false',
           aiEnabled: data.aiEnabled || 'false',
-          aiProvider: data.aiProvider || 'openai',
-          aiApiUrl: data.aiApiUrl || '',
+          aiProvider: data.aiProvider || 'custom',
+          aiApiUrl: data.aiApiUrl || 'https://api.agnes-ai.cn/v1/chat/completions',
           aiApiKey: data.aiApiKey || '',
-          aiModel: data.aiModel || '',
+          aiModel: data.aiModel || 'gpt-4o-mini',
           aiTemperature: data.aiTemperature || '0.3',
           aiMaxTokens: data.aiMaxTokens || '2000',
           aiAnalysisInterval: data.aiAnalysisInterval || '1',
@@ -189,6 +203,8 @@ export default function AdminSettingsPage() {
       aiProvider: providerId,
       aiApiUrl: meta?.defaultApiUrl || '',
       aiModel: meta?.defaultModel || '',
+      // 预配置供应商的 API Key 留空，后端自动使用 PROVIDER_DEFAULTS
+      aiApiKey: meta?.hasPreset ? '' : prev.aiApiKey,
     }));
   };
 
@@ -396,7 +412,7 @@ export default function AdminSettingsPage() {
                     ))}
                   </select>
                   <p className="text-dark-500 text-xs mt-1">
-                    选择供应商后会自动填充默认 API 地址和模型名称，可手动修改
+                    ⚡ 标记的供应商已预配置 API 凭证，选择后可直接使用。也可手动填写自定义凭证。
                   </p>
                 </div>
 
@@ -432,7 +448,11 @@ export default function AdminSettingsPage() {
                       {showApiKey ? '隐藏' : '显示'}
                     </button>
                   </div>
-                  <p className="text-dark-500 text-xs mt-1">你的 API 密钥，将安全存储在数据库中</p>
+                  <p className="text-dark-500 text-xs mt-1">
+                    {currentProvider?.hasPreset
+                      ? '此供应商已预配置凭证，留空则自动使用内置 API Key'
+                      : '你的 API 密钥，将安全存储在数据库中'}
+                  </p>
                 </div>
 
                 {/* 模型名称 */}

@@ -62,12 +62,12 @@ function safeSettings(fallback: Partial<SiteSetting> = {}): SiteSetting {
     cronLoops: '1',
     cronInterval: '0',
     cronLogTtl: '1',
-    // AI 模型配置默认值（预配置接入）
+    // AI 模型配置默认值（凭证由 PROVIDER_DEFAULTS 按 supplier 回退）
     aiEnabled: 'true',
     aiProvider: 'custom',
-    aiApiUrl: 'https://api.agnes-ai.cn/v1/chat/completions',
-    aiApiKey: 'sk-cLl30kp5lGb1p8RUmrQRepLg3YcqUYBHbVk1qk4SrL3UKCNh',
-    aiModel: 'gpt-4o-mini',
+    aiApiUrl: '',
+    aiApiKey: '',
+    aiModel: '',
     aiTemperature: '0.3',
     aiMaxTokens: '2000',
     aiAnalysisInterval: '1',
@@ -77,13 +77,10 @@ function safeSettings(fallback: Partial<SiteSetting> = {}): SiteSetting {
   };
 }
 
-/** AI 配置默认值 — 数据库字段为空时回退使用 */
+/** AI 配置默认值 — 仅非凭证字段（凭证由 ai-analysis.ts 的 PROVIDER_DEFAULTS 处理） */
 const AI_DEFAULTS = {
   aiEnabled: 'true',
   aiProvider: 'custom',
-  aiApiUrl: 'https://api.agnes-ai.cn/v1/chat/completions',
-  aiApiKey: 'sk-cLl30kp5lGb1p8RUmrQRepLg3YcqUYBHbVk1qk4SrL3UKCNh',
-  aiModel: 'gpt-4o-mini',
   aiTemperature: '0.3',
   aiMaxTokens: '2000',
   aiAnalysisInterval: '1',

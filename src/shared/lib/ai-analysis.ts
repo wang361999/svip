@@ -31,6 +31,7 @@ export interface AiProviderMeta {
   defaultModel: string;
   models: string[];
   docUrl: string;
+  supportsJsonMode: boolean; // 是否支持 response_format: json_object
 }
 
 /** 预置 AI 供应商列表（均兼容 OpenAI Chat Completions 格式） */
@@ -42,6 +43,7 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
     defaultModel: 'gpt-4o-mini',
     models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
     docUrl: 'https://platform.openai.com/docs/models',
+    supportsJsonMode: true,
   },
   {
     id: 'deepseek',
@@ -50,6 +52,7 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
     defaultModel: 'deepseek-chat',
     models: ['deepseek-chat', 'deepseek-reasoner'],
     docUrl: 'https://platform.deepseek.com/docs',
+    supportsJsonMode: true,
   },
   {
     id: 'qwen',
@@ -58,6 +61,7 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
     defaultModel: 'qwen-plus',
     models: ['qwen-plus', 'qwen-turbo', 'qwen-max'],
     docUrl: 'https://help.aliyun.com/zh/dashscope/developer-reference/compatibility-of-openai-with-dashscope',
+    supportsJsonMode: true,
   },
   {
     id: 'moonshot',
@@ -66,14 +70,25 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
     defaultModel: 'moonshot-v1-8k',
     models: ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'],
     docUrl: 'https://platform.moonshot.cn/docs',
+    supportsJsonMode: true,
+  },
+  {
+    id: 'nvidia',
+    label: 'NVIDIA GLM (智谱)',
+    defaultApiUrl: 'https://integrate.api.nvidia.com/v1/chat/completions',
+    defaultModel: 'z-ai/glm-5.2',
+    models: ['z-ai/glm-5.2'],
+    docUrl: 'https://build.nvidia.com',
+    supportsJsonMode: false,
   },
   {
     id: 'custom',
-    label: '自定义 (Custom)',
+    label: '自定义 (Custom / Agnes-AI)',
     defaultApiUrl: '',
     defaultModel: '',
     models: [],
     docUrl: '',
+    supportsJsonMode: true,
   },
 ];
 
@@ -81,6 +96,26 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
 export function getProviderMeta(providerId: string): AiProviderMeta | undefined {
   return AI_PROVIDERS.find((p) => p.id === providerId);
 }
+
+/**
+ * 供应商级别预配置凭证
+ * 当数据库中的 aiApiUrl / aiApiKey / aiModel 为空时，按当前 provider 回退到这里的默认值
+ * 这样切换供应商时无需手动输入凭证
+ */
+const PROVIDER_DEFAULTS: Record<string, { apiUrl: string; apiKey: string; model: string }> = {
+  // 模型 1: Agnes-AI (gpt-4o-mini)
+  custom: {
+    apiUrl: 'https://api.agnes-ai.cn/v1/chat/completions',
+    apiKey: 'sk-cLl30kp5lGb1p8RUmrQRepLg3YcqUYBHbVk1qk4SrL3UKCNh',
+    model: 'gpt-4o-mini',
+  },
+  // 模型 2: NVIDIA GLM-5.2
+  nvidia: {
+    apiUrl: 'https://integrate.api.nvidia.com/v1/chat/completions',
+    apiKey: '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',
+    model: 'z-ai/glm-5.2',
+  },
+};
 
 // ==================== 类型定义 ====================
 
@@ -94,6 +129,7 @@ export interface AiConfig {
   maxTokens: number;
   analysisInterval: number;
   autoTrade: boolean;
+  supportsJsonMode: boolean; // 是否支持 response_format: json_object
 }
 
 export interface AiAnalysisResult {
@@ -114,21 +150,23 @@ export interface AiAnalysisResult {
 
 // ==================== 配置读取 ====================
 
-/** 从 SiteSetting 读取 AI 配置 */
+/** 从 SiteSetting 读取 AI 配置（含供应商级别凭证回退） */
 export function parseAiConfig(settings: Record<string, string | null | undefined>): AiConfig {
-  const providerId = settings.aiProvider || 'openai';
+  const providerId = settings.aiProvider || 'custom';
   const meta = getProviderMeta(providerId);
+  const defaults = PROVIDER_DEFAULTS[providerId];
 
   return {
     enabled: settings.aiEnabled === 'true',
     provider: providerId,
-    apiUrl: settings.aiApiUrl || meta?.defaultApiUrl || '',
-    apiKey: settings.aiApiKey || '',
-    model: settings.aiModel || meta?.defaultModel || '',
+    apiUrl: settings.aiApiUrl || defaults?.apiUrl || meta?.defaultApiUrl || '',
+    apiKey: settings.aiApiKey || defaults?.apiKey || '',
+    model: settings.aiModel || defaults?.model || meta?.defaultModel || '',
     temperature: parseFloat(settings.aiTemperature || '0.3') || 0.3,
     maxTokens: parseInt(settings.aiMaxTokens || '2000', 10) || 2000,
     analysisInterval: parseInt(settings.aiAnalysisInterval || '0', 10) || 0,
     autoTrade: settings.aiAutoTrade === 'true',
+    supportsJsonMode: meta?.supportsJsonMode ?? true,
   };
 }
 
@@ -315,6 +353,23 @@ async function callChatCompletions(
   const timer = setTimeout(() => controller.abort(), 30000); // 30s 超时
 
   try {
+    // 构建请求体 — response_format 仅在供应商支持时发送
+    const requestBody: Record<string, unknown> = {
+      model: config.model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: config.temperature,
+      top_p: 1,
+      max_tokens: config.maxTokens,
+    };
+
+    // 仅对支持 JSON mode 的供应商发送 response_format
+    if (config.supportsJsonMode) {
+      requestBody.response_format = { type: 'json_object' };
+    }
+
     const res = await fetch(config.apiUrl, {
       method: 'POST',
       signal: controller.signal,
@@ -322,16 +377,7 @@ async function callChatCompletions(
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify({
-        model: config.model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        temperature: config.temperature,
-        max_tokens: config.maxTokens,
-        response_format: { type: 'json_object' },
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!res.ok) {
