@@ -69,7 +69,7 @@ function safeSettings(fallback: Partial<SiteSetting> = {}): SiteSetting {
     aiApiKey: '',
     aiModel: '',
     aiTemperature: '0.3',
-    aiMaxTokens: '2000',
+    aiMaxTokens: '4000',
     aiAnalysisInterval: '1',
     aiAutoTrade: 'false',
     updatedAt: new Date(),
@@ -82,7 +82,7 @@ const AI_DEFAULTS = {
   aiEnabled: 'true',
   aiProvider: 'custom',
   aiTemperature: '0.3',
-  aiMaxTokens: '2000',
+  aiMaxTokens: '4000',
   aiAnalysisInterval: '1',
   aiAutoTrade: 'false',
 };

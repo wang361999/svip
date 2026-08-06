@@ -74,12 +74,12 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
   },
   {
     id: 'nvidia',
-    label: 'NVIDIA GLM (智谱)',
+    label: 'NVIDIA GLM-5.2 (智谱)',
     defaultApiUrl: 'https://integrate.api.nvidia.com/v1/chat/completions',
     defaultModel: 'z-ai/glm-5.2',
     models: ['z-ai/glm-5.2'],
     docUrl: 'https://build.nvidia.com',
-    supportsJsonMode: false,
+    supportsJsonMode: true,
   },
   {
     id: 'custom',
@@ -103,11 +103,11 @@ export function getProviderMeta(providerId: string): AiProviderMeta | undefined 
  * 这样切换供应商时无需手动输入凭证
  */
 const PROVIDER_DEFAULTS: Record<string, { apiUrl: string; apiKey: string; model: string }> = {
-  // 模型 1: Agnes-AI (gpt-4o-mini)
+  // 模型 1: Agnes-AI (agnes-2.5-flash)
   custom: {
     apiUrl: 'https://api.agnes-ai.cn/v1/chat/completions',
     apiKey: 'sk-cLl30kp5lGb1p8RUmrQRepLg3YcqUYBHbVk1qk4SrL3UKCNh',
-    model: 'gpt-4o-mini',
+    model: 'agnes-2.5-flash',
   },
   // 模型 2: NVIDIA GLM-5.2
   nvidia: {
@@ -163,7 +163,7 @@ export function parseAiConfig(settings: Record<string, string | null | undefined
     apiKey: settings.aiApiKey || defaults?.apiKey || '',
     model: settings.aiModel || defaults?.model || meta?.defaultModel || '',
     temperature: parseFloat(settings.aiTemperature || '0.3') || 0.3,
-    maxTokens: parseInt(settings.aiMaxTokens || '2000', 10) || 2000,
+    maxTokens: parseInt(settings.aiMaxTokens || '4000', 10) || 4000,
     analysisInterval: parseInt(settings.aiAnalysisInterval || '0', 10) || 0,
     autoTrade: settings.aiAutoTrade === 'true',
     supportsJsonMode: meta?.supportsJsonMode ?? true,
@@ -350,7 +350,7 @@ async function callChatCompletions(
   userPrompt: string,
 ): Promise<string> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 30000); // 30s 超时
+  const timer = setTimeout(() => controller.abort(), 45000); // 45s 超时（推理模型需要更长时间）
 
   try {
     // 构建请求体 — response_format 仅在供应商支持时发送
@@ -386,7 +386,9 @@ async function callChatCompletions(
     }
 
     const data = await res.json();
-    const content = data?.choices?.[0]?.message?.content;
+    // 部分推理模型（如 Agnes-AI）可能将内容放在 reasoning_content 而非 content
+    const content = data?.choices?.[0]?.message?.content
+      || data?.choices?.[0]?.message?.reasoning_content;
 
     if (!content) {
       throw new Error('AI API 返回内容为空');
@@ -395,7 +397,7 @@ async function callChatCompletions(
     return content;
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
-      throw new Error('AI API 请求超时（30s）');
+      throw new Error('AI API 请求超时（45s）');
     }
     throw err;
   } finally {

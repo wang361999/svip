@@ -78,10 +78,10 @@ const AI_PROVIDERS: AiProviderMeta[] = [
   },
   {
     id: 'custom',
-    label: 'Agnes-AI (gpt-4o-mini) ⚡预配置',
+    label: 'Agnes-AI (agnes-2.5-flash) ⚡预配置',
     defaultApiUrl: 'https://api.agnes-ai.cn/v1/chat/completions',
-    defaultModel: 'gpt-4o-mini',
-    models: ['gpt-4o-mini', 'gpt-4o'],
+    defaultModel: 'agnes-2.5-flash',
+    models: ['agnes-2.5-flash', 'agnes-2.5-pro', 'agnes-2.0-flash'],
     hasPreset: true,
   },
 ];
@@ -101,9 +101,9 @@ export default function AdminSettingsPage() {
     aiProvider: 'custom',
     aiApiUrl: 'https://api.agnes-ai.cn/v1/chat/completions',
     aiApiKey: '',
-    aiModel: 'gpt-4o-mini',
+    aiModel: 'agnes-2.5-flash',
     aiTemperature: '0.3',
-    aiMaxTokens: '2000',
+    aiMaxTokens: '4000',
     aiAnalysisInterval: '1',
     aiAutoTrade: 'false',
   });
@@ -137,9 +137,9 @@ export default function AdminSettingsPage() {
           aiProvider: data.aiProvider || 'custom',
           aiApiUrl: data.aiApiUrl || 'https://api.agnes-ai.cn/v1/chat/completions',
           aiApiKey: data.aiApiKey || '',
-          aiModel: data.aiModel || 'gpt-4o-mini',
+          aiModel: data.aiModel || 'agnes-2.5-flash',
           aiTemperature: data.aiTemperature || '0.3',
-          aiMaxTokens: data.aiMaxTokens || '2000',
+          aiMaxTokens: data.aiMaxTokens || '4000',
           aiAnalysisInterval: data.aiAnalysisInterval || '1',
           aiAutoTrade: data.aiAutoTrade || 'false',
         });
@@ -515,13 +515,13 @@ export default function AdminSettingsPage() {
                     <input
                       type="number"
                       min="500"
-                      max="8000"
+                      max="16384"
                       step="100"
                       value={settings.aiMaxTokens}
                       onChange={(e) => setSettings({ ...settings, aiMaxTokens: e.target.value })}
                       className="input-dark"
                     />
-                    <p className="text-dark-500 text-xs mt-1">建议 1000-4000</p>
+                    <p className="text-dark-500 text-xs mt-1">建议 2000-8000（推理模型建议 4000+）</p>
                   </div>
                 </div>
 

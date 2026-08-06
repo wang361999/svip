@@ -13,7 +13,7 @@ import { settingsService } from '@/features/settings/api/settings.service';
 import { analyzeMarketWithAI, parseAiConfig, type AiAnalysisResult } from '@/shared/lib/ai-analysis';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 /** GET — 获取最新分析记录 */
 export const GET = createHandler(async ({ req }) => {
