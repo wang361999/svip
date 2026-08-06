@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import useSymbolStore from '@/store/symbolStore';
 import usePriceStore from '@/store/priceStore';
 import { apiGet, apiPost } from '@/shared/api/client';
@@ -47,14 +47,15 @@ export default function AiAnalysisPanel() {
   const [analysis, setAnalysis] = useState<AiAnalysis | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState('');
   const [showReasoning, setShowReasoning] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [autoAnalyze, setAutoAnalyze] = useState(true);
   const [intervalSec, setIntervalSec] = useState(30); // 默认 30 秒
   const [nextAnalyzeIn, setNextAnalyzeIn] = useState(30); // 倒计时秒数
-  const [analyzingRef, setAnalyzingRef] = useState(false); // 防重叠标记
+  const [isAnalyzing, setIsAnalyzing] = useState(false); // 分析中状态（UI 显示）
+  const analyzingLockRef = useRef(false); // 防重叠锁（不触发重渲染）
+  const triggerAnalysisRef = useRef<((silent?: boolean) => Promise<void>) | null>(null); // 持有最新 triggerAnalysis
 
   const fetchAnalysis = useCallback(async () => {
     try {
@@ -78,9 +79,9 @@ export default function AiAnalysisPanel() {
   /** 触发 AI 分析（带防重叠保护） */
   const triggerAnalysis = useCallback(async (silent = false) => {
     // 防重叠：上一次分析还没完成，跳过
-    if (analyzingRef) return;
-    setAnalyzingRef(true);
-    if (!silent) setAnalyzing(true);
+    if (analyzingLockRef.current) return;
+    analyzingLockRef.current = true;
+    setIsAnalyzing(true);
     setError('');
     try {
       const result = await apiPost<AiAnalysis>('/api/ai-analysis', {
@@ -98,28 +99,34 @@ export default function AiAnalysisPanel() {
     } catch (err) {
       setError(err instanceof Error ? err.message : '分析失败');
     } finally {
-      setAnalyzingRef(false);
-      setAnalyzing(false);
+      analyzingLockRef.current = false;
+      setIsAnalyzing(false);
       setNextAnalyzeIn(intervalSec); // 重置倒计时
     }
-  }, [symbol, okxId, label, currentPrice, intervalSec, analyzingRef]);
+  }, [symbol, okxId, label, currentPrice, intervalSec]);
+
+  // 保持 ref 始终指向最新的 triggerAnalysis（不触发 effect 重运行）
+  triggerAnalysisRef.current = triggerAnalysis;
 
   // 初始加载：获取已有分析 → 如果没有则自动触发
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     fetchAnalysis().then(() => {
-      // 加载完成后检查是否需要自动分析
+      if (cancelled) return;
+      // 加载完成后检查是否需要自动分析（用 ref 避免闭包陷阱）
       setAnalysis((prev) => {
         if (!prev && autoAnalyze) {
           // 没有分析记录，立即触发
-          triggerAnalysis(true);
+          triggerAnalysisRef.current?.(true);
         }
         return prev;
       });
     });
+    return () => { cancelled = true; };
   }, [fetchAnalysis]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 自动定时分析：按配置间隔触发
+  // 自动定时分析：按配置间隔触发（通过 ref 调用，避免 price 频繁变化重建 timer）
   useEffect(() => {
     if (!autoAnalyze) return;
 
@@ -127,8 +134,8 @@ export default function AiAnalysisPanel() {
     const timer = setInterval(() => {
       setNextAnalyzeIn((prev) => {
         if (prev <= 1) {
-          // 倒计时归零，触发分析
-          triggerAnalysis(true);
+          // 倒计时归零，通过 ref 调用最新的 triggerAnalysis
+          triggerAnalysisRef.current?.(true);
           return intervalSec;
         }
         return prev - 1;
@@ -136,7 +143,7 @@ export default function AiAnalysisPanel() {
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [autoAnalyze, triggerAnalysis, intervalSec]);
+  }, [autoAnalyze, intervalSec]); // 只依赖 autoAnalyze 和 intervalSec，不依赖 triggerAnalysis
 
   const dir = analysis ? directionConfig[analysis.direction] : null;
 
@@ -170,7 +177,7 @@ export default function AiAnalysisPanel() {
           {/* 自动分析状态 */}
           {autoAnalyze && (
             <span className="flex items-center gap-1 text-xs">
-              {analyzingRef ? (
+              {isAnalyzing ? (
                 <span className="flex items-center gap-1 text-blue-400">
                   <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-ping" />
                   AI 分析中...
@@ -200,10 +207,10 @@ export default function AiAnalysisPanel() {
           {/* 手动触发按钮 */}
           <button
             onClick={() => triggerAnalysis(false)}
-            disabled={analyzing}
+            disabled={isAnalyzing}
             className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
           >
-            {analyzing ? (
+            {isAnalyzing ? (
               <>
                 <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                 分析中...

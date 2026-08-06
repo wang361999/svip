@@ -315,8 +315,8 @@ const CREATE_TABLE_STATEMENTS: { label: string; sql: string }[] = [
   { label: 'ALTER TABLE SiteSetting ADD cronInterval', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "cronInterval" TEXT DEFAULT '0'` },
   { label: 'ALTER TABLE SiteSetting ADD cronLogTtl', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "cronLogTtl" TEXT DEFAULT '1'` },
   // ---------- AI 配置列（兼容已有数据库） ----------
-  { label: 'ALTER TABLE SiteSetting ADD aiEnabled', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiEnabled" TEXT NOT NULL DEFAULT 'false'` },
-  { label: 'ALTER TABLE SiteSetting ADD aiProvider', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiProvider" TEXT NOT NULL DEFAULT 'openai'` },
+  { label: 'ALTER TABLE SiteSetting ADD aiEnabled', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiEnabled" TEXT NOT NULL DEFAULT 'true'` },
+  { label: 'ALTER TABLE SiteSetting ADD aiProvider', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiProvider" TEXT NOT NULL DEFAULT 'custom'` },
   { label: 'ALTER TABLE SiteSetting ADD aiApiUrl', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiApiUrl" TEXT` },
   { label: 'ALTER TABLE SiteSetting ADD aiApiKey', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiApiKey" TEXT` },
   { label: 'ALTER TABLE SiteSetting ADD aiModel', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "aiModel" TEXT` },

@@ -158,8 +158,8 @@ model SiteSetting {
   cronInterval           String?  @default("0")    // 循环间隔毫秒
   cronLogTtl             String?  @default("1")    // 日志保留小时数 (1-72)
   // AI 模型配置
-  aiEnabled              String   @default("false")   // 是否启用 AI 分析
-  aiProvider             String   @default("openai")  // 供应商: openai / deepseek / qwen / moonshot / custom
+  aiEnabled              String   @default("true")    // 是否启用 AI 分析
+  aiProvider             String   @default("custom")  // 供应商: openai / deepseek / qwen / moonshot / custom / nvidia
   aiApiUrl               String?                       // API 地址
   aiApiKey               String?                       // API Key
   aiModel                String?                       // 模型名称

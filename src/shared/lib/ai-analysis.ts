@@ -350,7 +350,7 @@ async function callChatCompletions(
   userPrompt: string,
 ): Promise<string> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 45000); // 45s 超时（推理模型需要更长时间）
+  const timer = setTimeout(() => controller.abort(), 60000); // 60s 超时（推理模型分析复杂行情需要更长时间）
 
   try {
     // 构建请求体 — response_format 仅在供应商支持时发送
@@ -363,6 +363,7 @@ async function callChatCompletions(
       temperature: config.temperature,
       top_p: 1,
       max_tokens: config.maxTokens,
+      stream: false, // 显式关闭流式，确保返回完整 JSON
     };
 
     // 仅对支持 JSON mode 的供应商发送 response_format
@@ -397,7 +398,7 @@ async function callChatCompletions(
     return content;
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
-      throw new Error('AI API 请求超时（45s）');
+      throw new Error('AI API 请求超时（60s）');
     }
     throw err;
   } finally {
@@ -442,6 +443,19 @@ function normalizeResult(parsed: any, config: AiConfig, rawResponse: string): Ai
 
   const confidence = Math.max(0, Math.min(100, parseInt(parsed.confidence, 10) || 0));
 
+  // 清洗 keyLevels 数组，确保每项都有合法的 price/type/note 字段
+  let keyLevels: NonNullable<AiAnalysisResult['keyLevels']> | null = null;
+  if (Array.isArray(parsed.keyLevels)) {
+    const cleaned = parsed.keyLevels
+      .filter((lv: any) => lv != null && typeof lv === 'object')
+      .map((lv: any) => ({
+        price: Number(lv.price) || 0,
+        type: String(lv.type || '未知'),
+        note: String(lv.note || ''),
+      }));
+    keyLevels = cleaned.length > 0 ? cleaned : null;
+  }
+
   return {
     direction: direction as 'long' | 'short' | 'neutral',
     confidence,
@@ -451,7 +465,7 @@ function normalizeResult(parsed: any, config: AiConfig, rawResponse: string): Ai
     takeProfit1: parsed.takeProfit1 != null ? Number(parsed.takeProfit1) || null : null,
     takeProfit2: parsed.takeProfit2 != null ? Number(parsed.takeProfit2) || null : null,
     reasoning: String(parsed.reasoning || '无分析'),
-    keyLevels: Array.isArray(parsed.keyLevels) ? parsed.keyLevels : null,
+    keyLevels,
     riskWarning: parsed.riskWarning ? String(parsed.riskWarning) : null,
     provider: config.provider,
     model: config.model,
