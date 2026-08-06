@@ -56,8 +56,9 @@ export default function AiAnalysisPanel() {
   const [isAnalyzing, setIsAnalyzing] = useState(false); // 分析中状态（UI 显示）
   const analyzingLockRef = useRef(false); // 防重叠锁（不触发重渲染）
   const triggerAnalysisRef = useRef<((silent?: boolean) => Promise<void>) | null>(null); // 持有最新 triggerAnalysis
+  const countdownRef = useRef(30); // 倒计时计数器（独立于 state，避免在 state updater 内触发副作用）
 
-  const fetchAnalysis = useCallback(async () => {
+  const fetchAnalysis = useCallback(async (): Promise<AiAnalysis | null> => {
     try {
       const data = await apiGet<{ latest: AiAnalysis | null; history: HistoryItem[]; analysisIntervalSec?: number }>(
         `/api/ai-analysis?symbol=${symbol}`,
@@ -67,10 +68,13 @@ export default function AiAnalysisPanel() {
       // 从后端读取分析间隔（秒），直接使用
       if (data.analysisIntervalSec && data.analysisIntervalSec > 0) {
         setIntervalSec(data.analysisIntervalSec);
+        countdownRef.current = data.analysisIntervalSec;
         setNextAnalyzeIn(data.analysisIntervalSec);
       }
+      return data.latest;
     } catch (err) {
       setError(err instanceof Error ? err.message : '获取分析失败');
+      return null;
     } finally {
       setLoading(false);
     }
@@ -81,7 +85,7 @@ export default function AiAnalysisPanel() {
     // 防重叠：上一次分析还没完成，跳过
     if (analyzingLockRef.current) return;
     analyzingLockRef.current = true;
-    setIsAnalyzing(true);
+    if (!silent) setIsAnalyzing(true); // 静默触发不显示加载旋转图标
     setError('');
     try {
       const result = await apiPost<AiAnalysis>('/api/ai-analysis', {
@@ -101,7 +105,8 @@ export default function AiAnalysisPanel() {
     } finally {
       analyzingLockRef.current = false;
       setIsAnalyzing(false);
-      setNextAnalyzeIn(intervalSec); // 重置倒计时
+      countdownRef.current = intervalSec; // 重置倒计时计数器
+      setNextAnalyzeIn(intervalSec); // 更新 UI 显示
     }
   }, [symbol, okxId, label, currentPrice, intervalSec]);
 
@@ -112,16 +117,12 @@ export default function AiAnalysisPanel() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetchAnalysis().then(() => {
+    fetchAnalysis().then((latest) => {
       if (cancelled) return;
-      // 加载完成后检查是否需要自动分析（用 ref 避免闭包陷阱）
-      setAnalysis((prev) => {
-        if (!prev && autoAnalyze) {
-          // 没有分析记录，立即触发
-          triggerAnalysisRef.current?.(true);
-        }
-        return prev;
-      });
+      // 没有分析记录且自动模式开启时，立即触发首次分析
+      if (!latest && autoAnalyze) {
+        triggerAnalysisRef.current?.(true);
+      }
     });
     return () => { cancelled = true; };
   }, [fetchAnalysis]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -130,16 +131,19 @@ export default function AiAnalysisPanel() {
   useEffect(() => {
     if (!autoAnalyze) return;
 
-    // 倒计时
+    // 初始化倒计时
+    countdownRef.current = intervalSec;
+    setNextAnalyzeIn(intervalSec);
+
+    // 倒计时 — 用 ref 跟踪，state 仅用于 UI 显示
     const timer = setInterval(() => {
-      setNextAnalyzeIn((prev) => {
-        if (prev <= 1) {
-          // 倒计时归零，通过 ref 调用最新的 triggerAnalysis
-          triggerAnalysisRef.current?.(true);
-          return intervalSec;
-        }
-        return prev - 1;
-      });
+      countdownRef.current -= 1;
+      if (countdownRef.current <= 0) {
+        // 倒计时归零，在 state updater 外触发分析（避免渲染阶段副作用）
+        triggerAnalysisRef.current?.(true);
+        countdownRef.current = intervalSec;
+      }
+      setNextAnalyzeIn(countdownRef.current);
     }, 1000);
 
     return () => clearInterval(timer);
