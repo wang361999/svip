@@ -50,12 +50,12 @@ export const GET = createHandler(async ({ req }) => {
     },
   });
 
-  // 读取 AI 配置中的分析间隔（分钟），供前端倒计时使用
-  let analysisIntervalMin = 1;
+  // 读取 AI 配置中的分析间隔（秒），供前端倒计时使用
+  let analysisIntervalSec = 30;
   try {
     const settings = await settingsService.getSettings();
     const cfg = parseAiConfig(settings as unknown as Record<string, string | null>);
-    analysisIntervalMin = cfg.analysisInterval > 0 ? cfg.analysisInterval : 1;
+    analysisIntervalSec = cfg.analysisInterval > 0 ? cfg.analysisInterval : 30;
   } catch {}
 
   return apiSuccess({
@@ -79,7 +79,7 @@ export const GET = createHandler(async ({ req }) => {
         }
       : null,
     history,
-    analysisIntervalMin,
+    analysisIntervalSec,
   });
 });
 

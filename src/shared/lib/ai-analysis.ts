@@ -164,7 +164,7 @@ export function parseAiConfig(settings: Record<string, string | null | undefined
     model: settings.aiModel || defaults?.model || meta?.defaultModel || '',
     temperature: parseFloat(settings.aiTemperature || '0.3') || 0.3,
     maxTokens: parseInt(settings.aiMaxTokens || '4000', 10) || 4000,
-    analysisInterval: parseInt(settings.aiAnalysisInterval || '0', 10) || 0,
+    analysisInterval: parseInt(settings.aiAnalysisInterval || '30', 10) || 30,
     autoTrade: settings.aiAutoTrade === 'true',
     supportsJsonMode: meta?.supportsJsonMode ?? true,
   };

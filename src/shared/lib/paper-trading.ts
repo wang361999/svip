@@ -777,8 +777,8 @@ export async function runEngine(userId: string): Promise<{
       const settingsEngine = await svc.getSettings();
       const aiConfigEngine = parseCfg(settingsEngine as unknown as Record<string, string | null>);
       if (aiConfigEngine.enabled && aiConfigEngine.analysisInterval > 0) {
-        // analysisInterval 单位：分钟
-        const intervalMs = aiConfigEngine.analysisInterval * 60 * 1000;
+        // analysisInterval 单位：秒
+        const intervalMs = aiConfigEngine.analysisInterval * 1000;
         const now = Date.now();
 
         for (const sym of symbols) {

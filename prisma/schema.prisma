@@ -165,7 +165,7 @@ model SiteSetting {
   aiModel                String?                       // 模型名称
   aiTemperature          String   @default("0.3")     // 温度参数 (0-2)
   aiMaxTokens            String   @default("4000")     // 最大 token 数
-  aiAnalysisInterval     String   @default("1")        // 自动分析间隔（分钟，0=不自动，1=每分钟）
+  aiAnalysisInterval     String   @default("30")       // 自动分析间隔（秒，0=不自动，30=每30秒）
   aiAutoTrade            String   @default("false")    // AI 信号是否触发自动开仓
 
   updatedAt              DateTime @updatedAt

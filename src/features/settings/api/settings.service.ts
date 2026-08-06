@@ -70,7 +70,7 @@ function safeSettings(fallback: Partial<SiteSetting> = {}): SiteSetting {
     aiModel: '',
     aiTemperature: '0.3',
     aiMaxTokens: '4000',
-    aiAnalysisInterval: '1',
+    aiAnalysisInterval: '30',
     aiAutoTrade: 'false',
     updatedAt: new Date(),
     ...fallback,
@@ -83,7 +83,7 @@ const AI_DEFAULTS = {
   aiProvider: 'custom',
   aiTemperature: '0.3',
   aiMaxTokens: '4000',
-  aiAnalysisInterval: '1',
+  aiAnalysisInterval: '30',
   aiAutoTrade: 'false',
 };
 

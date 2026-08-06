@@ -52,21 +52,21 @@ export default function AiAnalysisPanel() {
   const [showReasoning, setShowReasoning] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [autoAnalyze, setAutoAnalyze] = useState(true);
-  const [intervalSec, setIntervalSec] = useState(60); // 默认 60 秒（1 分钟）
-  const [nextAnalyzeIn, setNextAnalyzeIn] = useState(60); // 倒计时秒数
+  const [intervalSec, setIntervalSec] = useState(30); // 默认 30 秒
+  const [nextAnalyzeIn, setNextAnalyzeIn] = useState(30); // 倒计时秒数
+  const [analyzingRef, setAnalyzingRef] = useState(false); // 防重叠标记
 
   const fetchAnalysis = useCallback(async () => {
     try {
-      const data = await apiGet<{ latest: AiAnalysis | null; history: HistoryItem[]; analysisIntervalMin?: number }>(
+      const data = await apiGet<{ latest: AiAnalysis | null; history: HistoryItem[]; analysisIntervalSec?: number }>(
         `/api/ai-analysis?symbol=${symbol}`,
       );
       setAnalysis(data.latest);
       setHistory(data.history || []);
-      // 从后端读取分析间隔（分钟），转换为秒
-      if (data.analysisIntervalMin && data.analysisIntervalMin > 0) {
-        const sec = data.analysisIntervalMin * 60;
-        setIntervalSec(sec);
-        setNextAnalyzeIn(sec);
+      // 从后端读取分析间隔（秒），直接使用
+      if (data.analysisIntervalSec && data.analysisIntervalSec > 0) {
+        setIntervalSec(data.analysisIntervalSec);
+        setNextAnalyzeIn(data.analysisIntervalSec);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '获取分析失败');
@@ -75,8 +75,11 @@ export default function AiAnalysisPanel() {
     }
   }, [symbol]);
 
-  /** 触发 AI 分析 */
+  /** 触发 AI 分析（带防重叠保护） */
   const triggerAnalysis = useCallback(async (silent = false) => {
+    // 防重叠：上一次分析还没完成，跳过
+    if (analyzingRef) return;
+    setAnalyzingRef(true);
     if (!silent) setAnalyzing(true);
     setError('');
     try {
@@ -95,10 +98,11 @@ export default function AiAnalysisPanel() {
     } catch (err) {
       setError(err instanceof Error ? err.message : '分析失败');
     } finally {
+      setAnalyzingRef(false);
       setAnalyzing(false);
       setNextAnalyzeIn(intervalSec); // 重置倒计时
     }
-  }, [symbol, okxId, label, currentPrice, intervalSec]);
+  }, [symbol, okxId, label, currentPrice, intervalSec, analyzingRef]);
 
   // 初始加载：获取已有分析 → 如果没有则自动触发
   useEffect(() => {
@@ -165,9 +169,18 @@ export default function AiAnalysisPanel() {
           <span className="text-xs text-dark-500">{label}</span>
           {/* 自动分析状态 */}
           {autoAnalyze && (
-            <span className="flex items-center gap-1 text-xs text-green-400">
-              <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-              自动分析中 {Math.floor(nextAnalyzeIn / 60)}:{String(nextAnalyzeIn % 60).padStart(2, '0')}
+            <span className="flex items-center gap-1 text-xs">
+              {analyzingRef ? (
+                <span className="flex items-center gap-1 text-blue-400">
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-ping" />
+                  AI 分析中...
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-green-400">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+                  下次分析 {nextAnalyzeIn}s
+                </span>
+              )}
             </span>
           )}
         </div>

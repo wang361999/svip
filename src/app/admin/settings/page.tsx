@@ -104,7 +104,7 @@ export default function AdminSettingsPage() {
     aiModel: 'agnes-2.5-flash',
     aiTemperature: '0.3',
     aiMaxTokens: '4000',
-    aiAnalysisInterval: '1',
+    aiAnalysisInterval: '30',
     aiAutoTrade: 'false',
   });
   const [loading, setLoading] = useState(true);
@@ -140,7 +140,7 @@ export default function AdminSettingsPage() {
           aiModel: data.aiModel || 'agnes-2.5-flash',
           aiTemperature: data.aiTemperature || '0.3',
           aiMaxTokens: data.aiMaxTokens || '4000',
-          aiAnalysisInterval: data.aiAnalysisInterval || '1',
+          aiAnalysisInterval: data.aiAnalysisInterval || '30',
           aiAutoTrade: data.aiAutoTrade || 'false',
         });
       } catch (err) {
@@ -527,17 +527,17 @@ export default function AdminSettingsPage() {
 
                 {/* 自动分析间隔 */}
                 <div>
-                  <label className="block text-sm font-medium text-dark-300 mb-2">自动分析间隔（分钟）</label>
+                  <label className="block text-sm font-medium text-dark-300 mb-2">自动分析间隔（秒）</label>
                   <input
                     type="number"
                     min="0"
-                    max="60"
+                    max="300"
                     value={settings.aiAnalysisInterval}
                     onChange={(e) => setSettings({ ...settings, aiAnalysisInterval: e.target.value })}
                     className="input-dark"
                   />
                   <p className="text-dark-500 text-xs mt-1">
-                    每 N 分钟自动触发一次 AI 行情分析（0=不自动分析，仅手动触发，1=每分钟实时分析）
+                    每 N 秒自动触发一次 AI 行情分析（0=不自动，30=每30秒，推荐 15-60 秒）
                   </p>
                 </div>
 
