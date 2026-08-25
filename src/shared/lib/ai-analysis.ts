@@ -548,6 +548,7 @@ const SYSTEM_PROMPT = `你是严格执行「江恩八分位 + 顶底分型」的
 - 日线否决（最优先）：信号方向与 1d 结构相反（如 1d 上升 HH+HL 却想做空）→ 直接 neutral。日线结构明确时禁止逆日线给信号 — 短线回调不改变大势
 - 顺势信号：信号方向与 1h、4h 结构一致（或至少不逆 4h）且不逆 1d → 正常置信度；四周期同向共振 → 置信度 85+
 - 逆势信号：信号方向与 1h 结构相反（但不逆 1d/4h）→ 置信度上限 55（不自动开仓）；与 4h 结构也相反 → 直接 neutral
+- 共振支撑（必查）：信号方向必须在 15m/1h/4h/1d 四周期中至少一个结构同向（做多需至少一个 up，做空需至少一个 down）。四周期全震荡或全反向 → 直接 neutral，无周期支撑的方向猜测一律不给
 - 日线上升 + 1h 下降 = 大级别回调：只允许顺势多（在支撑分位等底分型），禁止抄顶做空
 - 结构不明（unknown）：不加仓不重仓，置信度上限 65
 - 结构与分位矛盾时以结构为准：如下方支撑区的底分型但 1h 是 LH+LL 下降结构，反弹多只看 4/8 不看 5/8，且置信度降档
@@ -831,16 +832,30 @@ export async function analyzeMarketWithAI(
   const parsed = extractJson(rawResponse);
   const result = normalizeResult(parsed, config, rawResponse, price);
 
-  // 6.5 日线一票否决（服务端硬约束 — AI 忽略提示词规则时代码层强制拦截）：
-  //     1d 结构明确（up/down）时，信号方向逆 1d → 强制 neutral。
-  //     短线回调不改变大势，杜绝"日线强多头里给逆势空单"这类信号与走势背离。
+  // 6.5 服务端硬否决（AI 忽略提示词规则时代码层强制拦截 — 两道闸）：
+  //     ① 日线一票否决：1d 结构明确（up/down）时信号逆 1d → 强制 neutral。
+  //        短线回调不改变大势，杜绝"日线强多头里给逆势空单"。
+  //     ② 共振支撑：信号方向在 15m/1h/4h/1d 四周期中至少一个结构同向，
+  //        全震荡或全反向（无任何周期支撑的方向猜测）→ 强制 neutral。
+  let vetoSummary: string | null = null;
+  const priceStr = price.toLocaleString('en-US', { maximumFractionDigits: price >= 100 ? 2 : 4 });
+
   if (
     (struct1d.trend === 'up' && result.direction === 'short') ||
     (struct1d.trend === 'down' && result.direction === 'long')
   ) {
     result.direction = 'neutral';
     result.confidence = Math.min(result.confidence, 50);
-    result.summary = `观望：信号方向与日线结构（${struct1d.trend === 'up' ? '上升 HH+HL' : '下降 LH+LL'}）相反，已否决 · 现价 ${price.toLocaleString('en-US', { maximumFractionDigits: 2 })} · 结构 ${struct1h.trend === 'up' ? '升' : struct1h.trend === 'down' ? '降' : struct1h.trend === 'range' ? '震' : '–'}/日线${struct1d.trend === 'up' ? '升' : '降'}`;
+    vetoSummary = `观望：信号方向与日线结构（${struct1d.trend === 'up' ? '上升 HH+HL' : '下降 LH+LL'}）相反，已否决 · 现价 ${priceStr} · 结构 ${struct1h.trend === 'up' ? '升' : struct1h.trend === 'down' ? '降' : struct1h.trend === 'range' ? '震' : '–'}/日线${struct1d.trend === 'up' ? '升' : '降'}`;
+  } else if (result.direction !== 'neutral') {
+    const trends = [struct15.trend, struct1h.trend, struct4h.trend, struct1d.trend];
+    const hasSupport =
+      result.direction === 'long' ? trends.includes('up') : trends.includes('down');
+    if (!hasSupport) {
+      result.direction = 'neutral';
+      result.confidence = Math.min(result.confidence, 50);
+      vetoSummary = `观望：信号方向无任何周期结构支撑（四周期全震荡或反向）· 现价 ${priceStr} · 结构 ${trends.map((t) => (t === 'up' ? '升' : t === 'down' ? '降' : t === 'range' ? '震' : '–')).join('/')}`;
+    }
   }
 
   // 回填江恩八分位（服务端客观计算，前端阶梯图展示；不依赖 AI 复述避免幻觉）
@@ -850,24 +865,23 @@ export async function analyzeMarketWithAI(
   // 回填多周期结构趋势（服务端客观计算，前端周期徽章展示）
   result.meta.structure = { m15: struct15.trend, h1: struct1h.trend, h4: struct4h.trend, d1: struct1d.trend };
   // 摘要改为服务端固定模板（AI 不再自由发挥文案 — 每次分析格式恒定，面板不乱）
-  // （若上方日线否决已写 summary 则保留否决理由，不再覆盖）
-  const vetoed = result.direction === 'neutral' && result.summary.startsWith('观望：信号方向与日线结构');
-  if (!vetoed) {
-    result.summary = buildDeterministicSummary(
-      result.direction,
-      result.entryPrice,
-      result.stopLoss,
-      result.takeProfit1,
-      result.takeProfit2,
-      gann,
-      fractal,
-      struct15,
-      struct1h,
-      struct4h,
-      struct1d,
-      price,
-    );
-  }
+  // （若上方否决已写 summary 则保留否决理由，不再覆盖）
+  result.summary = vetoSummary
+    ? vetoSummary
+    : buildDeterministicSummary(
+        result.direction,
+        result.entryPrice,
+        result.stopLoss,
+        result.takeProfit1,
+        result.takeProfit2,
+        gann,
+        fractal,
+        struct15,
+        struct1h,
+        struct4h,
+        struct1d,
+        price,
+      );
 
   return result;
 }
