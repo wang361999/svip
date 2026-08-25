@@ -17,6 +17,13 @@ interface AiAnalysis {
   takeProfit2: number | null;
   reasoning: string;
   keyLevels: { price: number; type: string; note: string }[] | null;
+  pullback?: {
+    expected: 'high' | 'medium' | 'low' | 'none';
+    trigger: string;
+    targets: { price: number; strength: 'strong' | 'medium' | 'weak'; basis: string }[];
+    invalidation: number | null;
+    rationale: string;
+  } | null;
   meta?: {
     regime: string;
     aPlusChecklist?: Record<string, boolean>;
@@ -71,6 +78,7 @@ export default function AiAnalysisPanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showReasoning, setShowReasoning] = useState(false);
+  const [showPullbackDetail, setShowPullbackDetail] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [autoAnalyze, setAutoAnalyze] = useState(true);
   const [intervalSec, setIntervalSec] = useState(30); // 默认 30 秒
@@ -408,6 +416,86 @@ export default function AiAnalysisPanel() {
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* 回调预判（会不会回调 / 到哪里 / 依据） */}
+          {analysis.pullback && (analysis.pullback.expected !== 'none' || analysis.pullback.trigger || analysis.pullback.rationale) && (
+            <div className="p-3 rounded-lg bg-indigo-500/5 border border-indigo-500/20">
+              {(() => {
+                const pb = analysis.pullback!;
+                const ec: Record<string, { label: string; cls: string }> = {
+                  high: { label: '大概率回调', cls: 'text-red-400 bg-red-500/10 border-red-500/30' },
+                  medium: { label: '可能回调', cls: 'text-amber-400 bg-amber-500/10 border-amber-500/30' },
+                  low: { label: '回调概率低', cls: 'text-blue-400 bg-blue-500/10 border-blue-500/30' },
+                  none: { label: '暂无回调风险', cls: 'text-dark-300 bg-dark-700/40 border-dark-600/40' },
+                };
+                const e = ec[pb.expected] || ec.none;
+                const sc: Record<string, { label: string; cls: string }> = {
+                  strong: { label: '强锚点', cls: 'text-green-400 bg-green-500/10 border-green-500/25' },
+                  medium: { label: '中', cls: 'text-amber-400 bg-amber-500/10 border-amber-500/25' },
+                  weak: { label: '弱', cls: 'text-dark-400 bg-dark-800/60 border-dark-700/40' },
+                };
+                return (
+                  <>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <svg className="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+                        </svg>
+                        <span className="text-dark-300 text-xs font-medium">回调预判</span>
+                      </div>
+                      <span className={`text-xs px-2 py-0.5 rounded border font-medium ${e.cls}`}>{e.label}</span>
+                    </div>
+                    {pb.trigger && (
+                      <p className="text-dark-400 text-xs mb-2 leading-relaxed">
+                        <span className="text-dark-500">触发条件：</span>{pb.trigger}
+                      </p>
+                    )}
+                    {pb.targets.length > 0 && (
+                      <div className="space-y-1.5 mb-2">
+                        <div className="text-dark-500 text-[11px]">回调目标位（由近到远）</div>
+                        {pb.targets.map((t, i) => (
+                          <div key={i} className="flex items-center gap-2 text-xs">
+                            <span className="text-dark-500 w-4">{i + 1}.</span>
+                            <span className="text-white font-semibold">{formatPrice(t.price)}</span>
+                            <span className={`px-1.5 py-0.5 rounded border text-[10px] ${sc[t.strength]?.cls || sc.medium.cls}`}>
+                              {sc[t.strength]?.label || '中'}
+                            </span>
+                            <span className="text-dark-400 flex-1 truncate" title={t.basis}>{t.basis}</span>
+                            {currentPrice > 0 && (
+                              <span className="text-dark-500 flex-shrink-0">
+                                {(((t.price - currentPrice) / currentPrice) * 100).toFixed(2)}%
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {pb.invalidation != null && (
+                      <div className="text-[11px] text-dark-500 mb-1">
+                        回调论失效价：<span className="text-red-400 font-medium">{formatPrice(pb.invalidation)}</span>
+                        <span className="ml-1">（越过此位回调预判作废）</span>
+                      </div>
+                    )}
+                    {pb.rationale && (
+                      <div>
+                        <button
+                          onClick={() => setShowPullbackDetail(!showPullbackDetail)}
+                          className="text-[11px] text-indigo-400 hover:text-indigo-300 transition-colors"
+                        >
+                          {showPullbackDetail ? '收起依据' : '展开依据链'}
+                        </button>
+                        {showPullbackDetail && (
+                          <p className="mt-1.5 text-dark-400 text-xs leading-relaxed whitespace-pre-wrap bg-dark-900/60 rounded p-2 border border-dark-800">
+                            {pb.rationale}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </div>
           )}
 

@@ -327,6 +327,7 @@ model AiAnalysis {
   takeProfit2   Float?                         // 止盈2
   reasoning     String   @db.Text              // 详细分析逻辑
   keyLevels     String?                        // 关键价位 JSON
+  pullback      String?                        // 回调预判 JSON：{expected, trigger, targets[{price,strength,basis}], invalidation, rationale}
   meta          String?  @db.Text              // 结构化元数据 JSON（regime 市场状态 / aPlusChecklist A+清单 / atr15m）
   riskWarning   String?                        // 风险提示
   provider      String?                        // 使用的 AI 供应商

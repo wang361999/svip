@@ -77,6 +77,7 @@ export const GET = createHandler(async ({ req }) => {
           reasoning: latest.reasoning,
           // 数据库以 TEXT 存储 JSON，必须解析后返回；前端直接 .map() 会崩溃
           keyLevels: parseKeyLevels(latest.keyLevels),
+          pullback: parsePullback(latest.pullback),
           meta: parseMeta(latest.meta),
           riskWarning: latest.riskWarning,
           provider: latest.provider,
@@ -103,6 +104,35 @@ function parseKeyLevels(raw: string | null): { price: number; type: string; note
         type: String(lv.type || '未知'),
         note: String(lv.note || ''),
       }));
+  } catch {
+    return null;
+  }
+}
+
+/** 将数据库 TEXT 列安全解析为 pullback 对象（回调预判） */
+function parsePullback(raw: string | null): NonNullable<AiAnalysisResult['pullback']> | null {
+  if (!raw) return null;
+  try {
+    const pb = JSON.parse(raw);
+    if (!pb || typeof pb !== 'object') return null;
+    const expected = ['high', 'medium', 'low', 'none'].includes(pb.expected) ? pb.expected : 'none';
+    const targets = Array.isArray(pb.targets)
+      ? pb.targets
+          .filter((t: any) => t != null && typeof t === 'object' && Number(t.price) > 0)
+          .slice(0, 3)
+          .map((t: any) => ({
+            price: Number(t.price),
+            strength: ['strong', 'medium', 'weak'].includes(t.strength) ? t.strength : 'medium',
+            basis: String(t.basis || '未标注依据'),
+          }))
+      : [];
+    return {
+      expected,
+      trigger: String(pb.trigger || ''),
+      targets,
+      invalidation: Number(pb.invalidation) > 0 ? Number(pb.invalidation) : null,
+      rationale: String(pb.rationale || ''),
+    };
   } catch {
     return null;
   }
@@ -186,6 +216,7 @@ export const POST = createHandler(async ({ req }) => {
       takeProfit2: result.takeProfit2,
       reasoning: result.reasoning,
       keyLevels: result.keyLevels ? JSON.stringify(result.keyLevels) : null,
+      pullback: result.pullback ? JSON.stringify(result.pullback) : null,
       meta: JSON.stringify(result.meta),
       riskWarning: result.riskWarning,
       provider: result.provider,
@@ -207,6 +238,7 @@ export const POST = createHandler(async ({ req }) => {
     takeProfit2: saved.takeProfit2,
     reasoning: saved.reasoning,
     keyLevels: result.keyLevels,
+    pullback: result.pullback,
     meta: result.meta,
     riskWarning: saved.riskWarning,
     provider: saved.provider,

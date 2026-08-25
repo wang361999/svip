@@ -57,6 +57,8 @@ export function ensureAiAnalysisColumns(): Promise<void> {
         `CREATE INDEX IF NOT EXISTS "AiAnalysis_createdAt_idx" ON "AiAnalysis"("createdAt")`,
         `CREATE INDEX IF NOT EXISTS "AiAnalysis_direction_idx" ON "AiAnalysis"("direction")`,
         `CREATE INDEX IF NOT EXISTS "AiAnalysis_outcome_idx" ON "AiAnalysis"("outcome")`,
+        `ALTER TABLE "AiAnalysis" ADD COLUMN IF NOT EXISTS "keyLevels" TEXT`,
+        `ALTER TABLE "AiAnalysis" ADD COLUMN IF NOT EXISTS "pullback" TEXT`,
         `ALTER TABLE "AiAnalysis" ADD COLUMN IF NOT EXISTS "meta" TEXT`,
         `ALTER TABLE "AiAnalysis" ADD COLUMN IF NOT EXISTS "outcome" TEXT`,
         `ALTER TABLE "AiAnalysis" ADD COLUMN IF NOT EXISTS "outcomePrice" DOUBLE PRECISION`,

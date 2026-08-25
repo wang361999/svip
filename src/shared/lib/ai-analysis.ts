@@ -140,6 +140,14 @@ export interface AiAnalysisResult {
   takeProfit2: number | null;
   reasoning: string;
   keyLevels: { price: number; type: string; note: string }[] | null;
+  /** 回调预判：会不会回调 / 回调到哪里 / 依据是什么 */
+  pullback: {
+    expected: 'high' | 'medium' | 'low' | 'none';
+    trigger: string;
+    targets: { price: number; strength: 'strong' | 'medium' | 'weak'; basis: string }[];
+    invalidation: number | null;
+    rationale: string;
+  } | null;
   riskWarning: string | null;
   provider: string;
   model: string;
@@ -246,6 +254,97 @@ function detectSwings(klines: KlineData[], lookback = 20, radius = 2): { type: '
     if (isLow) swings.push({ type: 'L', price: seg[i].low });
   }
   return swings;
+}
+
+// ==================== 回调锚点（客观依据：回调预判不靠 AI 凭空报价位） ====================
+
+export interface PullbackAnchor {
+  price: number;
+  basis: string;   // 依据描述（菲氏回撤/EMA/摆动点/前高等）
+  distancePct: number; // 相对当前价距离（回调方向为负）
+}
+
+/**
+ * 计算回调参考锚点：近 12 小时摆动区间的斐波那契回撤 + 动态均线 + 摆动点
+ * 上升腿 → 回调位在下方（支撑）；下降腿 → 反弹位在上方（阻力）
+ * 只保留回调方向一侧、距离 0.15%~4% 的锚点，按由近到远排序，最多 6 个
+ */
+export function computePullbackAnchors(
+  k15m: KlineData[],
+  currentPrice: number,
+): { direction: 'up-leg' | 'down-leg'; swingLow: number; swingHigh: number; anchors: PullbackAnchor[] } | null {
+  if (k15m.length < 40 || !currentPrice) return null;
+
+  // 近 12 小时（48 根 15m）摆动区间
+  const win = k15m.slice(-48);
+  let swingHigh = -Infinity;
+  let swingLow = Infinity;
+  let hiIdx = -1;
+  let loIdx = -1;
+  win.forEach((k, i) => {
+    if (k.high > swingHigh) { swingHigh = k.high; hiIdx = i; }
+    if (k.low < swingLow) { swingLow = k.low; loIdx = i; }
+  });
+
+  const range = swingHigh - swingLow;
+  if (range <= 0 || swingHigh === Infinity || swingLow === -Infinity) return null;
+
+  // 低点在前高点在后 = 上升腿（回调看下方）；反之下降腿（反弹看上方）
+  const isUpLeg = loIdx < hiIdx;
+  const side = isUpLeg ? 'below' : 'above'; // 回调锚点所在侧
+
+  const anchors: PullbackAnchor[] = [];
+  const push = (price: number | null | undefined, basis: string) => {
+    if (price == null || !Number.isFinite(price) || price <= 0) return;
+    const distPct = ((price - currentPrice) / currentPrice) * 100;
+    // 只留回调方向一侧、距离 0.15%~4% 的锚点
+    const onSide = side === 'below' ? distPct < -0.15 : distPct > 0.15;
+    if (!onSide || Math.abs(distPct) > 4) return;
+    if (anchors.some((a) => Math.abs(a.price - price) / price < 0.0015)) return; // 去重（0.15% 内算同位）
+    anchors.push({ price, basis, distancePct: Number(distPct.toFixed(2)) });
+  };
+
+  // 1) 斐波那契回撤（主锚点）
+  for (const f of [0.382, 0.5, 0.618]) {
+    const fib = isUpLeg ? swingHigh - range * f : swingLow + range * f;
+    push(fib, `斐波那契 ${(f * 100).toFixed(1)}% 回撤`);
+  }
+
+  // 2) 动态均线（趋势中的回调吸附位）
+  const last = k15m.length - 1;
+  const ema20Arr = calcEMAArray(k15m, 20);
+  const ma50Arr = calcSMAArray(k15m, 50);
+  push(ema20Arr[last] as number | null, 'EMA20(15m) 动态支撑/阻力');
+  push(ma50Arr[last] as number | null, 'MA50(15m) 动态支撑/阻力');
+
+  // 3) 近端摆动点（最近的已确认枢轴，突破后常回踩确认）
+  const swings = detectSwings(k15m, 60, 2);
+  const recent = swings.slice(-4).reverse(); // 由近到远
+  for (const s of recent) {
+    push(s.price, s.type === 'H' ? '摆动高点（突破后回踩位）' : '摆动低点（跌破后反抽位）');
+  }
+
+  // 4) 摆动区间另一端（腿的起点，最深回调位）
+  push(isUpLeg ? swingLow : swingHigh, isUpLeg ? '本轮上升腿起点（深度回调极限）' : '本轮下降腿起点（深度反弹极限）');
+
+  // 按距离当前价由近到远
+  anchors.sort((a, b) => Math.abs(a.distancePct) - Math.abs(b.distancePct));
+  return { direction: isUpLeg ? 'up-leg' : 'down-leg', swingLow, swingHigh, anchors: anchors.slice(0, 6) };
+}
+
+/** 回调锚点文本（注入 prompt，要求 AI 回调判断必须引用这些价位） */
+function buildPullbackAnchorText(a: ReturnType<typeof computePullbackAnchors>, currentPrice: number): string {
+  if (!a) return '=== 回调参考锚点 ===\nK线数据不足，无法计算锚点';
+  const leg = a.direction === 'up-leg'
+    ? `上升腿（低 ${a.swingLow} → 高 ${a.swingHigh}），回调方向 = 下方支撑`
+    : `下降腿（高 ${a.swingHigh} → 低 ${a.swingLow}），反弹方向 = 上方阻力`;
+  const lines = a.anchors.map(
+    (n) => `- ${n.price}（${n.basis}，${n.distancePct > 0 ? '+' : ''}${n.distancePct}%）`,
+  );
+  return `=== 回调参考锚点（客观数据，回调预判必须引用） ===
+当前价 ${currentPrice}，近12小时${leg}
+候选回调位（由近到远）：
+${lines.join('\n')}`;
 }
 
 /** 根据摆动点序列判断市场结构（HH/HL=上升，LH/LL=下降，否则震荡） */
@@ -366,6 +465,14 @@ const SYSTEM_PROMPT = `你是一位顶级加密货币短线合约交易员，交
 - 若近期方向错误率高：信号矛盾时优先 neutral，不要强行选边
 - 连胜时不放宽标准；这不是让你机械跟随战绩，而是从错误模式中修正判断框架
 
+第六步：回调预判（会不会回调 / 回调到哪里 / 依据是什么）
+- 数据会提供「回调参考锚点」（斐波那契回撤/EMA/MA/摆动点，均为客观数值）。你的回调目标位必须引用这些锚点，禁止凭空报价位
+- expected 判定标准：>=3 条独立证据（如缩量新高+RSI超买+资金费率极端）= high；2条 = medium；1条 = low；无证据 = none
+- 常用回调证据：量价背离（价创新高量能递减）、RSI 超买超卖、连续长阳后的超买乖离（偏离EMA20过远）、资金费率极端拥挤、前高/前低多次触碰未破、K线滞涨形态（长上影/十字星）
+- targets 最多 3 档，由近到远，每档必须标注 basis（锚点依据）和 strength（strong=多重锚点重叠，medium=单一明确锚点，weak=仅测算位）
+- invalidation：回调论失效价 — 价格越过此位（多单场景=突破前高继续走强），回调预判作废
+- 回调预判与方向判断独立：做多也可以预判「先回调到 X 再涨」；此时 entryPrice 应设在回调位附近而非现价追多
+
 风控铁律：
 1. 单笔风险不超过 2%；止盈第一目标 1.5R-2R，第二目标 3R
 2. 震荡/碎波市宁可观望也要给 neutral；不交易也是一种交易
@@ -385,6 +492,13 @@ const SYSTEM_PROMPT = `你是一位顶级加密货币短线合约交易员，交
   "takeProfit2": 数字或null,
   "reasoning": "详细分析：regime判定依据 → 多周期结构 → BTC联动 → 衍生品/量能 → 无效点与盈亏比",
   "keyLevels": [{"price": 数字, "type": "支撑/阻力/前高/前低", "note": "说明"}],
+  "pullback": {
+    "expected": "high" | "medium" | "low" | "none",
+    "trigger": "什么情况下会触发回调（具体证据，如：再冲前高量能不足/费率极端多头拥挤）",
+    "targets": [{"price": 数字, "strength": "strong|medium|weak", "basis": "依据（必须是数据锚点：斐波那契38.2%回撤/EMA20/摆动高点等）"}],
+    "invalidation": 数字或null,
+    "rationale": "回调判断的完整证据链：为什么判这个方向、为什么到这个价位、为什么在此止跌/受阻"
+  },
   "riskWarning": "当前市场风险提示",
   "checklist": {
     "regimeClear": 布尔,
@@ -465,6 +579,8 @@ function buildUserPrompt(
   const ind15m = computeIndicatorSnapshot(k15m);
   const ind1h = computeIndicatorSnapshot(k1h);
   const regimeHint = computeRegimeHint(k15m);
+  const pullbackAnchors = computePullbackAnchors(k15m, currentPrice);
+  const pullbackAnchorText = buildPullbackAnchorText(pullbackAnchors, currentPrice);
 
   return `请分析以下 ${label} (${symbol}) 的实时行情数据：
 
@@ -475,6 +591,8 @@ function buildUserPrompt(
 15m ATR(14): ${atr15m != null ? `${atr15m.toFixed(2)}（现价的 ${(atr15m / currentPrice * 100).toFixed(2)}%）；止损距离应控制在 0.5-1.5 倍 ATR = ${(atr15m * 0.5).toFixed(2)} ~ ${(atr15m * 1.5).toFixed(2)}` : '暂无'}
 
 ${buildTimeContext()}
+
+${pullbackAnchorText}
 
 ${feedbackText}
 
@@ -642,6 +760,34 @@ function normalizeResult(parsed: any, config: AiConfig, rawResponse: string, cur
     keyLevels = cleaned.length > 0 ? cleaned : null;
   }
 
+  // ===== 回调预判清洗：expected 枚举校验 + 目标价位合法性（最多 3 档，价格必须为正）=====
+  let pullback: AiAnalysisResult['pullback'] = null;
+  if (parsed.pullback && typeof parsed.pullback === 'object') {
+    const pb = parsed.pullback;
+    const expected = ['high', 'medium', 'low', 'none'].includes(pb.expected) ? pb.expected : 'none';
+    const targets = Array.isArray(pb.targets)
+      ? pb.targets
+          .filter((t: any) => t != null && typeof t === 'object' && Number.isFinite(Number(t.price)) && Number(t.price) > 0)
+          .slice(0, 3)
+          .map((t: any) => ({
+            price: Number(t.price),
+            strength: ['strong', 'medium', 'weak'].includes(t.strength) ? t.strength : 'medium',
+            basis: String(t.basis || '未标注依据'),
+          }))
+      : [];
+    const invalidRaw = Number(pb.invalidation);
+    pullback = {
+      expected,
+      trigger: String(pb.trigger || ''),
+      // expected=none 时目标位无意义，清空
+      targets: expected === 'none' ? [] : targets,
+      invalidation: expected === 'none' ? null : (Number.isFinite(invalidRaw) && invalidRaw > 0 ? invalidRaw : null),
+      rationale: String(pb.rationale || ''),
+    };
+    // 完全空的回调对象视为无回调分析
+    if (expected === 'none' && !pullback.trigger && !pullback.rationale) pullback = null;
+  }
+
   // ===== 结构化元数据：regime + A+ 清单 =====
   // regime 缺省/非法时按 direction 反推中性偏保守值（neutral 方向无法开仓，regime 值影响不大）
   const regime: AiAnalysisResult['meta']['regime'] =
@@ -662,6 +808,7 @@ function normalizeResult(parsed: any, config: AiConfig, rawResponse: string, cur
     takeProfit2,
     reasoning: String(parsed.reasoning || '无分析'),
     keyLevels,
+    pullback,
     riskWarning: parsed.riskWarning ? String(parsed.riskWarning) : null,
     provider: config.provider,
     model: config.model,
