@@ -537,7 +537,7 @@ export default function AdminSettingsPage() {
                     className="input-dark"
                   />
                   <p className="text-dark-500 text-xs mt-1">
-                    每 N 秒自动触发一次 AI 行情分析（0=不自动，30=每30秒，推荐 15-60 秒）
+                    每 N 秒自动分析一次「当前选中币种」（0=不自动，30=每30秒，推荐 15-60 秒）。仅前端 AI 面板对正在查看的币种触发，引擎不会批量分析所有币种
                   </p>
                 </div>
 

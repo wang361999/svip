@@ -800,68 +800,9 @@ export async function runEngine(userId: string): Promise<{
       result.errors.push(`AI 信号处理异常: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    // 4c. 引擎自动触发 AI 分析（基于 aiAnalysisInterval 配置）
-    // analysisInterval > 0 时，检查各币种最新分析时间，超过间隔则触发
-    try {
-      const { settingsService: svc } = await import('@/features/settings/api/settings.service');
-      const { parseAiConfig: parseCfg, analyzeMarketWithAI: analyzeAI } = await import('./ai-analysis');
-      const settingsEngine = await svc.getSettings();
-      const aiConfigEngine = parseCfg(settingsEngine as unknown as Record<string, string | null>);
-      if (aiConfigEngine.enabled && aiConfigEngine.analysisInterval > 0) {
-        // analysisInterval 单位：秒
-        const intervalMs = aiConfigEngine.analysisInterval * 1000;
-        const now = Date.now();
-
-        for (const sym of symbols) {
-          // 查询该币种最新的 AI 分析记录
-          const latest = await prisma.aiAnalysis.findFirst({
-            where: { symbol: sym.symbol },
-            orderBy: { createdAt: 'desc' },
-            select: { createdAt: true },
-          });
-
-          const ageMs = latest ? now - latest.createdAt.getTime() : Infinity;
-          if (ageMs < intervalMs) continue; // 还没到间隔时间
-
-          const price = priceMap[sym.symbol];
-          if (!price || price <= 0) continue;
-
-          // 触发 AI 分析（fire-and-forget，不阻塞引擎）
-          // 使用 Promise + timeout 防止卡住
-          analyzeAI(aiConfigEngine, sym.symbol, sym.okxId, sym.label, price)
-            .then(async (aiResult) => {
-              try {
-                await prisma.aiAnalysis.create({
-                  data: {
-                    symbol: sym.symbol,
-                    direction: aiResult.direction,
-                    confidence: aiResult.confidence,
-                    summary: aiResult.summary,
-                    entryPrice: aiResult.entryPrice,
-                    stopLoss: aiResult.stopLoss,
-                    takeProfit1: aiResult.takeProfit1,
-                    takeProfit2: aiResult.takeProfit2,
-                    reasoning: aiResult.reasoning,
-                    keyLevels: aiResult.keyLevels ? JSON.stringify(aiResult.keyLevels) : null,
-                    riskWarning: aiResult.riskWarning,
-                    provider: aiResult.provider,
-                    model: aiResult.model,
-                    rawResponse: aiResult.rawResponse,
-                  },
-                });
-              } catch {}
-            })
-            .catch(() => {
-              // AI 分析失败不影响引擎主流程
-            });
-
-          // 只触发第一个需要分析的币种，避免并发过多
-          break;
-        }
-      }
-    } catch {
-      // AI 分析触发失败不影响引擎
-    }
+    // 4c. AI 分析只由前端面板对「当前选中币种」触发（POST /api/ai-analysis），
+    //     引擎不再批量分析所有币种（避免烧 AI 额度、分析用户没在看的币种）。
+    //     引擎只消费已有分析结果做自动开仓判断（上面的 4b 段）。
 
     // 5. 每次引擎执行都记录日志（方便排查 Cron 触发是否正常）
     try {
