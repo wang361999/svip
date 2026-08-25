@@ -627,10 +627,23 @@ export async function runEngine(userId: string): Promise<{
       : undefined;
     const autoTargets = targetSymbolMeta ? [targetSymbolMeta] : [];
 
-    // 并行获取所有币种价格（覆盖持仓币种，保证止损止盈正常巡检）
+    // 3. 检查止损止盈（遍历所有持仓）— 提前查询，供下方精准取价
+    const positions = await prisma.paperPosition.findMany({
+      where: { userId, status: 'open' },
+    });
+    result.checked = positions.length;
+
+    // 并行获取「需要的」币种价格：持仓币种（止损止盈巡检 + 浮盈刷新）+ 当前选中币种（自动开仓/引擎日志）
+    // 优化：此前每 5 秒全量拉取所有前台币种价格，是免费版 CPU 配额的最大消耗源；持仓外的价格从未被使用
+    const neededSymbols = new Set<string>(positions.map((p) => p.symbol));
+    if (account.currentSymbol) neededSymbols.add(account.currentSymbol);
+    if (targetSymbolMeta && targetSymbolMeta.symbol !== account.currentSymbol) neededSymbols.add(targetSymbolMeta.symbol);
     const priceMap: Record<string, number> = {};
     const priceResults = await Promise.allSettled(
-      allSymbols.map((s) => fetchPrice(s.symbol, s.okxId).then((price) => ({ symbol: s.symbol, price }))),
+      Array.from(neededSymbols).map((sym) => {
+        const meta = allSymbols.find((s) => s.symbol === sym);
+        return fetchPrice(sym, meta?.okxId || sym.replace('USDT', '-USDT')).then((price) => ({ symbol: sym, price }));
+      }),
     );
     for (const r of priceResults) {
       if (r.status === 'fulfilled' && r.value.price && r.value.price > 0) {
@@ -638,19 +651,15 @@ export async function runEngine(userId: string): Promise<{
       }
     }
 
-    if (Object.keys(priceMap).length === 0) {
-      result.errors.push('无法获取任何币种价格');
+    // 持仓巡检需要价格，一个都拿不到时才视为行情异常
+    const heldSymbols = new Set(positions.map((p) => p.symbol));
+    if (heldSymbols.size > 0 && Array.from(heldSymbols).every((s) => !priceMap[s])) {
+      result.errors.push('无法获取持仓币种价格');
       return result;
     }
 
     // 2. 刷新浮盈（按币种）
     await refreshUnrealizedPnl(userId, priceMap);
-
-    // 3. 检查止损止盈（遍历所有持仓）
-    const positions = await prisma.paperPosition.findMany({
-      where: { userId, status: 'open' },
-    });
-    result.checked = positions.length;
 
     // 持仓方向索引：symbol:side → 是否已持仓
     // 开仓成功后同步写入，防止同一次引擎运行内重复开同方向仓位

@@ -55,6 +55,24 @@ const BINANCE_WS = [
 
 // ========== K线获取 ==========
 
+/**
+ * K线分级缓存（Vercel 免费 4 CPU-hrs 配额优化）
+ * 一根 5m 蜡烛 5 分钟才更新一次，缓存期内数据实质不变；
+ * 多标签页 / 多组件并发拉同一周期时直接复用，砍掉重复的出站请求与 JSON 解析
+ */
+const KLINE_TTL_MS: Record<string, number> = {
+  '1m': 5_000,
+  '5m': 10_000,
+  '15m': 20_000,
+  '30m': 30_000,
+  '1h': 60_000,
+  '4h': 300_000,
+  '1d': 600_000,
+};
+const klineCache = new Map<string, { data: KlineData[]; at: number }>();
+/** 进行中的 K线请求去重：同一瞬间多个调用共享一次出站请求 */
+const klineInflight = new Map<string, Promise<KlineData[]>>();
+
 async function getBinanceKlinesDirect(symbol: string, interval: string, limit: number): Promise<KlineData[]> {
   for (const base of BINANCE_REST) {
     try {
@@ -102,33 +120,64 @@ async function getOkxKlinesDirect(okxId: string, interval: string, limit: number
 }
 
 export async function fetchKlines(symbol: string, okxId: string, interval: string, limit: number = 300): Promise<KlineData[]> {
-  // 1. 直连 Binance 公开节点
-  let klines = await getBinanceKlinesDirect(symbol, interval, limit);
-  if (klines.length > 0) return klines;
+  // 0. 命中缓存直接返回（TTL 按周期分级，均远小于该周期一根蜡烛的更新时间）
+  const key = `${symbol}|${interval}|${limit}`;
+  const cached = klineCache.get(key);
+  if (cached && Date.now() - cached.at < (KLINE_TTL_MS[interval] ?? 10_000)) {
+    return cached.data;
+  }
 
-  // 2. 直连 OKX
-  klines = await getOkxKlinesDirect(okxId, interval, limit);
-  if (klines.length > 0) return klines;
+  // 0.5 并发去重：同一请求已在进行中，直接共享（避免多标签页同时触发重复拉取）
+  const inflight = klineInflight.get(key);
+  if (inflight) return inflight;
 
-  // 3. Vercel API 代理
-  try {
-    const res = await fetchWithTimeout(`/api/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`, 8000);
-    if (res.ok) {
-      const data = await res.json();
-      if (Array.isArray(data) && data.length > 0) {
-        return data.map((k: any[]) => ({
-          time: Math.floor(k[0] / 1000),
-          open: parseFloat(k[1]),
-          high: parseFloat(k[2]),
-          low: parseFloat(k[3]),
-          close: parseFloat(k[4]),
-          volume: parseFloat(k[5]),
-        }));
-      }
+  const task = (async (): Promise<KlineData[]> => {
+    try {
+      // 1. 直连 Binance 公开节点
+      let klines = await getBinanceKlinesDirect(symbol, interval, limit);
+      if (klines.length > 0) return klines;
+
+      // 2. 直连 OKX
+      klines = await getOkxKlinesDirect(okxId, interval, limit);
+      if (klines.length > 0) return klines;
+
+      // 3. Vercel API 代理
+      try {
+        const res = await fetchWithTimeout(`/api/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`, 8000);
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data) && data.length > 0) {
+            return data.map((k: any[]) => ({
+              time: Math.floor(k[0] / 1000),
+              open: parseFloat(k[1]),
+              high: parseFloat(k[2]),
+              low: parseFloat(k[3]),
+              close: parseFloat(k[4]),
+              volume: parseFloat(k[5]),
+            }));
+          }
+        }
+      } catch {}
+
+      throw new Error('所有行情源不可用，请检查网络');
+    } finally {
+      klineInflight.delete(key);
     }
-  } catch {}
+  })();
 
-  throw new Error('所有行情源不可用，请检查网络');
+  klineInflight.set(key, task);
+
+  const result = await task;
+  // 仅成功结果入缓存（空数组/异常不缓存，下次调用重试）
+  if (result.length > 0) {
+    klineCache.set(key, { data: result, at: Date.now() });
+    // 防泄漏：缓存条目超过 64 个时清掉最旧的一半
+    if (klineCache.size > 64) {
+      const entries = Array.from(klineCache.entries()).sort((a, b) => a[1].at - b[1].at);
+      for (let i = 0; i < Math.floor(entries.length / 2); i++) klineCache.delete(entries[i][0]);
+    }
+  }
+  return result;
 }
 
 // ========== 价格获取 ==========
@@ -157,21 +206,42 @@ async function getOkxPriceDirect(okxId: string): Promise<number | null> {
   return null;
 }
 
+/**
+ * 价格微缓存（2.5 秒）：引擎每 5 秒巡检、AI 分析、面板刷新并发取价时共享一次出站请求
+ * SL/TP 巡检场景下 2.5 秒内的价格差异无实际影响（前端 WS 实时价独立更新，不走这里）
+ */
+const priceCache = new Map<string, { price: number; at: number }>();
+const PRICE_TTL_MS = 2500;
+
 export async function fetchPrice(symbol: string, okxId: string): Promise<number | null> {
+  const key = `${symbol}|${okxId}`;
+  const cached = priceCache.get(key);
+  if (cached && Date.now() - cached.at < PRICE_TTL_MS) return cached.price;
+
   // 1. Binance 直连
   let price = await getBinancePriceDirect(symbol);
-  if (price) return price;
+  if (price) {
+    priceCache.set(key, { price, at: Date.now() });
+    return price;
+  }
 
   // 2. OKX 直连
   price = await getOkxPriceDirect(okxId);
-  if (price) return price;
+  if (price) {
+    priceCache.set(key, { price, at: Date.now() });
+    return price;
+  }
 
   // 3. Vercel API 代理
   try {
     const res = await fetchWithTimeout(`/api/ticker?symbol=${symbol}`, 5000);
     if (res.ok) {
       const data = await res.json();
-      if (data.price) return parseFloat(data.price);
+      if (data.price) {
+        const p = parseFloat(data.price);
+        priceCache.set(key, { price: p, at: Date.now() });
+        return p;
+      }
     }
   } catch {}
 

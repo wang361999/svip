@@ -195,7 +195,63 @@ const analyzeSchema = z.object({
   okxId: z.string().min(1),
   label: z.string().min(1),
   currentPrice: z.number().positive().optional(),
+  /** 手动「立即分析」= true 时绕过冷却强制重新分析 */
+  force: z.boolean().optional(),
 });
+
+/**
+ * 分析冷却（Vercel 免费 CPU 配额优化）：
+ * - 自动分析间隔 ≥ 30 秒，冷却 25 秒不影响正常节奏，只拦多标签页/切币回切等重复触发
+ * - 进行中的同币种分析共享同一次 AI 调用，避免并发重复计算
+ */
+const ANALYSIS_COOLDOWN_MS = 25_000;
+const inflightAnalyses = new Map<string, Promise<AnalysisResponse>>();
+
+/** 数据库记录 → 前端响应结构（TEXT 列解析 + 字段对齐） */
+type AnalysisRecord = {
+  id: string;
+  symbol: string;
+  direction: string;
+  confidence: number;
+  summary: string;
+  entryPrice: number | null;
+  stopLoss: number | null;
+  takeProfit1: number | null;
+  takeProfit2: number | null;
+  reasoning: string;
+  keyLevels: string | null;
+  meta: string | null;
+  riskWarning: string | null;
+  provider: string | null;
+  model: string | null;
+  createdAt: Date;
+};
+type AnalysisResponse = Omit<AnalysisRecord, 'keyLevels' | 'meta' | 'createdAt'> & {
+  keyLevels: { price: number; type: string; note: string }[] | null;
+  meta: ReturnType<typeof parseMeta>;
+  createdAt: string;
+};
+
+function recordToResponse(rec: AnalysisRecord): AnalysisResponse {
+  return {
+    id: rec.id,
+    symbol: rec.symbol,
+    direction: rec.direction,
+    confidence: rec.confidence,
+    summary: rec.summary,
+    entryPrice: rec.entryPrice,
+    stopLoss: rec.stopLoss,
+    takeProfit1: rec.takeProfit1,
+    takeProfit2: rec.takeProfit2,
+    reasoning: rec.reasoning,
+    keyLevels: parseKeyLevels(rec.keyLevels),
+    meta: parseMeta(rec.meta),
+    riskWarning: rec.riskWarning,
+    provider: rec.provider,
+    model: rec.model,
+    createdAt: rec.createdAt.toISOString(),
+  };
+}
 
 export const POST = createHandler(async ({ req }) => {
   requireUser();
@@ -216,59 +272,72 @@ export const POST = createHandler(async ({ req }) => {
     return apiError('AI_NOT_CONFIGURED', 'AI 模型配置不完整，请检查 API 地址、Key 和模型名称', 400);
   }
 
-  // 2. 执行 AI 分析
-  let result: AiAnalysisResult;
-  try {
-    result = await analyzeMarketWithAI(
-      config,
-      input.symbol,
-      input.okxId,
-      input.label,
-      input.currentPrice,
-    );
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return apiError('AI_ANALYSIS_FAILED', `AI 分析失败: ${message}`, 500);
+  // 1.5 并发去重：同币种分析进行中，直接共享这一次的结果
+  const inflight = inflightAnalyses.get(input.symbol);
+  if (inflight) {
+    return apiSuccess(await inflight);
   }
 
-  // 3. 存储分析结果
-  const saved = await prisma.aiAnalysis.create({
-    data: {
-      symbol: input.symbol,
-      direction: result.direction,
-      confidence: result.confidence,
-      summary: result.summary,
-      entryPrice: result.entryPrice,
-      stopLoss: result.stopLoss,
-      takeProfit1: result.takeProfit1,
-      takeProfit2: result.takeProfit2,
-      reasoning: result.reasoning,
-      keyLevels: result.keyLevels ? JSON.stringify(result.keyLevels) : null,
-      meta: JSON.stringify(result.meta),
-      riskWarning: result.riskWarning,
-      provider: result.provider,
-      model: result.model,
-      rawResponse: result.rawResponse,
-    },
-  });
+  // 1.6 冷却：非 force 请求在冷却期内直接返回上次结果（自动触发防重复；手动分析传 force 绕过）
+  if (!input.force) {
+    const latest = await prisma.aiAnalysis.findFirst({
+      where: { symbol: input.symbol },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (latest && Date.now() - latest.createdAt.getTime() < ANALYSIS_COOLDOWN_MS) {
+      return apiSuccess(recordToResponse(latest));
+    }
+  }
 
-  // 4. 返回结果（不含 rawResponse，减少传输量）
-  return apiSuccess({
-    id: saved.id,
-    symbol: saved.symbol,
-    direction: saved.direction,
-    confidence: saved.confidence,
-    summary: saved.summary,
-    entryPrice: saved.entryPrice,
-    stopLoss: saved.stopLoss,
-    takeProfit1: saved.takeProfit1,
-    takeProfit2: saved.takeProfit2,
-    reasoning: saved.reasoning,
-    keyLevels: result.keyLevels,
-    meta: result.meta,
-    riskWarning: saved.riskWarning,
-    provider: saved.provider,
-    model: saved.model,
-    createdAt: saved.createdAt.toISOString(),
-  });
+  // 2. 执行 AI 分析（登记 in-flight，期间到达的同币种请求共享）
+  const task = (async (): Promise<AnalysisResponse> => {
+    let result: AiAnalysisResult;
+    try {
+      result = await analyzeMarketWithAI(
+        config,
+        input.symbol,
+        input.okxId,
+        input.label,
+        input.currentPrice,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`AI 分析失败: ${message}`);
+    }
+
+    // 3. 存储分析结果（rawResponse 为调试字段且无读取方，不再每次落库，省序列化与写入）
+    const saved = await prisma.aiAnalysis.create({
+      data: {
+        symbol: input.symbol,
+        direction: result.direction,
+        confidence: result.confidence,
+        summary: result.summary,
+        entryPrice: result.entryPrice,
+        stopLoss: result.stopLoss,
+        takeProfit1: result.takeProfit1,
+        takeProfit2: result.takeProfit2,
+        reasoning: result.reasoning,
+        keyLevels: result.keyLevels ? JSON.stringify(result.keyLevels) : null,
+        meta: JSON.stringify(result.meta),
+        riskWarning: result.riskWarning,
+        provider: result.provider,
+        model: result.model,
+        rawResponse: null,
+      },
+    });
+
+    // 4. 返回结果（不含 rawResponse，减少传输量）
+    return recordToResponse(saved);
+  })();
+
+  inflightAnalyses.set(input.symbol, task);
+  try {
+    return apiSuccess(await task);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return apiError('AI_ANALYSIS_FAILED', message, 500);
+  } finally {
+    inflightAnalyses.delete(input.symbol);
+  }
 });
+

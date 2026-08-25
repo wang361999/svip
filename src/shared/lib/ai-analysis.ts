@@ -818,7 +818,7 @@ export async function analyzeMarketWithAI(
     fetchKlines(symbol, okxId, '5m', 200).catch(() => []),
     fetchKlines(symbol, okxId, '15m', 200).catch(() => []),
     fetchKlines(symbol, okxId, '1h', 200).catch(() => []),
-    fetchKlines(symbol, okxId, '4h', 120).catch(() => []),
+    fetchKlines(symbol, okxId, '4h', 60).catch(() => []),
     fetchKlines(symbol, okxId, '1d', 60).catch(() => []),
     fetchMarketContext(symbol, okxId).catch(() => null),
     // 分析山寨币时必看 BTC；分析 BTC 自身时跳过（避免冗余）

@@ -123,6 +123,8 @@ export default function AiAnalysisPanel() {
         okxId,
         label,
         currentPrice: currentPrice > 0 ? currentPrice : undefined,
+        // 手动点击「立即分析」绕过服务端冷却强制重新分析；自动/静默触发不传，命中冷却直接复用上次结果
+        force: !silent,
       });
       setAnalysis({ ...result, keyLevels: safeKeyLevels(result.keyLevels) });
       // 刷新历史列表
