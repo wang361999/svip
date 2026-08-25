@@ -213,6 +213,36 @@ function computeIndicatorSnapshot(klines: KlineData[]): IndicatorSnapshot {
 
 // ==================== Prompt 构建 ====================
 
+/** 检测摆动高低点（枢轴点：左右各2根K线更低→摆动高点；更高→摆动低点） */
+function detectSwings(klines: KlineData[], lookback = 20, radius = 2): { type: 'H' | 'L'; price: number }[] {
+  const seg = klines.slice(-lookback);
+  const swings: { type: 'H' | 'L'; price: number }[] = [];
+  for (let i = radius; i < seg.length - radius; i++) {
+    let isHigh = true;
+    let isLow = true;
+    for (let j = i - radius; j <= i + radius; j++) {
+      if (j === i) continue;
+      if (seg[j].high >= seg[i].high) isHigh = false;
+      if (seg[j].low <= seg[i].low) isLow = false;
+    }
+    if (isHigh) swings.push({ type: 'H', price: seg[i].high });
+    if (isLow) swings.push({ type: 'L', price: seg[i].low });
+  }
+  return swings;
+}
+
+/** 根据摆动点序列判断市场结构（HH/HL=上升，LH/LL=下降，否则震荡） */
+function classifyStructure(swings: { type: 'H' | 'L'; price: number }[]): string {
+  const highs = swings.filter((s) => s.type === 'H');
+  const lows = swings.filter((s) => s.type === 'L');
+  if (highs.length < 2 || lows.length < 2) return '结构不明（摆动点不足）';
+  const hh = highs[highs.length - 1].price > highs[highs.length - 2].price;
+  const hl = lows[lows.length - 1].price > lows[lows.length - 2].price;
+  if (hh && hl) return '上升结构(HH+HL)';
+  if (!hh && !hl) return '下降结构(LH+LL)';
+  return '震荡结构(高低点方向分歧)';
+}
+
 /** 构建 K 线摘要文本（避免传太多数据消耗 token） */
 function buildKlineSummary(klines: KlineData[], label: string): string {
   if (klines.length === 0) return `${label}: 无数据`;
@@ -230,12 +260,25 @@ function buildKlineSummary(klines: KlineData[], label: string): string {
   // 计算涨跌幅
   const changePct = prev.close > 0 ? ((last.close - prev.close) / prev.close * 100) : 0;
 
+  // 市场结构：摆动高低点序列 + 趋势形态判断
+  const swings = detectSwings(recent20);
+  const structure = classifyStructure(swings);
+  const swingText = swings.length > 0
+    ? swings.slice(-4).map((s) => `${s.type}=${s.price}`).join(' → ')
+    : '无';
+
+  // 量能：最新一根相对均量的放大/萎缩（判断突破是否有量能配合）
+  const volRatio = avgVol > 0 ? last.volume / avgVol : 0;
+  const volStatus = volRatio >= 1.5 ? '显著放量' : volRatio >= 1.1 ? '温和放量' : volRatio <= 0.6 ? '明显缩量' : '量能持平';
+
   return `${label}:
   最新K线: O=${last.open} H=${last.high} L=${last.low} C=${last.close} V=${last.volume.toFixed(2)}
   涨跌幅: ${changePct.toFixed(2)}%
   近20根最高: ${high20}, 最低: ${low20}
   近20根均价: ${(recentCloses.reduce((s, c) => s + c, 0) / recentCloses.length).toFixed(2)}
-  近20根均量: ${avgVol.toFixed(2)}`;
+  近20根均量: ${avgVol.toFixed(2)}
+  市场结构: ${structure} | 摆动点(旧→新): ${swingText}
+  量能对比: 最新量为均量的 ${volRatio.toFixed(2)} 倍 (${volStatus})`;
 }
 
 /** 构建技术指标摘要 */

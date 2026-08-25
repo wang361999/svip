@@ -19,6 +19,23 @@ interface AiAnalysisRecord {
   createdAt: string;
 }
 
+interface AiStatItem {
+  total: number;
+  wins: number;
+  winRate: number;
+  avgPnl: number;
+  sumPnl: number;
+  avgWin: number;
+  avgLoss: number;
+}
+
+interface AiStats {
+  sampleSize: number;
+  overall: AiStatItem;
+  byModel: (AiStatItem & { model: string })[];
+  byConfidence: (AiStatItem & { band: string })[];
+}
+
 const directionConfig: Record<string, { label: string; color: string; icon: string }> = {
   long: { label: '做多', color: 'text-green-400', icon: '▲' },
   short: { label: '做空', color: 'text-red-400', icon: '▼' },
@@ -29,6 +46,7 @@ export default function AdminAiAnalysisPage() {
   const router = useRouter();
   const { user, isAuthenticated } = useAuthStore();
   const [records, setRecords] = useState<AiAnalysisRecord[]>([]);
+  const [stats, setStats] = useState<AiStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [filterSymbol, setFilterSymbol] = useState('');
@@ -49,6 +67,8 @@ export default function AdminAiAnalysisPage() {
     setLoading(true);
     setError('');
     try {
+      // 准确率统计与记录列表并行加载
+      const statsPromise = apiGet<AiStats>('/api/ai-analysis/stats').catch(() => null);
       // 获取所有币种的最新分析（按 symbol 分组取最新）
       const allRecords: AiAnalysisRecord[] = [];
       // 先获取常见币种
@@ -67,6 +87,7 @@ export default function AdminAiAnalysisPage() {
       // 按时间倒序
       allRecords.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       setRecords(allRecords);
+      setStats(await statsPromise);
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载失败');
     } finally {
@@ -125,6 +146,104 @@ export default function AdminAiAnalysisPage() {
               className="input-dark max-w-xs"
             />
           </div>
+
+          {/* AI 准确率统计（AI 自动开仓的已平仓样本） */}
+          {stats && stats.sampleSize > 0 ? (
+            <div className="mb-8 space-y-4">
+              <h2 className="text-sm font-semibold text-dark-300">
+                AI 自动开仓准确率（样本 {stats.sampleSize} 笔已平仓）
+              </h2>
+
+              {/* 总览卡片 */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="bg-dark-800/40 rounded-lg p-4 border border-dark-700/30">
+                  <div className="text-dark-500 text-xs mb-1">胜率</div>
+                  <div className={`text-2xl font-bold ${stats.overall.winRate >= 50 ? 'text-green-400' : 'text-red-400'}`}>
+                    {stats.overall.winRate}%
+                  </div>
+                  <div className="text-dark-500 text-xs mt-1">{stats.overall.wins}/{stats.overall.total} 笔盈利</div>
+                </div>
+                <div className="bg-dark-800/40 rounded-lg p-4 border border-dark-700/30">
+                  <div className="text-dark-500 text-xs mb-1">累计盈亏</div>
+                  <div className={`text-2xl font-bold ${stats.overall.sumPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {stats.overall.sumPnl >= 0 ? '+' : ''}{stats.overall.sumPnl.toFixed(2)}
+                  </div>
+                  <div className="text-dark-500 text-xs mt-1">USDT</div>
+                </div>
+                <div className="bg-dark-800/40 rounded-lg p-4 border border-dark-700/30">
+                  <div className="text-dark-500 text-xs mb-1">平均盈利</div>
+                  <div className="text-2xl font-bold text-green-400">+{stats.overall.avgWin.toFixed(2)}</div>
+                  <div className="text-dark-500 text-xs mt-1">单笔盈利均值</div>
+                </div>
+                <div className="bg-dark-800/40 rounded-lg p-4 border border-dark-700/30">
+                  <div className="text-dark-500 text-xs mb-1">平均亏损</div>
+                  <div className="text-2xl font-bold text-red-400">{stats.overall.avgLoss.toFixed(2)}</div>
+                  <div className="text-dark-500 text-xs mt-1">单笔亏损均值</div>
+                </div>
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-4">
+                {/* 按模型统计 */}
+                <div className="bg-dark-800/40 rounded-lg p-4 border border-dark-700/30">
+                  <div className="text-dark-400 text-xs font-medium mb-2">按模型对比</div>
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-left text-dark-500 border-b border-dark-700/50">
+                        <th className="pb-2 pr-2">模型</th>
+                        <th className="pb-2 pr-2">笔数</th>
+                        <th className="pb-2 pr-2">胜率</th>
+                        <th className="pb-2">累计盈亏</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {stats.byModel.map((m) => (
+                        <tr key={m.model} className="border-b border-dark-800/50">
+                          <td className="py-2 pr-2 text-white truncate max-w-[140px]" title={m.model}>{m.model}</td>
+                          <td className="py-2 pr-2 text-dark-300">{m.total}</td>
+                          <td className={`py-2 pr-2 font-medium ${m.winRate >= 50 ? 'text-green-400' : 'text-red-400'}`}>{m.winRate}%</td>
+                          <td className={`py-2 ${m.sumPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {m.sumPnl >= 0 ? '+' : ''}{m.sumPnl.toFixed(2)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* 按置信度分层 */}
+                <div className="bg-dark-800/40 rounded-lg p-4 border border-dark-700/30">
+                  <div className="text-dark-400 text-xs font-medium mb-2">
+                    按置信度分层（验证「高置信度是否更准」）
+                  </div>
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-left text-dark-500 border-b border-dark-700/50">
+                        <th className="pb-2 pr-2">置信度</th>
+                        <th className="pb-2 pr-2">笔数</th>
+                        <th className="pb-2 pr-2">胜率</th>
+                        <th className="pb-2">平均盈亏</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {stats.byConfidence.map((b) => (
+                        <tr key={b.band} className="border-b border-dark-800/50">
+                          <td className="py-2 pr-2 text-white">{b.band}</td>
+                          <td className="py-2 pr-2 text-dark-300">{b.total}</td>
+                          <td className={`py-2 pr-2 font-medium ${b.winRate >= 50 ? 'text-green-400' : 'text-red-400'}`}>{b.winRate}%</td>
+                          <td className={`py-2 ${b.avgPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {b.avgPnl >= 0 ? '+' : ''}{b.avgPnl.toFixed(2)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <p className="text-dark-500 text-[11px] mt-2">
+                    若各置信度档胜率接近，说明模型置信度不可信，建议关闭置信度联动仓位
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           {loading ? (
             <div className="flex items-center justify-center py-20">

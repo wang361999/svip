@@ -214,6 +214,8 @@ export async function openPosition(
     takeProfit2?: number;
     strategyId?: string;
     signalPrice?: number;
+    /** AI 开仓时的模型信息 JSON（provider/model/confidence），用于准确率统计 */
+    aiMeta?: string;
   },
 ): Promise<PaperPositionInfo> {
   const account = await getOrCreateAccount(userId);
@@ -276,6 +278,7 @@ export async function openPosition(
       takeProfit2: params.takeProfit2 || null,
       strategyId: params.strategyId || null,
       signalPrice: params.signalPrice || null,
+      aiMeta: params.aiMeta || null,
       entryFee,
       entrySlippage,
       currentPrice: actualEntryPrice,
@@ -371,6 +374,15 @@ export async function closePosition(
   // 持仓时长（秒）
   const duration = Math.floor((Date.now() - position.createdAt.getTime()) / 1000);
 
+  // AI 准确率统计：AI 来源的仓位在全平时记录方向对错（净盈亏>0=正确）
+  // 部分平仓（止盈1 的 50%）不记录，等全平才有最终结论
+  let aiMetaOut: string | null = null;
+  let aiCorrect: boolean | null = null;
+  if (closeRatio >= 1 && position.strategyId?.startsWith('ai_')) {
+    aiMetaOut = position.aiMeta ?? null;
+    aiCorrect = netPnl > 0;
+  }
+
   // 创建交易记录
   const trade = await prisma.paperTrade.create({
     data: {
@@ -392,6 +404,8 @@ export async function closePosition(
       duration,
       closeReason,
       strategyId: position.strategyId,
+      aiMeta: aiMetaOut,
+      aiCorrect,
     },
   });
 
@@ -694,6 +708,8 @@ export async function runEngine(userId: string): Promise<{
           : '未记录当前选中币种（打开交易页后会自动记录），跳过自动开仓',
       );
     }
+    // 策略信号方向共识（触发信号中多空票数），供 4b 段 AI 信号冲突判断
+    let strategyConsensus: 'long' | 'short' | null = null;
     if (account.autoTrade) {
       for (const sym of autoTargets) {
         const price = priceMap[sym.symbol];
@@ -701,6 +717,13 @@ export async function runEngine(userId: string): Promise<{
 
         try {
           const signals = await computeAutoSignals(userId, sym.symbol, sym.okxId, price);
+          // 统计已触发信号的多空方向（多数派为共识，平票视为无共识）
+          const triggered = signals.filter((s) => s.triggered && s.direction !== 'neutral');
+          if (triggered.length > 0) {
+            const longs = triggered.filter((s) => s.direction === 'long').length;
+            const shorts = triggered.filter((s) => s.direction === 'short').length;
+            strategyConsensus = longs > shorts ? 'long' : shorts > longs ? 'short' : null;
+          }
           for (const sig of signals) {
             if (sig.triggered && sig.direction !== 'neutral' && sig.entryPrice) {
               // 限制最大持仓数（全局）
@@ -767,11 +790,25 @@ export async function runEngine(userId: string): Promise<{
           // 只在方向明确且置信度 >= 60 时开仓
           if (latestAi.direction === 'neutral' || latestAi.confidence < 60) continue;
 
-          // 检查该币种同方向是否已有持仓（含本次运行内新开的）
-          if (openDirKeys.has(`${sym.symbol}:${latestAi.direction}`)) continue;
-
           const price = priceMap[sym.symbol];
           if (!price || price <= 0) continue;
+
+          // ===== 信号时效防护：价格漂移检查 =====
+          // AI 分析时的参考价与当前价偏离超过 0.5%，说明行情已经走出一段，
+          // 入场价/止损位已失效（追高追低），跳过等待下一次新分析
+          const refPrice = latestAi.entryPrice;
+          if (refPrice && refPrice > 0) {
+            const drift = Math.abs(price - refPrice) / refPrice;
+            if (drift > 0.005) continue;
+          }
+
+          // ===== 共振模式：策略信号与 AI 信号冲突时不开仓 =====
+          // 策略共识方向明确且与 AI 方向相反 → 放弃 AI 信号（防止同一币种一多一空对开、保证金内耗）
+          // 策略无共识（未触发/平票/未启用策略）时 AI 独立判断
+          if (strategyConsensus && strategyConsensus !== latestAi.direction) continue;
+
+          // 检查该币种同方向是否已有持仓（含本次运行内新开的）
+          if (openDirKeys.has(`${sym.symbol}:${latestAi.direction}`)) continue;
 
           // ===== 风控闸门：止损必须存在且距离合理 =====
           // 止损距离占价格 0.3% ~ 25% 才视为有效；过近会被瞬时波动扫损，过远等于没有止损
@@ -802,15 +839,27 @@ export async function runEngine(userId: string): Promise<{
           }
 
           try {
+            // ===== 置信度联动仓位：高把握重仓，低把握轻仓 =====
+            // 置信度 >= 80：用满 positionPct；60-79：只用 65%（凯利公式简化版）
+            const confScale = latestAi.confidence >= 80 ? 1 : 0.65;
+            const aiMargin = account.available * (account.positionPct / 100) * confScale;
+
             await openPosition(userId, {
               symbol: sym.symbol,
               side: latestAi.direction as 'long' | 'short',
               entryPrice: price, // 以当前价格入场（AI 分析时可能已变化）
+              margin: aiMargin > 0 ? aiMargin : undefined,
               stopLoss,
               takeProfit1,
               takeProfit2,
               strategyId: `ai_${latestAi.provider}`,
               signalPrice: latestAi.entryPrice || price,
+              // 记录开仓时的模型信息，平仓后用于准确率统计
+              aiMeta: JSON.stringify({
+                provider: latestAi.provider,
+                model: latestAi.model,
+                confidence: latestAi.confidence,
+              }),
             });
             openDirKeys.add(`${sym.symbol}:${latestAi.direction}`);
             result.opened++;

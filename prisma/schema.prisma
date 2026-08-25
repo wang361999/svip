@@ -214,6 +214,7 @@ model PaperPosition {
   takeProfit1   Float?
   takeProfit2   Float?
   partialClosed Boolean  @default(false)       // 是否已部分平仓（止盈1）
+  aiMeta        String?                        // AI 开仓时的模型信息 JSON {provider, model, confidence}
   status        String   @default("open")      // 'open' | 'closed'
   strategyId    String?                        // 触发策略
   signalPrice   Float?                         // 信号入场价
@@ -255,6 +256,8 @@ model PaperTrade {
   duration      Int      @default(0)           // 持仓秒数
   closeReason   String                         // 'stop_loss' | 'take_profit_1' | 'take_profit_2' | 'manual' | 'auto'
   strategyId    String?
+  aiMeta        String?                        // AI 平仓时快照的模型信息 JSON（来自持仓）
+  aiCorrect     Boolean?                       // AI 仓位方向是否正确（净盈亏>0，仅全平时记录）
   createdAt     DateTime @default(now())
   closedAt      DateTime @default(now())
 

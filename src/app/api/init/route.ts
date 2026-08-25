@@ -311,6 +311,9 @@ const CREATE_TABLE_STATEMENTS: { label: string; sql: string }[] = [
   { label: 'CREATE INDEX PaperTradeLog_action_idx', sql: `CREATE INDEX IF NOT EXISTS "PaperTradeLog_action_idx" ON "PaperTradeLog"("action")` },
   // ---------- 补充列（兼容已有数据库） ----------
   { label: 'ALTER TABLE PaperAccount ADD currentSymbol', sql: `ALTER TABLE "PaperAccount" ADD COLUMN IF NOT EXISTS "currentSymbol" TEXT` },
+  { label: 'ALTER TABLE PaperPosition ADD aiMeta', sql: `ALTER TABLE "PaperPosition" ADD COLUMN IF NOT EXISTS "aiMeta" TEXT` },
+  { label: 'ALTER TABLE PaperTrade ADD aiMeta', sql: `ALTER TABLE "PaperTrade" ADD COLUMN IF NOT EXISTS "aiMeta" TEXT` },
+  { label: 'ALTER TABLE PaperTrade ADD aiCorrect', sql: `ALTER TABLE "PaperTrade" ADD COLUMN IF NOT EXISTS "aiCorrect" BOOLEAN` },
   { label: 'ALTER TABLE SiteSetting ADD paperTradingEnabled', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "paperTradingEnabled" TEXT NOT NULL DEFAULT 'false'` },
   { label: 'ALTER TABLE SiteSetting ADD cronLoops', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "cronLoops" TEXT DEFAULT '1'` },
   { label: 'ALTER TABLE SiteSetting ADD cronInterval', sql: `ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "cronInterval" TEXT DEFAULT '0'` },
