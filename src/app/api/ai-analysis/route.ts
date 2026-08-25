@@ -124,6 +124,11 @@ function parseMeta(raw: string | null): {
     validFor?: string;
   }[];
   noTradeZone?: { from: number; to: number; reason: string } | null;
+  gann?: {
+    swingHigh: number; swingLow: number; rangePct: number;
+    positionPct: number; zoneLabel: string;
+    levels: { division: string; index: number; price: number; distPct: number; meaning: string }[];
+  } | null;
 } | null {
   if (!raw) return null;
   try {
@@ -182,6 +187,35 @@ function parseMeta(raw: string | null): {
       }
     }
 
+    // 江恩八分位透传（服务端客观计算回填的 meta，非 AI 生成）
+    let gann: {
+      swingHigh: number; swingLow: number; rangePct: number;
+      positionPct: number; zoneLabel: string;
+      levels: { division: string; index: number; price: number; distPct: number; meaning: string }[];
+    } | null = null;
+    if (parsed.gann && typeof parsed.gann === 'object' && Array.isArray(parsed.gann.levels)) {
+      const levels = parsed.gann.levels
+        .filter((l: any) => l != null && typeof l === 'object' && Number(l.price) > 0)
+        .slice(0, 8)
+        .map((l: any) => ({
+          division: String(l.division || ''),
+          index: Number(l.index) > 0 ? Number(l.index) : 0,
+          price: Number(l.price),
+          distPct: Number.isFinite(Number(l.distPct)) ? Number(l.distPct) : 0,
+          meaning: String(l.meaning || ''),
+        }));
+      if (levels.length > 0 && num(parsed.gann.swingHigh) && num(parsed.gann.swingLow)) {
+        gann = {
+          swingHigh: num(parsed.gann.swingHigh)!,
+          swingLow: num(parsed.gann.swingLow)!,
+          rangePct: Number(parsed.gann.rangePct) || 0,
+          positionPct: Number.isFinite(Number(parsed.gann.positionPct)) ? Number(parsed.gann.positionPct) : 50,
+          zoneLabel: String(parsed.gann.zoneLabel || ''),
+          levels,
+        };
+      }
+    }
+
     return {
       regime: String(parsed.regime || 'unknown'),
       aPlusChecklist:
@@ -192,6 +226,7 @@ function parseMeta(raw: string | null): {
       ...(evidence.length > 0 ? { evidence } : {}),
       ...(plans.length > 0 ? { plans } : {}),
       ...(noTradeZone ? { noTradeZone } : {}),
+      ...(gann ? { gann } : {}),
     };
   } catch {
     return null;

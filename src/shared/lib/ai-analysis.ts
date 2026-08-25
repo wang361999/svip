@@ -175,6 +175,12 @@ export interface AiAnalysisResult {
     }[];
     /** 不做区：盈亏比最差、应观望的价格区间 */
     noTradeZone?: { from: number; to: number; reason: string } | null;
+    /** 江恩八分位阶梯（服务端客观计算回填，前端阶梯图 + 挂单锚点展示用） */
+    gann?: {
+      swingHigh: number; swingLow: number; rangePct: number;
+      positionPct: number; zoneLabel: string;
+      levels: { division: string; index: number; price: number; distPct: number; meaning: string }[];
+    } | null;
   };
 }
 
@@ -278,6 +284,93 @@ function classifyStructure(swings: { type: 'H' | 'L'; price: number }[]): string
 }
 
 /** 构建 K 线摘要文本（避免传太多数据消耗 token） */
+// ==================== 江恩八分位（Gann Eighths）客观计算 ====================
+
+/** 江恩八分位：近段摆动区间按 1/8 等分切出的支撑/阻力阶梯 */
+export interface GannEighths {
+  swingHigh: number;
+  swingLow: number;
+  /** 区间振幅（%） */
+  rangePct: number;
+  /** 现价在区间内的位置（0=底部，100=顶部） */
+  positionPct: number;
+  /** 现价所处分区描述 */
+  zoneLabel: string;
+  levels: { division: string; index: number; price: number; distPct: number; meaning: string }[];
+}
+
+/** 江恩各分位的经典含义 */
+const GANN_MEANINGS: Record<number, string> = {
+  1: '弱支撑 · 超卖区边缘',
+  2: '次级支撑',
+  3: '区间下半边界 · 多空分界参考',
+  4: '中轴 50% · 江恩最重要分水岭',
+  5: '区间上半边界',
+  6: '次级阻力',
+  7: '强阻力 · 超买区边缘',
+  8: '区间顶部 · 极值',
+};
+
+/**
+ * 计算江恩八分位阶梯：取近 72 根 1h K线（≈3天）的摆动高低点，
+ * 将区间 8 等分得到 1/8~8/8 价位。全程客观数值，不依赖 AI 报价。
+ */
+export function computeGannEighths(k1h: KlineData[], currentPrice: number): GannEighths | null {
+  if (k1h.length < 24 || !currentPrice || currentPrice <= 0) return null;
+
+  const win = k1h.slice(-72);
+  let hi = -Infinity;
+  let lo = Infinity;
+  win.forEach((k) => {
+    if (k.high > hi) hi = k.high;
+    if (k.low < lo) lo = k.low;
+  });
+  const range = hi - lo;
+  if (range <= 0 || !Number.isFinite(hi) || !Number.isFinite(lo)) return null;
+  if (range / currentPrice < 0.004) return null; // 区间过窄（<0.4%）无分析意义
+
+  const levels = [];
+  for (let i = 1; i <= 8; i++) {
+    const price = lo + range * (i / 8);
+    levels.push({
+      division: `${i}/8`,
+      index: i,
+      price: Number(price.toFixed(price >= 100 ? 2 : 4)),
+      distPct: Number((((price - currentPrice) / currentPrice) * 100).toFixed(2)),
+      meaning: GANN_MEANINGS[i],
+    });
+  }
+
+  const positionPct = Number((((currentPrice - lo) / range) * 100).toFixed(1));
+  const lower = Math.min(8, Math.max(0, Math.floor(positionPct / 12.5)));
+  let zoneLabel = `${lower}/8 – ${Math.min(lower + 1, 8)}/8 分区`;
+  if (positionPct <= 12.5) zoneLabel = '0/8–1/8 超卖区（追空危险）';
+  else if (positionPct >= 87.5) zoneLabel = '7/8–8/8 超买区（追多危险）';
+  else if (Math.abs(positionPct - 50) <= 6.25) zoneLabel = '中轴附近（方向选择区）';
+
+  return {
+    swingHigh: Number(hi.toFixed(hi >= 100 ? 2 : 4)),
+    swingLow: Number(lo.toFixed(lo >= 100 ? 2 : 4)),
+    rangePct: Number(((range / currentPrice) * 100).toFixed(2)),
+    positionPct,
+    zoneLabel,
+    levels,
+  };
+}
+
+/** 江恩阶梯文本（注入 prompt：挂单/止损/止盈必须优先锚定八分位） */
+function buildGannText(g: GannEighths | null, currentPrice: number): string {
+  if (!g) return '=== 江恩八分位 ===\nK线数据不足，无法计算八分位';
+  const lines = g.levels.map(
+    (l) => `- ${l.division} ${l.price}（${l.distPct > 0 ? '+' : ''}${l.distPct}%）${l.meaning}`,
+  );
+  return `=== 江恩八分位阶梯（客观数据 — 挂单/止损/止盈的第一锚定优先级） ===
+摆动区间（近72小时 1h）：${g.swingLow} ~ ${g.swingHigh}（振幅 ${g.rangePct}%）
+当前价 ${currentPrice} 位于区间 ${g.positionPct}% 处 — ${g.zoneLabel}
+八分位阶梯（1/8=底部 → 8/8=顶部）：
+${lines.join('\n')}`;
+}
+
 function buildKlineSummary(klines: KlineData[], label: string): string {
   if (klines.length === 0) return `${label}: 无数据`;
 
@@ -357,6 +450,13 @@ function buildIndicatorText(ind: IndicatorSnapshot, currentPrice: number): strin
 const SYSTEM_PROMPT = `你是一位顶级加密货币短线合约交易员，交易风格为短线波段（持仓数十分钟到数小时）。你的盈利哲学：方向预测只是入场券，真正的钱来自「什么时候不做、错了亏多少、对了赚多少」。
 
 【交易者画像 — 挂单执行者】你的用户不盯盘追市价，只提前在关键位挂限价单进场。因此你的输出必须「挂单可执行」：每个计划给出精确挂单价位 + 撤单条件（价格到哪挂单作废）+ 有效期（多久不成交撤单）。挂在幻想价位、成交后才发现止损放不下的计划都是废计划。
+
+【江恩八分位规则 — 所有价位锚定的第一优先级】用户数据会提供近72小时摆动区间的八分位阶梯（1/8~8/8，客观数值）。你的挂单价、止损、止盈必须优先落在这些八分位上（或八分位与 EMA/摆动点的重叠位），并在 condition / cancelIf 的说明中注明对应分位：
+- 4/8 中轴是最强支撑/阻力兼多空分水岭：站稳其上做多看 5/8 → 6/8，跌破其下做空看 3/8 → 2/8
+- 回调买点优先选 3/8、4/8（下方支撑分位）；反弹空点优先选 5/8、4/8（上方阻力分位）
+- 边缘纪律：现价位于 7/8 以上（超买区）禁止追多，位于 1/8 以下（超卖区）禁止追空 — 该区域只做向中轴的均值回归或观望
+- 止盈锚定：第一目标 = 入场方向上的下一档八分位，第二目标 = 再下一档或中轴；若下一档距离不足 0.5R 则顺延一档
+- 趋势市（trending）允许顺势分位突破作为目标延伸；碎波市（chop）只考虑区间边缘与中轴之间的往返，或直接观望
 
 分析必须按以下顺序进行：
 
@@ -509,6 +609,7 @@ function buildUserPrompt(
   btcContextText: string,
   atr15m: number | null,
   feedbackText: string,
+  gannText: string,
 ): string {
   const ind5m = computeIndicatorSnapshot(k5m);
   const ind15m = computeIndicatorSnapshot(k15m);
@@ -524,6 +625,8 @@ function buildUserPrompt(
 === 市场状态参考（客观指标计算，供你 regime 判定参考） ===
 15m ADX: ${regimeHint.adx != null ? regimeHint.adx.toFixed(2) : '暂无'} | 布林带宽: ${regimeHint.bbWidthPct != null ? regimeHint.bbWidthPct.toFixed(2) + '%' : '暂无'} | 系统初判: ${regimeHint.regime}
 15m ATR(14): ${atr15m != null ? `${atr15m.toFixed(2)}（现价的 ${(atr15m / currentPrice * 100).toFixed(2)}%）；止损距离应控制在 0.5-1.5 倍 ATR = ${(atr15m * 0.5).toFixed(2)} ~ ${(atr15m * 1.5).toFixed(2)}` : '暂无'}
+
+${gannText}
 
 ${buildTimeContext()}
 
@@ -856,6 +959,9 @@ export async function analyzeMarketWithAI(
   // 3.5 计算 15m ATR（无效点/止损距离的客观标尺）
   const atr15m = k15m.length >= 15 ? calcATR(k15m, 14) : null;
 
+  // 3.55 计算江恩八分位阶梯（近72小时摆动区间 8 等分 — 客观锚点，注入 prompt + 回填 meta 供前端展示）
+  const gann = computeGannEighths(k1h, price);
+
   // 3.6 反馈闭环：先评估到期的历史预测（不阻塞主流程），再取近期战绩注入 prompt
   evaluatePendingPredictions().catch(() => {}); // fire-and-forget：评估失败不影响本次分析
   const feedbackText = await getRecentFeedbackText(symbol).catch(
@@ -876,6 +982,7 @@ export async function analyzeMarketWithAI(
     isBtc ? '' : buildBtcContextText(btcSnap),
     atr15m,
     feedbackText,
+    buildGannText(gann, price),
   );
 
   // 5. 调用 AI API
@@ -887,6 +994,8 @@ export async function analyzeMarketWithAI(
 
   // 回填客观计算的 ATR（引擎闸门校验止损距离用）
   result.meta.atr15m = atr15m;
+  // 回填江恩八分位（服务端客观计算，前端阶梯图展示；不依赖 AI 复述避免幻觉）
+  result.meta.gann = gann;
 
   return result;
 }

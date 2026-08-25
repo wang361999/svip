@@ -32,6 +32,12 @@ interface AiAnalysis {
       validFor?: string;
     }[];
     noTradeZone?: { from: number; to: number; reason: string } | null;
+    /** 江恩八分位阶梯（服务端客观计算） */
+    gann?: {
+      swingHigh: number; swingLow: number; rangePct: number;
+      positionPct: number; zoneLabel: string;
+      levels: { division: string; index: number; price: number; distPct: number; meaning: string }[];
+    } | null;
   } | null;
   riskWarning: string | null;
   provider: string;
@@ -477,10 +483,84 @@ export default function AiAnalysisPanel() {
             </div>
           )}
 
-          {/* 关键价位列表 */}
+          {/* 江恩八分位阶梯（Gann Eighths — 价位锚定核心面板，服务端客观计算） */}
+          {analysis.meta?.gann && (() => {
+            const g = analysis.meta.gann!;
+            const sorted = [...g.levels].sort((a, b) => b.price - a.price); // 8/8 → 1/8
+            const nearestAbove = sorted.find((l) => l.price >= currentPrice);
+            const nearestBelow = sorted.find((l) => l.price <= currentPrice); // sorted 倒序，从下往上第一个即最近
+            return (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-1.5">
+                    <svg className="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16M8 6v12M12 6v12M16 6v12" />
+                    </svg>
+                    <span className="text-dark-400 text-xs font-medium">江恩八分位阶梯</span>
+                  </div>
+                  <span className="text-[10px] text-dark-500">
+                    {formatPrice(g.swingLow)} ~ {formatPrice(g.swingHigh)} · 振幅 {g.rangePct}%
+                  </span>
+                </div>
+
+                {/* 区间位置条：低 → 高，白色标记 = 现价 */}
+                <div className="relative h-2 rounded-full bg-gradient-to-r from-green-500/40 via-dark-600 to-red-500/40 mb-1">
+                  {[12.5, 25, 37.5, 50, 62.5, 75, 87.5].map((pct) => (
+                    <div key={pct} className="absolute top-0 h-2 w-px bg-dark-900/80" style={{ left: `${pct}%` }} />
+                  ))}
+                  {currentPrice > 0 && (
+                    <div
+                      className="absolute -top-1 h-4 w-1.5 bg-white rounded-sm shadow-md"
+                      style={{ left: `calc(${Math.min(Math.max(g.positionPct, 0), 100)}% - 3px)` }}
+                      title={`现价 ${formatPrice(currentPrice)}`}
+                    />
+                  )}
+                </div>
+                <div className="flex justify-between text-[10px] text-dark-500 mb-2.5">
+                  <span>0/8 低点</span>
+                  <span className={g.positionPct >= 87.5 || g.positionPct <= 12.5 ? 'text-amber-400' : 'text-dark-400'}>
+                    当前 {g.positionPct}% · {g.zoneLabel}
+                  </span>
+                  <span>8/8 高点</span>
+                </div>
+
+                {/* 阶梯：8/8 → 1/8，现价上方=阻力（红），下方=支撑（绿），4/8 中轴金色，最近档高亮 */}
+                <div className="space-y-1">
+                  {sorted.map((l) => {
+                    const isRes = currentPrice > 0 && l.price > currentPrice;
+                    const isAxis = l.index === 4;
+                    const nearest = l === nearestAbove || l === nearestBelow;
+                    return (
+                      <div
+                        key={l.index}
+                        className={`flex items-center gap-2 text-xs px-2 py-1 rounded border ${
+                          isAxis
+                            ? 'bg-amber-500/10 border-amber-500/30'
+                            : nearest
+                              ? isRes ? 'bg-red-500/10 border-red-500/30' : 'bg-green-500/10 border-green-500/30'
+                              : 'bg-dark-800/40 border-dark-800/60'
+                        }`}
+                      >
+                        <span className={`w-7 text-[10px] font-bold flex-shrink-0 ${isAxis ? 'text-amber-400' : isRes ? 'text-red-400/80' : 'text-green-400/80'}`}>
+                          {l.division}
+                        </span>
+                        <span className="text-white font-medium flex-shrink-0">{formatPrice(l.price)}</span>
+                        <span className={`text-[10px] flex-shrink-0 ${l.distPct >= 0 ? 'text-red-400/60' : 'text-green-400/60'}`}>
+                          {l.distPct > 0 ? '+' : ''}{l.distPct}%
+                        </span>
+                        <span className="text-dark-500 text-[10px] truncate flex-1 text-right">{l.meaning}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* 关键价位列表（AI 标注的补充位：前高前低/形态位等） */}
           {analysis.keyLevels && analysis.keyLevels.length > 0 && (
             <div>
-              <div className="text-dark-400 text-xs font-medium mb-2">关键价位</div>
+              <div className="text-dark-400 text-xs font-medium mb-2">补充关键位</div>
               <div className="flex flex-wrap gap-2">
                 {analysis.keyLevels.map((level, i) => (
                   <div key={i} className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-dark-800/60 border border-dark-700/30">
