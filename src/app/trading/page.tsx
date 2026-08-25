@@ -6,6 +6,7 @@ import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
 import PriceTicker from '@/components/trading/PriceTicker';
 import KlineChart from '@/components/trading/KlineChart';
+import TrendPanel from '@/components/trading/TrendPanel';
 import StrategyPanel from '@/components/trading/StrategyPanel';
 import PaperTradingPanel from '@/components/trading/PaperTradingPanel';
 import AiAnalysisPanel from '@/components/trading/AiAnalysisPanel';
@@ -130,6 +131,13 @@ export default function TradingPage() {
 
           {/* K线图（含 MACD 副图 + 布林带 + 斐波那契 + MA） */}
           <KlineChart isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen} />
+
+          {/* 多周期趋势面板（15分钟/1小时/4小时/1天 多空震荡判定） */}
+          {!isFullscreen && (
+            <ErrorBoundary>
+              <TrendPanel />
+            </ErrorBoundary>
+          )}
 
           {/* 策略面板（用户在 /strategies 启用的策略实时信号） */}
           {!isFullscreen && (
