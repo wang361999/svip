@@ -861,8 +861,28 @@ export async function runEngine(userId: string): Promise<{
             if (passed < 4 || !cl.regimeClear) continue;
           }
 
-          // 检查该币种同方向是否已有持仓（含本次运行内新开的）
-          if (openDirKeys.has(`${sym.symbol}:${latestAi.direction}`)) continue;
+          // ===== 连续开仓三重防护（数据库实时状态为准，不受引擎快照/并发竞态影响） =====
+          // 防护1：同币种单仓（任意方向）— 防止 AI 方向翻转时长短仓对冲叠开，也杀掉并发竞态
+          //         （cron 引擎与前端引擎同时运行时，内存级 openDirKeys 互不可见，曾导致同方向连开多笔）
+          const symOpenCount = await prisma.paperPosition.count({
+            where: { userId, symbol: sym.symbol, status: 'open' },
+          });
+          if (symOpenCount > 0) continue;
+
+          // 防护2：平仓冷却 — 同币种平仓后 15 分钟内不再开仓
+          //         （止损后价格在挂单分位 ±0.3% 容差内反复震荡 → 旧信号每 5 秒重进一次来回扫损）
+          const lastClosed = await prisma.paperPosition.findFirst({
+            where: { userId, symbol: sym.symbol, status: 'closed' },
+            orderBy: { closedAt: 'desc' },
+          });
+          if (lastClosed?.closedAt && Date.now() - lastClosed.closedAt.getTime() < 15 * 60 * 1000) continue;
+
+          // 防护3：分析防重放 — 同一条 AI 分析只允许驱动一次开仓
+          //         （一条分析在 15 分钟有效期内会被引擎检查上百次，无此约束等于无限次进场机会）
+          const replayCount = await prisma.paperPosition.count({
+            where: { userId, aiMeta: { contains: `"analysisId":"${latestAi.id}"` } },
+          });
+          if (replayCount > 0) continue;
 
           // ===== 江恩止损：AI 止损 = 相邻外侧分位，直接采用（严格江恩规则，不按距离/ATR 丢弃） =====
           // 仅当 AI 未给止损时按账户默认百分比兜底
@@ -901,12 +921,13 @@ export async function runEngine(userId: string): Promise<{
               takeProfit2,
               strategyId: `ai_${latestAi.provider}`,
               signalPrice: latestAi.entryPrice || execPrice,
-              // 记录开仓时的模型信息，平仓后用于准确率统计
+              // 记录开仓时的模型信息 + 分析ID，平仓后用于准确率统计；analysisId 供防护3防重放
               aiMeta: JSON.stringify({
                 provider: latestAi.provider,
                 model: latestAi.model,
                 confidence: latestAi.confidence,
                 entryType: aiMeta.plan?.entryType || 'market',
+                analysisId: latestAi.id,
               }),
             });
             openDirKeys.add(`${sym.symbol}:${latestAi.direction}`);
