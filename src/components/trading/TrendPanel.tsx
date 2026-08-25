@@ -1,5 +1,10 @@
 'use client';
 
+/**
+ * 多周期趋势面板（纯结构版）
+ * 只按市场结构区分：HH+HL=多头 / LH+LL=空头 / 高低点矛盾=震荡
+ * 不显示任何其他指标（ADX/得分/涨跌幅/收盘价均不展示）
+ */
 import { useEffect, useState, useCallback } from 'react';
 import useSymbolStore from '@/store/symbolStore';
 import { apiGet } from '@/shared/api/client';
@@ -8,16 +13,14 @@ interface TrendTimeframe {
   tf: string;
   label: string;
   trend: 'long' | 'short' | 'neutral';
-  score: number; // -100 ~ 100
-  adx: number;
-  close: number;
-  changePct: number;
-  reasons: string[];
+  /** 结构摆动点序列（判定依据） */
+  seq: string;
+  note: string;
 }
 
 interface TrendData {
   symbol: string;
-  currentPrice: number;
+  label: string;
   timeframes: TrendTimeframe[];
   overall: {
     longCount: number;
@@ -29,9 +32,9 @@ interface TrendData {
 }
 
 const trendConfig = {
-  long: { label: '多头', color: 'text-green-400', bg: 'bg-green-500/10', border: 'border-green-500/30', icon: '▲', bar: 'bg-green-500' },
-  short: { label: '空头', color: 'text-red-400', bg: 'bg-red-500/10', border: 'border-red-500/30', icon: '▼', bar: 'bg-red-500' },
-  neutral: { label: '震荡', color: 'text-dark-300', bg: 'bg-dark-700/30', border: 'border-dark-600/30', icon: '●', bar: 'bg-dark-500' },
+  long: { label: '多头', sub: 'HH+HL', color: 'text-green-400', bg: 'bg-green-500/10', border: 'border-green-500/30', icon: '▲' },
+  short: { label: '空头', sub: 'LH+LL', color: 'text-red-400', bg: 'bg-red-500/10', border: 'border-red-500/30', icon: '▼' },
+  neutral: { label: '震荡', sub: '矛盾', color: 'text-dark-300', bg: 'bg-dark-700/30', border: 'border-dark-600/30', icon: '●' },
 };
 
 export default function TrendPanel() {
@@ -64,14 +67,11 @@ export default function TrendPanel() {
     fetchData(true);
   }, [fetchData]);
 
-  // 每 60 秒自动刷新（缓存 30 秒，行情源压力可控）
+  // 每 60 秒自动刷新
   useEffect(() => {
     const timer = setInterval(() => fetchData(false), 60_000);
     return () => clearInterval(timer);
   }, [fetchData]);
-
-  const formatPrice = (p: number) =>
-    p > 0 ? p.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '-';
 
   const formatTime = (d: Date | null) =>
     d ? d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
@@ -129,51 +129,23 @@ export default function TrendPanel() {
 
       {data && (
         <>
-          {/* 四周期卡片 */}
+          {/* 四周期结构卡片（只显示结构结论） */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {data.timeframes.map((tf) => {
               const cfg = trendConfig[tf.trend];
-              // 得分条：-100~100 映射到 0~100%（50 为中点）
-              const barPos = ((tf.score + 100) / 200) * 100;
               return (
-                <div key={tf.tf} className={`p-3 rounded-lg ${cfg.bg} border ${cfg.border}`}>
-                  {/* 周期 + 方向 */}
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-dark-300 text-xs font-medium">{tf.label}</span>
-                    <span className={`text-sm font-bold ${cfg.color}`}>{cfg.icon} {cfg.label}</span>
+                <div key={tf.tf} className={`p-3 rounded-lg text-center ${cfg.bg} border ${cfg.border}`}>
+                  <div className="text-dark-400 text-xs mb-1">{tf.label}</div>
+                  <div className={`text-base font-bold ${cfg.color} leading-tight`}>
+                    {cfg.icon} {cfg.label}
                   </div>
-
-                  {/* 涨跌幅 */}
-                  <div className="flex items-center justify-between text-xs mb-2">
-                    <span className="text-dark-500">近期涨跌</span>
-                    <span className={tf.changePct > 0 ? 'text-green-400' : tf.changePct < 0 ? 'text-red-400' : 'text-dark-400'}>
-                      {tf.changePct > 0 ? '+' : ''}{tf.changePct}%
-                    </span>
-                  </div>
-
-                  {/* 得分条 */}
-                  <div className="relative w-full h-1.5 bg-dark-800 rounded-full overflow-hidden mb-1">
-                    {/* 中点刻度 */}
-                    <div className="absolute left-1/2 top-0 bottom-0 w-px bg-dark-600" />
-                    <div
-                      className={`absolute top-0 bottom-0 w-1.5 rounded-full ${cfg.bar} transition-all`}
-                      style={{ left: `calc(${Math.min(Math.max(barPos, 1), 99)}% - 3px)` }}
-                    />
-                  </div>
-                  <div className="flex items-center justify-between text-[11px] text-dark-500 mb-2">
-                    <span>空</span>
-                    <span>强度 {cfg.label === '震荡' ? '-' : Math.abs(tf.score)} · ADX {tf.adx}</span>
-                    <span>多</span>
-                  </div>
-
-                  {/* 收盘价 */}
-                  <div className="text-dark-400 text-[11px] truncate">收盘 {formatPrice(tf.close)}</div>
+                  <div className="text-dark-500 text-[10px] mt-0.5">{cfg.sub}</div>
                 </div>
               );
             })}
           </div>
 
-          {/* 综合结论 + 因子明细切换 */}
+          {/* 综合结论 + 结构依据切换 */}
           <div className="mt-4 flex items-center justify-between">
             <div className="text-sm">
               <span className="text-dark-400">综合：</span>
@@ -189,11 +161,11 @@ export default function TrendPanel() {
               <svg className={`w-4 h-4 transition-transform ${expanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
               </svg>
-              {expanded ? '收起判定依据' : '查看判定依据'}
+              {expanded ? '收起结构依据' : '查看结构依据'}
             </button>
           </div>
 
-          {/* 因子明细（展开） */}
+          {/* 结构依据（展开）：各周期摆动点序列 */}
           {expanded && (
             <div className="mt-2 p-3 rounded-lg bg-dark-900/60 border border-dark-800">
               <div className="grid md:grid-cols-2 gap-3">
@@ -202,21 +174,17 @@ export default function TrendPanel() {
                   return (
                     <div key={tf.tf}>
                       <div className={`text-xs font-medium mb-1 ${cfg.color}`}>
-                        {tf.label} — {cfg.icon} {cfg.label}（得分 {tf.score > 0 ? '+' : ''}{tf.score}）
+                        {tf.label} — {cfg.icon} {cfg.label}
                       </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {tf.reasons.map((r, i) => (
-                          <span key={i} className="text-[11px] px-1.5 py-0.5 rounded bg-dark-800/60 border border-dark-700/30 text-dark-300">
-                            {r}
-                          </span>
-                        ))}
+                      <div className="text-[11px] px-1.5 py-0.5 rounded bg-dark-800/60 border border-dark-700/30 text-dark-300 leading-relaxed">
+                        {tf.seq ? tf.seq : tf.note}
                       </div>
                     </div>
                   );
                 })}
               </div>
               <p className="text-dark-500 text-[11px] mt-3">
-                判定规则：EMA20/SMA50/SMA200 均线位置 + MACD 动能 + EMA20 斜率五因子打分，|得分|≥2 且 ADX≥18 才判定多空，否则视为震荡
+                判定规则：道氏市场结构 — 近端摆动点 HH+HL 加权占优=多头，LH+LL 占优=空头，高低点矛盾=震荡
               </p>
             </div>
           )}
