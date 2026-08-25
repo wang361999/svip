@@ -1,13 +1,13 @@
 # ETH Trading Tool - Vercel 部署指南
 
-## 环境变量（已配置在 .env 中，部署时需粘贴到 Vercel Dashboard）
+## 环境变量（本地写在 .env，线上配置到 Vercel Dashboard）
 
-进入 Vercel Dashboard → 你的项目 → Settings → Environment Variables，添加以下变量：
+进入 Vercel Dashboard → 你的项目 → Settings → Environment Variables，添加以下变量（**切勿把真实值提交到仓库**，参考 `.env.example`）：
 
 ```
-DATABASE_URL=postgresql://neondb_owner:npg_93uJZaQediCT@ep-bitter-sky-av7121gm-pooler.c-11.us-east-1.aws.neon.tech/neondb?channel_binding=require&sslmode=require
-JWT_SECRET=eth-trading-super-secret-key-2024-vercel-deploy
-INIT_KEY=eth-trading-init-2024
+DATABASE_URL=postgresql://用户名:密码@主机/数据库名?sslmode=require
+JWT_SECRET=换成你自己的强随机密钥（可用 openssl rand -hex 32 生成）
+INIT_KEY=换成你自己的初始化密钥
 ```
 
 ## 部署步骤
@@ -40,7 +40,7 @@ vercel --prod
 ## 数据库初始化
 
 部署完成后，访问 `https://你的域名/init` 页面：
-- 输入初始化密钥：`eth-trading-init-2024`
+- 输入你设置的初始化密钥（`INIT_KEY` 环境变量的值）
 - 点击初始化，自动创建数据库表
 
 ## 项目更新内容
