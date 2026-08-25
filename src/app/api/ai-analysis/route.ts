@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { prisma } from '@/shared/lib/prisma';
 import { settingsService } from '@/features/settings/api/settings.service';
 import { analyzeMarketWithAI, parseAiConfig, type AiAnalysisResult } from '@/shared/lib/ai-analysis';
+import { ensureAiAnalysisColumns } from '@/shared/lib/ai-feedback';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -18,6 +19,9 @@ export const maxDuration = 60;
 /** GET — 获取最新分析记录 */
 export const GET = createHandler(async ({ req }) => {
   requireUser();
+
+  // 自迁移：确保 outcome 系列列存在（幂等，每个实例只跑一次）
+  await ensureAiAnalysisColumns().catch(() => {});
 
   const { searchParams } = new URL(req.url);
   const symbol = searchParams.get('symbol');
@@ -137,6 +141,9 @@ const analyzeSchema = z.object({
 
 export const POST = createHandler(async ({ req }) => {
   requireUser();
+
+  // 自迁移：确保 outcome 系列列存在（幂等，每个实例只跑一次）
+  await ensureAiAnalysisColumns().catch(() => {});
 
   const input = analyzeSchema.parse(await req.json());
 

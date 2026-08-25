@@ -8,6 +8,7 @@ import { createHandler } from '@/shared/api/handler';
 import { apiSuccess } from '@/shared/api/response';
 import { requireAdmin } from '@/shared/api/auth-guard';
 import { prisma } from '@/shared/lib/prisma';
+import { ensureAiAnalysisColumns } from '@/shared/lib/ai-feedback';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,6 +40,9 @@ function finalize(agg: Agg) {
 
 export const GET = createHandler(async () => {
   requireAdmin();
+
+  // 自迁移：确保 outcome 系列列存在（幂等，每个实例只跑一次）
+  await ensureAiAnalysisColumns().catch(() => {});
 
   // 取最近的 AI 已平仓记录（足够统计，避免全表扫描）
   const trades = await prisma.paperTrade.findMany({

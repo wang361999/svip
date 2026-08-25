@@ -16,6 +16,65 @@
 import { prisma } from './prisma';
 import { fetchKlines } from './market-data';
 
+// ==================== 自迁移（幂等，无需人工改库） ====================
+/**
+ * AiAnalysis 表自动补齐反馈闭环所需列（outcome 系列）。
+ * 设计：SQL 全部幂等（IF NOT EXISTS），模块级标记保证每个实例只跑一次；
+ * 首次请求时自动执行，之后零开销。失败静默（列缺失时后续查询会自然降级）。
+ */
+let migratePromise: Promise<void> | null = null;
+
+/** 自迁移入口（幂等）：任何访问 AiAnalysis 的路由都应先 await 它 */
+export function ensureAiAnalysisColumns(): Promise<void> {
+  if (!migratePromise) {
+    migratePromise = (async () => {
+      const stmts = [
+        `CREATE TABLE IF NOT EXISTS "AiAnalysis" (
+          "id" TEXT NOT NULL,
+          "symbol" TEXT NOT NULL,
+          "direction" TEXT NOT NULL,
+          "confidence" INTEGER NOT NULL,
+          "summary" TEXT NOT NULL,
+          "entryPrice" DOUBLE PRECISION,
+          "stopLoss" DOUBLE PRECISION,
+          "takeProfit1" DOUBLE PRECISION,
+          "takeProfit2" DOUBLE PRECISION,
+          "reasoning" TEXT NOT NULL,
+          "keyLevels" TEXT,
+          "meta" TEXT,
+          "riskWarning" TEXT,
+          "provider" TEXT,
+          "model" TEXT,
+          "rawResponse" TEXT,
+          "outcome" TEXT,
+          "outcomePrice" DOUBLE PRECISION,
+          "outcomeAt" TIMESTAMP(3),
+          "outcomeNote" TEXT,
+          "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT "AiAnalysis_pkey" PRIMARY KEY ("id")
+        )`,
+        `CREATE INDEX IF NOT EXISTS "AiAnalysis_symbol_idx" ON "AiAnalysis"("symbol")`,
+        `CREATE INDEX IF NOT EXISTS "AiAnalysis_createdAt_idx" ON "AiAnalysis"("createdAt")`,
+        `CREATE INDEX IF NOT EXISTS "AiAnalysis_direction_idx" ON "AiAnalysis"("direction")`,
+        `CREATE INDEX IF NOT EXISTS "AiAnalysis_outcome_idx" ON "AiAnalysis"("outcome")`,
+        `ALTER TABLE "AiAnalysis" ADD COLUMN IF NOT EXISTS "meta" TEXT`,
+        `ALTER TABLE "AiAnalysis" ADD COLUMN IF NOT EXISTS "outcome" TEXT`,
+        `ALTER TABLE "AiAnalysis" ADD COLUMN IF NOT EXISTS "outcomePrice" DOUBLE PRECISION`,
+        `ALTER TABLE "AiAnalysis" ADD COLUMN IF NOT EXISTS "outcomeAt" TIMESTAMP(3)`,
+        `ALTER TABLE "AiAnalysis" ADD COLUMN IF NOT EXISTS "outcomeNote" TEXT`,
+      ];
+      for (const sql of stmts) {
+        try {
+          await prisma.$executeRawUnsafe(sql);
+        } catch {
+          // 单条失败不阻断（如权限不足时静默跳过，靠 Neon 手动兜底）
+        }
+      }
+    })();
+  }
+  return migratePromise;
+}
+
 /** 分析生成后等待多少分钟再评估（给行情走出来的时间） */
 export const EVAL_DELAY_MIN = 30;
 /** 评估窗口：超过此时长仍未触价位的按到期处理（小时） */
@@ -83,6 +142,7 @@ function judgePrediction(
  * @returns 本轮评估条数
  */
 export async function evaluatePendingPredictions(): Promise<number> {
+  await ensureAiAnalysisColumns().catch(() => {});
   const cutoff = new Date(Date.now() - EVAL_DELAY_MIN * 60_000);
   const expireBefore = new Date(Date.now() - EVAL_WINDOW_HOURS * 3600_000);
 
@@ -160,6 +220,7 @@ function isWin(outcome: string | null): boolean {
  * 优先取同币种，不足用全局补齐
  */
 export async function getRecentFeedbackText(symbol: string): Promise<string> {
+  await ensureAiAnalysisColumns().catch(() => {});
   const PICK = 10;
   const own = await prisma.aiAnalysis.findMany({
     where: { symbol, outcome: { in: ['hit_tp1', 'hit_tp2', 'hit_sl', 'correct', 'wrong'] } },
@@ -234,6 +295,7 @@ export async function getCalibratedThreshold(
   model: string | null,
   baseThreshold: number,
 ): Promise<{ threshold: number; winRate: number | null; sample: number }> {
+  await ensureAiAnalysisColumns().catch(() => {});
   const records = await prisma.aiAnalysis.findMany({
     where: {
       model: model || undefined,
