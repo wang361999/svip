@@ -1,0 +1,316 @@
+/**
+ * 市场上下文数据（衍生品 + 市场情绪 + 新闻要闻）
+ *
+ * 让 AI 分析在纯 K 线之外看到：
+ * - 资金费率：多头/空头拥挤度（短线反抽风险的领先指标）
+ * - 持仓量及 1 小时变化：验证突破真伪（增仓突破可信，缩量突破疑似陷阱）
+ * - 恐惧贪婪指数：市场情绪背景
+ * - 近期要闻标题：事件驱动（黑客/监管/大额清算常是短线急跌急涨的直接原因）
+ *
+ * 数据源（全部免费无 Key，失败优雅降级为 null）：
+ * - 资金费率/持仓量：Binance fapi（主）→ OKX（备）
+ * - 恐惧贪婪指数：api.alternative.me
+ * - 要闻：Cointelegraph RSS
+ *
+ * 缓存策略（30 秒级 AI 轮询下避免打爆外部接口）：
+ * - 衍生品数据：按币种缓存 5 分钟
+ * - 恐惧贪婪：全局缓存 30 分钟
+ * - 要闻：全局缓存 20 分钟
+ * - 持仓量快照历史：内存保留 2 小时，用于计算 1 小时变化
+ */
+
+interface NewsItem {
+  title: string;
+  publishedAt: number; // epoch ms
+  source: string;
+}
+
+export interface MarketContext {
+  /** 8 小时资金费率（小数，0.00047 = 0.047%） */
+  fundingRate8h: number | null;
+  /** 当前持仓量（USD） */
+  openInterestUsd: number | null;
+  /** 1 小时持仓量变化 %（快照积累不足时为 null） */
+  oiChange1hPct: number | null;
+  fearGreed: { value: number; classification: string } | null;
+  news: NewsItem[];
+}
+
+// ==================== 基础工具 ====================
+
+async function fetchJson(url: string, ms = 6000): Promise<any | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchText(url: string, ms = 6000): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { Accept: 'application/rss+xml, application/xml, text/xml, */*' },
+    });
+    if (!res.ok) return null;
+    return await res.text();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ==================== 缓存 ====================
+
+const DERIV_TTL_MS = 5 * 60_000;
+const FEAR_TTL_MS = 30 * 60_000;
+const NEWS_TTL_MS = 20 * 60_000;
+
+interface DerivData {
+  fundingRate8h: number | null;
+  openInterestUsd: number | null;
+}
+const derivCache = new Map<string, { data: DerivData; at: number }>();
+const fearCache = { data: null as MarketContext['fearGreed'], at: 0 };
+const newsCache = { data: null as NewsItem[] | null, at: 0 };
+
+/** 持仓量快照历史（symbol → 快照数组），用于计算 1 小时变化 */
+const oiHistory = new Map<string, { t: number; oi: number }[]>();
+
+// ==================== 衍生品数据（Binance 主 / OKX 备） ====================
+
+async function fetchFundingAndOI(symbol: string, okxId: string): Promise<DerivData> {
+  // --- Binance：premiumIndex 同时拿费率+标记价，openInterest 拿币本位持仓 ---
+  const [premium, oi] = await Promise.all([
+    fetchJson(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${symbol}`),
+    fetchJson(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${symbol}`),
+  ]);
+
+  if (premium && premium.lastFundingRate != null) {
+    const rate = parseFloat(premium.lastFundingRate);
+    let oiUsd: number | null = null;
+    if (oi && oi.openInterest != null && premium.markPrice != null) {
+      const oiCoin = parseFloat(oi.openInterest);
+      const mark = parseFloat(premium.markPrice);
+      if (Number.isFinite(oiCoin) && Number.isFinite(mark) && oiCoin > 0) {
+        oiUsd = oiCoin * mark;
+      }
+    }
+    if (Number.isFinite(rate)) {
+      return { fundingRate8h: rate, openInterestUsd: oiUsd };
+    }
+  }
+
+  // --- OKX 备用：funding-rate + open-interest ---
+  const swapInst = `${okxId}-SWAP`;
+  const [okxFunding, okxOi] = await Promise.all([
+    fetchJson(`https://www.okx.com/api/v5/public/funding-rate?instId=${swapInst}`),
+    fetchJson(`https://www.okx.com/api/v5/public/open-interest?instType=SWAP&instId=${swapInst}`),
+  ]);
+
+  let rate: number | null = null;
+  let oiUsd: number | null = null;
+  if (okxFunding?.code === '0' && Array.isArray(okxFunding.data) && okxFunding.data.length > 0) {
+    const r = parseFloat(okxFunding.data[0].fundingRate);
+    if (Number.isFinite(r)) rate = r;
+  }
+  if (okxOi?.code === '0' && Array.isArray(okxOi.data) && okxOi.data.length > 0) {
+    // 新版接口有 oiUsd 字段；旧版只有 oi(张)/oiCcy(币)，需配合价格折算，取不到就置空
+    if (okxOi.data[0].oiUsd != null) {
+      const v = parseFloat(okxOi.data[0].oiUsd);
+      if (Number.isFinite(v) && v > 0) oiUsd = v;
+    }
+  }
+  return { fundingRate8h: rate, openInterestUsd: oiUsd };
+}
+
+/** 计算持仓量 1 小时变化（基于内存快照，冷启动后需积累约 1 小时） */
+function computeOiChange(symbol: string, oiUsd: number | null): number | null {
+  if (oiUsd == null || oiUsd <= 0) return null;
+  const now = Date.now();
+  const arr = oiHistory.get(symbol) || [];
+
+  // 追加当前快照（同 5 分钟窗口内不重复追加）
+  if (arr.length === 0 || now - arr[arr.length - 1].t > 4 * 60_000) {
+    arr.push({ t: now, oi: oiUsd });
+  }
+  // 只保留 2 小时
+  while (arr.length > 0 && now - arr[0].t > 2 * 60 * 60_000) arr.shift();
+  oiHistory.set(symbol, arr);
+
+  // 找 55 分钟以前、最早的快照做对比基准
+  const ref = arr.find((s) => now - s.t >= 55 * 60_000);
+  if (!ref || ref.oi <= 0) return null; // 积累不足
+  return Number(((oiUsd - ref.oi) / ref.oi * 100).toFixed(2));
+}
+
+async function getDerivatives(symbol: string, okxId: string): Promise<DerivData & { oiChange1hPct: number | null }> {
+  const cached = derivCache.get(symbol);
+  const now = Date.now();
+  if (cached && now - cached.at < DERIV_TTL_MS && cached.data.openInterestUsd != null) {
+    // 命中缓存也要推进快照历史（便宜，纯内存）
+    return { ...cached.data, oiChange1hPct: computeOiChange(symbol, cached.data.openInterestUsd) };
+  }
+
+  const data = await fetchFundingAndOI(symbol, okxId);
+  derivCache.set(symbol, { data, at: now });
+  return { ...data, oiChange1hPct: computeOiChange(symbol, data.openInterestUsd) };
+}
+
+// ==================== 恐惧贪婪指数 ====================
+
+async function getFearGreed(): Promise<MarketContext['fearGreed']> {
+  if (fearCache.data && Date.now() - fearCache.at < FEAR_TTL_MS) return fearCache.data;
+  const json = await fetchJson('https://api.alternative.me/fng/?limit=1');
+  let result: MarketContext['fearGreed'] = null;
+  const entry = json?.data?.[0];
+  if (entry && entry.value != null) {
+    const value = parseInt(entry.value, 10);
+    if (Number.isFinite(value)) {
+      result = { value, classification: String(entry.value_classification || '') };
+    }
+  }
+  if (result) fearCache.data = result, fearCache.at = Date.now();
+  return result;
+}
+
+// ==================== 新闻要闻（Cointelegraph RSS） ====================
+
+const NEWS_WINDOW_MS = 3 * 60 * 60_000; // 只取 3 小时内的要闻
+
+async function getNews(): Promise<NewsItem[]> {
+  if (newsCache.data && Date.now() - newsCache.at < NEWS_TTL_MS) return newsCache.data;
+
+  const xml = await fetchText('https://cointelegraph.com/rss');
+  if (!xml) return newsCache.data || [];
+
+  const items: NewsItem[] = [];
+  const itemRe = /<item>([\s\S]*?)<\/item>/g;
+  let m: RegExpExecArray | null;
+  while ((m = itemRe.exec(xml)) !== null && items.length < 40) {
+    const block = m[1];
+    const titleMatch = /<title>([\s\S]*?)<\/title>/.exec(block);
+    const dateMatch = /<pubDate>([\s\S]*?)<\/pubDate>/.exec(block);
+    if (!titleMatch) continue;
+
+    // 标题：去 CDATA 包裹和残留标签
+    let title = titleMatch[1].trim();
+    title = title.replace(/^<!\[CDATA\[/, '').replace(/\]\]>$/, '');
+    title = title.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
+    if (!title) continue;
+
+    const ts = dateMatch ? Date.parse(dateMatch[1].trim()) : NaN;
+    items.push({
+      title,
+      publishedAt: Number.isFinite(ts) ? ts : 0,
+      source: 'Cointelegraph',
+    });
+  }
+
+  // 只保留 3 小时内的，按时间倒序，最多 6 条
+  const now = Date.now();
+  const fresh = items
+    .filter((i) => i.publishedAt > 0 && now - i.publishedAt <= NEWS_WINDOW_MS)
+    .sort((a, b) => b.publishedAt - a.publishedAt)
+    .slice(0, 6);
+
+  if (fresh.length > 0) newsCache.data = fresh, newsCache.at = Date.now();
+  return fresh;
+}
+
+// ==================== 汇总入口 ====================
+
+export async function fetchMarketContext(symbol: string, okxId: string): Promise<MarketContext> {
+  const [deriv, fearGreed, news] = await Promise.all([
+    getDerivatives(symbol, okxId),
+    getFearGreed().catch(() => null),
+    getNews().catch(() => [] as NewsItem[]),
+  ]);
+
+  return {
+    fundingRate8h: deriv.fundingRate8h,
+    openInterestUsd: deriv.openInterestUsd,
+    oiChange1hPct: deriv.oiChange1hPct,
+    fearGreed,
+    news,
+  };
+}
+
+// ==================== Prompt 文本构建 ====================
+
+/** 恐惧贪婪英文分类 → 中文 */
+const FNG_ZH: Record<string, string> = {
+  'Extreme Fear': '极度恐惧',
+  Fear: '恐惧',
+  Neutral: '中性',
+  Greed: '贪婪',
+  'Extreme Greed': '极度贪婪',
+};
+
+/** 生成注入 prompt 的市场上下文文本块 */
+export function buildMarketContextText(ctx: MarketContext): string {
+  const lines: string[] = [];
+
+  // 资金费率 + 拥挤度解读
+  if (ctx.fundingRate8h != null) {
+    const pct = ctx.fundingRate8h * 100; // 0.00047 → 0.047%
+    const annualized = ctx.fundingRate8h * 3 * 365 * 100;
+    let tone: string;
+    if (pct >= 0.05) tone = '多头严重拥挤，反抽/回调风险高';
+    else if (pct >= 0.015) tone = '多头偏拥挤';
+    else if (pct <= -0.05) tone = '空头严重拥挤，轧空风险高';
+    else if (pct <= -0.015) tone = '空头偏拥挤';
+    else tone = '多空均衡';
+    lines.push(`资金费率(8h): ${pct.toFixed(4)}%（年化约 ${annualized.toFixed(0)}%，${tone}）`);
+  } else {
+    lines.push('资金费率: 暂无数据');
+  }
+
+  // 持仓量 + 1 小时变化
+  if (ctx.openInterestUsd != null) {
+    const oiText = ctx.openInterestUsd >= 1e9
+      ? `$${(ctx.openInterestUsd / 1e9).toFixed(2)}B`
+      : `$${(ctx.openInterestUsd / 1e6).toFixed(1)}M`;
+    const changeText = ctx.oiChange1hPct != null
+      ? `${ctx.oiChange1hPct > 0 ? '+' : ''}${ctx.oiChange1hPct}%`
+      : '数据积累中';
+    lines.push(`持仓量: ${oiText}（1小时 ${changeText}）`);
+  } else {
+    lines.push('持仓量: 暂无数据');
+  }
+
+  // 恐惧贪婪
+  if (ctx.fearGreed) {
+    const zh = FNG_ZH[ctx.fearGreed.classification] || ctx.fearGreed.classification;
+    lines.push(`恐惧贪婪指数: ${ctx.fearGreed.value}/100（${zh}）`);
+  } else {
+    lines.push('恐惧贪婪指数: 暂无数据');
+  }
+
+  // 要闻
+  if (ctx.news.length > 0) {
+    lines.push(`近${Math.round(NEWS_WINDOW_MS / 3600000)}小时要闻:`);
+    ctx.news.forEach((n, i) => {
+      const t = new Date(n.publishedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+      lines.push(`${i + 1}. [${n.source} ${t}UTC] ${n.title}`);
+    });
+  } else {
+    lines.push('近3小时无重大要闻');
+  }
+
+  lines.push('解读要点: 费率极端正=多头拥挤；突破伴随持仓量增加=可信，缩量突破=疑似陷阱；突发新闻（黑客/监管/清算）权重高于技术形态');
+
+  return `=== 衍生品与市场情绪（真实市场数据） ===\n${lines.join('\n')}`;
+}

@@ -12,6 +12,7 @@
  */
 
 import { fetchKlines, fetchPrice, type KlineData } from './market-data';
+import { fetchMarketContext, buildMarketContextText } from './market-context';
 import {
   calcMACD,
   calcRSI,
@@ -331,6 +332,7 @@ const SYSTEM_PROMPT = `你是一位专业的加密货币短线合约交易分析
 4. 震荡市（ADX 低位、均线纠缠、区间内反复）宁可观望也要给 neutral；短线最怕在无趋势行情中反复扫损
 5. 严格遵守风险控制，单笔风险不超过 2%
 6. 置信度反映你对分析结果的把握程度，0-100
+7. 衍生品数据是短线的关键领先指标：资金费率极端正=多头拥挤（追多谨慎，反抽风险）；突破伴随持仓量增加=可信，缩量突破=疑似陷阱；若近期要闻存在重大利空/利多（黑客、监管、大额清算），其权重高于技术形态，必要时直接给 neutral 或在 riskWarning 中明确提示
 
 你必须以严格的 JSON 格式返回，不要包含任何其他文字。JSON 格式如下：
 {
@@ -354,6 +356,7 @@ function buildUserPrompt(
   k5m: KlineData[],
   k15m: KlineData[],
   k1h: KlineData[],
+  marketContextText: string,
 ): string {
   const ind5m = computeIndicatorSnapshot(k5m);
   const ind15m = computeIndicatorSnapshot(k15m);
@@ -362,6 +365,8 @@ function buildUserPrompt(
   return `请分析以下 ${label} (${symbol}) 的实时行情数据：
 
 当前价格: ${currentPrice}
+
+${marketContextText}
 
 === 5分钟周期（短线入场时机的核心依据） ===
 ${buildKlineSummary(k5m, '5M K线')}
@@ -585,10 +590,12 @@ export async function analyzeMarketWithAI(
   }
 
   // 3. 获取多周期 K 线数据（短线风格：5m 即时动能 / 15m 主判定 / 1h 大方向过滤）
-  const [k5m, k15m, k1h] = await Promise.all([
+  //    并行抓取衍生品/情绪/要闻上下文（带缓存，失败优雅降级为"暂无数据"）
+  const [k5m, k15m, k1h, marketCtx] = await Promise.all([
     fetchKlines(symbol, okxId, '5m', 200).catch(() => []),
     fetchKlines(symbol, okxId, '15m', 200).catch(() => []),
     fetchKlines(symbol, okxId, '1h', 200).catch(() => []),
+    fetchMarketContext(symbol, okxId).catch(() => null),
   ]);
 
   if (k5m.length === 0 && k15m.length === 0 && k1h.length === 0) {
@@ -596,7 +603,15 @@ export async function analyzeMarketWithAI(
   }
 
   // 4. 构建 prompt
-  const userPrompt = buildUserPrompt(symbol, label, price, k5m, k15m, k1h);
+  const userPrompt = buildUserPrompt(
+    symbol,
+    label,
+    price,
+    k5m,
+    k15m,
+    k1h,
+    marketCtx ? buildMarketContextText(marketCtx) : '=== 衍生品与市场情绪 === 暂无数据',
+  );
 
   // 5. 调用 AI API
   const rawResponse = await callChatCompletions(config, SYSTEM_PROMPT, userPrompt);
