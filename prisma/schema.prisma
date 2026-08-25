@@ -189,6 +189,7 @@ model PaperAccount {
   makerFee        Float    @default(0.02)    // 挂单手续费 %
   slippage        Float    @default(0.05)    // 滑点 %
   autoTrade       Boolean  @default(false)   // 自动交易开关
+  currentSymbol   String?                    // 用户当前选中的币种（自动开仓仅针对该币种）
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 

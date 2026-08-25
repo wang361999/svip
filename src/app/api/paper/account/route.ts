@@ -25,6 +25,8 @@ const updateConfigSchema = z.object({
   makerFee: z.number().min(0).max(1).optional(),
   slippage: z.number().min(0).max(1).optional(),
   autoTrade: z.boolean().optional(),
+  // 用户当前选中的币种（前端切换币种时同步，引擎只对该币种自动开仓）
+  currentSymbol: z.string().regex(/^[A-Z0-9]{4,20}$/).optional(),
 });
 
 export const GET = createHandler(async () => {

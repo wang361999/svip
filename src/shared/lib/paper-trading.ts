@@ -151,6 +151,7 @@ export async function updateAccountConfig(
     makerFee?: number;
     slippage?: number;
     autoTrade?: boolean;
+    currentSymbol?: string;
   },
 ): Promise<PaperAccountInfo> {
   const account = await getOrCreateAccount(userId);
@@ -164,9 +165,13 @@ export async function updateAccountConfig(
       ...(config.makerFee !== undefined && { makerFee: config.makerFee }),
       ...(config.slippage !== undefined && { slippage: config.slippage }),
       ...(config.autoTrade !== undefined && { autoTrade: config.autoTrade }),
+      ...(config.currentSymbol !== undefined && { currentSymbol: config.currentSymbol }),
     },
   });
-  // 记录日志
+  // 币种切换是高频操作，只更新 currentSymbol 时不记日志（避免刷屏）
+  if (config.currentSymbol !== undefined && Object.keys(config).length === 1) {
+    return getAccountInfo(userId);
+  }
   await prisma.paperTradeLog.create({
     data: {
       accountId: account.id,
@@ -593,22 +598,30 @@ export async function runEngine(userId: string): Promise<{
   try {
     const account = await getOrCreateAccount(userId);
 
-    // 获取允许自动交易的币种列表
+    // 获取前台可见的币种列表（价格与元数据来源）
     // active 只代表前台显示；autoTrade 才代表允许引擎自动开仓
-    const symbols = await prisma.tradingSymbol.findMany({
-      where: { active: true, autoTrade: true },
+    const allSymbols = await prisma.tradingSymbol.findMany({
+      where: { active: true },
       orderBy: [{ isPopular: 'desc' }, { sortOrder: 'asc' }],
     });
 
-    if (symbols.length === 0) {
-      result.errors.push('没有启用自动交易的币种');
+    if (allSymbols.length === 0) {
+      result.errors.push('没有可用的币种');
       return result;
     }
 
-    // 并行获取所有币种价格
+    // 自动开仓目标币种：仅「用户当前选中」且管理员允许自动交易的币种。
+    // 修复：此前引擎遍历所有 autoTrade 币种开仓，会开出用户没在看的币种的仓位。
+    // 当前选中币种由前端切换币种时写入 account.currentSymbol。
+    const targetSymbolMeta = account.currentSymbol
+      ? allSymbols.find((s) => s.symbol === account.currentSymbol && s.autoTrade)
+      : undefined;
+    const autoTargets = targetSymbolMeta ? [targetSymbolMeta] : [];
+
+    // 并行获取所有币种价格（覆盖持仓币种，保证止损止盈正常巡检）
     const priceMap: Record<string, number> = {};
     const priceResults = await Promise.allSettled(
-      symbols.map((s) => fetchPrice(s.symbol, s.okxId).then((price) => ({ symbol: s.symbol, price }))),
+      allSymbols.map((s) => fetchPrice(s.symbol, s.okxId).then((price) => ({ symbol: s.symbol, price }))),
     );
     for (const r of priceResults) {
       if (r.status === 'fulfilled' && r.value.price && r.value.price > 0) {
@@ -672,9 +685,17 @@ export async function runEngine(userId: string): Promise<{
       }
     }
 
-    // 4. 自动开仓（如果开启）- 遍历每个币种计算信号
+    // 4. 自动开仓（如果开启）- 只对当前选中币种计算信号
+    // （修复：原来遍历所有 autoTrade 币种，会开出用户没在看的币种的仓位）
+    if (account.autoTrade && autoTargets.length === 0) {
+      result.errors.push(
+        account.currentSymbol
+          ? `币种 ${account.currentSymbol} 未启用自动交易，跳过自动开仓`
+          : '未记录当前选中币种（打开交易页后会自动记录），跳过自动开仓',
+      );
+    }
     if (account.autoTrade) {
-      for (const sym of symbols) {
+      for (const sym of autoTargets) {
         const price = priceMap[sym.symbol];
         if (!price || price <= 0) continue;
 
@@ -723,7 +744,9 @@ export async function runEngine(userId: string): Promise<{
       const aiConfig = parseAiConfig(settings as unknown as Record<string, string | null>);
 
       if (aiConfig.enabled && aiConfig.autoTrade && account.autoTrade) {
-        for (const sym of symbols) {
+        // AI 自动开仓同样只针对当前选中币种
+        // （修复：原来遍历所有币种，1 小时内的旧 AI 分析记录会被拿去开非当前币种的仓）
+        for (const sym of autoTargets) {
           // 限制最大持仓数
           const openCount = await prisma.paperPosition.count({
             where: { userId, status: 'open' },
@@ -812,7 +835,7 @@ export async function runEngine(userId: string): Promise<{
           userId,
           action: 'engine',
           detail: JSON.stringify(result),
-          price: priceMap[symbols[0]?.symbol] || 0,
+          price: priceMap[account.currentSymbol || allSymbols[0]?.symbol] || 0,
         },
       });
     } catch {

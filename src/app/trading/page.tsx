@@ -11,11 +11,13 @@ import PaperTradingPanel from '@/components/trading/PaperTradingPanel';
 import AiAnalysisPanel from '@/components/trading/AiAnalysisPanel';
 import ErrorBoundary from '@/components/ErrorBoundary';
 import useAuthStore from '@/store/authStore';
-import { apiGet } from '@/shared/api/client';
+import useSymbolStore from '@/store/symbolStore';
+import { apiGet, apiPut } from '@/shared/api/client';
 
 export default function TradingPage() {
   const router = useRouter();
   const { isAuthenticated, setUser } = useAuthStore();
+  const { symbol } = useSymbolStore();
   const [checking, setChecking] = useState(true);
   const [showPriceCard, setShowPriceCard] = useState(true);
   const [paperTradingEnabled, setPaperTradingEnabled] = useState(false);
@@ -52,6 +54,13 @@ export default function TradingPage() {
     })();
     return () => { cancelled = true; };
   }, [router, setUser]);
+
+  // 把「当前选中币种」同步到服务端（引擎自动开仓只针对该币种）
+  useEffect(() => {
+    if (!isAuthenticated || !symbol) return;
+    // fire-and-forget：失败不影响页面，下次切换会再同步
+    apiPut('/api/paper/account', { currentSymbol: symbol }).catch(() => {});
+  }, [isAuthenticated, symbol]);
 
   // 全屏状态监听
   useEffect(() => {
