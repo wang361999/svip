@@ -137,11 +137,18 @@ export interface AiAnalysisResult {
   meta: {
     /** AI 判定的市场状态：trending 趋势 / range 区间 / chop 碎波 / event 事件驱动 */
     regime: 'trending' | 'range' | 'chop' | 'event';
-    /** 江恩八分位阶梯（服务端客观计算回填 — 唯一分析依据，前端阶梯展示用） */
+    /** 江恩八分位阶梯（服务端客观计算回填 — 价位框架，前端阶梯展示用） */
     gann?: {
       swingHigh: number; swingLow: number; rangePct: number;
       positionPct: number; zoneLabel: string;
       levels: { division: string; index: number; price: number; distPct: number; meaning: string }[];
+    } | null;
+    /** 顶底分型信号（服务端客观计算回填 — 进场触发器，前端徽章展示用） */
+    fractal?: {
+      lastTop: { price: number; barsAgo: number; strong: boolean; nearDivision: string } | null;
+      lastBottom: { price: number; barsAgo: number; strong: boolean; nearDivision: string } | null;
+      topBroken: boolean;
+      bottomBroken: boolean;
     } | null;
   };
 }
@@ -287,6 +294,103 @@ function buildGannText(g: GannEighths | null, currentPrice: number): string {
 ${lines.join('\n')}`;
 }
 
+// ==================== 顶底分型（Fractal）客观计算 ====================
+
+/** 分型点：三根K线中的极值（已确认：右侧K线走完才算） */
+export interface FractalPoint {
+  type: 'top' | 'bottom';
+  price: number;      // 分型极值（顶分型=最高高点，底分型=最低低点）
+  barsAgo: number;    // 距最新K线的根数
+  strong: boolean;    // 强分型：左右各两根（共5根）内均为极值
+  nearDivision: string; // 分型极值贴近的八分位（如 "3/8"），无贴近为空
+}
+
+export interface FractalSignal {
+  lastTop: FractalPoint | null;
+  lastBottom: FractalPoint | null;
+  /** 顶分型高点已被最新收盘价突破（信号失效，多头结构强化） */
+  topBroken: boolean;
+  /** 底分型低点已被最新收盘价跌破（信号失效，空头结构强化） */
+  bottomBroken: boolean;
+}
+
+/**
+ * 客观计算近端顶底分型（1h K线）
+ * 顶分型：中间K线高点高于左右两根；底分型：中间低点低于左右两根
+ * 只统计已确认分型（i 从 n-2 起，右侧K线存在），从右往左找最近的一组
+ */
+export function computeFractalSignal(k1h: KlineData[], gann: GannEighths | null): FractalSignal | null {
+  if (k1h.length < 20) return null;
+  const n = k1h.length;
+  const start = Math.max(2, n - 96); // 只看近 96 根（4天）
+  let lastTop: FractalPoint | null = null;
+  let lastBottom: FractalPoint | null = null;
+
+  /** 分型极值是否贴近某档八分位（0.3% 内） */
+  const nearDiv = (p: number): string => {
+    if (!gann) return '';
+    let best = '';
+    let bestDist = Infinity;
+    for (const l of gann.levels) {
+      const d = Math.abs(l.price - p) / p;
+      if (d < bestDist) { bestDist = d; best = l.division; }
+    }
+    return bestDist <= 0.003 ? best : '';
+  };
+
+  for (let i = n - 2; i >= start; i--) {
+    const k = k1h[i];
+    const l = k1h[i - 1];
+    const r = k1h[i + 1];
+    const isTop = k.high > l.high && k.high > r.high;
+    const isBottom = k.low < l.low && k.low < r.low;
+    if (!isTop && !isBottom) continue;
+
+    const barsAgo = n - 1 - i;
+    // 强分型：左右各再扩一根（5根内极值）
+    const l2 = i >= 2 ? k1h[i - 2] : null;
+    const r2 = i + 2 < n ? k1h[i + 2] : null;
+
+    if (isTop && !lastTop) {
+      const strong = !!(l2 && r2 && k.high > l2.high && k.high > r2.high);
+      lastTop = { type: 'top', price: k.high, barsAgo, strong, nearDivision: nearDiv(k.high) };
+    }
+    if (isBottom && !lastBottom) {
+      const strong = !!(l2 && r2 && k.low < l2.low && k.low < r2.low);
+      lastBottom = { type: 'bottom', price: k.low, barsAgo, strong, nearDivision: nearDiv(k.low) };
+    }
+    if (lastTop && lastBottom) break;
+  }
+
+  if (!lastTop && !lastBottom) return null;
+
+  // 失效判定：最新收盘价越过顶分型高点 / 跌破底分型低点
+  const lastClose = k1h[n - 1].close;
+  return {
+    lastTop,
+    lastBottom,
+    topBroken: !!(lastTop && lastClose > lastTop.price),
+    bottomBroken: !!(lastBottom && lastClose < lastBottom.price),
+  };
+}
+
+/** 分型文本（注入 prompt — 进场触发器） */
+function buildFractalText(f: FractalSignal | null, currentPrice: number): string {
+  if (!f) return '=== 顶底分型 ===\n近端无已确认分型（此时只能 neutral，等待分型形成）';
+  const fmt = (p: FractalPoint | null, broken: boolean) => {
+    if (!p) return '近96根内无';
+    const status = broken
+      ? (p.type === 'top' ? '高点已被收盘突破（信号失效）' : '低点已被收盘跌破（信号失效）')
+      : '有效';
+    const distRaw = ((p.price - currentPrice) / currentPrice) * 100;
+    const distPct = distRaw.toFixed(2);
+    return `${p.price}（${p.barsAgo}根前，${p.strong ? '强分型' : '普通分型'}${p.nearDivision ? `，贴近 ${p.nearDivision} 分位（共振）` : ''}，${status}，距现价 ${distRaw > 0 ? '+' : ''}${distPct}%）`;
+  };
+  return `=== 顶底分型（进场触发器，服务端客观计算） ===
+最近顶分型：${fmt(f.lastTop, f.topBroken)}
+最近底分型：${fmt(f.lastBottom, f.bottomBroken)}`;
+}
+
 function buildKlineSummary(klines: KlineData[], label: string): string {
   if (klines.length === 0) return `${label}: 无数据`;
 
@@ -325,54 +429,63 @@ function buildKlineSummary(klines: KlineData[], label: string): string {
 }
 
 /** 构建系统 prompt */
-const SYSTEM_PROMPT = `你是严格执行「江恩八分法」的交易分析师。你只使用江恩八分位规则，不使用任何其他方法：不看技术指标（RSI/MACD/均线）、不看消息面、不看衍生品数据、不做多周期共振。
+const SYSTEM_PROMPT = `你是严格执行「江恩八分位 + 顶底分型」的交易分析师。价位框架只用江恩八分位，进场触发只用顶底分型，两者缺一不可。不使用任何其他方法：不看技术指标（RSI/MACD/均线）、不看消息面、不看衍生品数据、不做多周期共振。
 
-【江恩八分法规则 — 唯一分析依据】
-数据提供近72小时摆动区间的八分位阶梯（1/8~8/8，服务端客观计算）。所有判断严格按以下规则执行：
+【价位框架：江恩八分位】
+数据提供近72小时摆动区间的八分位阶梯（1/8~8/8，服务端客观计算）：
+- 4/8 中轴（50%）是多空分水岭
+- 支撑分位：1/8 极限支撑、2/8 次级支撑、3/8 下枢轴
+- 阻力分位：5/8 上枢轴、6/8 次级阻力、7/8 极限阻力
 
-1. 4/8 中轴（50%）是多空分水岭：价格站稳 4/8 之上只做多，之下只做空
-2. 买入分位：1/8 极限支撑（最佳买点）、2/8 次佳买点、3/8 突破确认位（有效突破后上看 4/8）
-3. 卖出分位：7/8 极限阻力（最佳空点）、6/8 次佳空点、5/8 次强阻力
-4. 回调做多：价格在 4/8 上方运行且回踩 3/8 或 4/8 → 挂多单，止盈看 5/8、6/8
-5. 反弹做空：价格在 4/8 下方运行且反弹 5/8 或 4/8 → 挂空单，止盈看 3/8、2/8
-6. 边缘反转：价格触及 7/8~8/8 → 只做向 4/8 回归的空单或观望；触及 0~1/8 → 只做向 4/8 回归的多单或观望
-7. 止损：入场分位相邻的外侧分位（挂 3/8 多单止损放 2/8，空单镜像）
-8. 止盈：入场方向的下一档分位（止盈1）、再下一档（止盈2）
-9. 突破顺延：某分位被有效突破（1小时收盘越过）后，该分位角色反转，目标顺延一档
-10. 价格悬停在两个分位中间、无分位依托 → neutral，不勉强给方向
+【进场触发：顶底分型】
+数据提供近端已确认分型（服务端客观计算）：中间K线高点高于左右两根=顶分型（见顶信号），中间低点低于左右两根=底分型（见底信号）。
+
+进场规则（分型触发 + 分位框架，缺一不给方向）：
+1. 底分型有效（低点未被收盘跌破）+ 位于 4/8 下方支撑区（1/8~3/8）→ 反弹做多：entry=分型低点上方就近分位，stopLoss=分型低点，takeProfit1=4/8，takeProfit2=5/8
+2. 底分型有效 + 位于 4/8 上方（5/8~7/8）→ 回踩结束顺势做多：entry=分型低点上方就近分位，stopLoss=分型低点，takeProfit1=7/8，takeProfit2=8/8
+3. 顶分型有效（高点未被收盘突破）+ 位于 4/8 上方阻力区（5/8~7/8）→ 回落做空：entry=分型高点下方就近分位，stopLoss=分型高点，takeProfit1=4/8，takeProfit2=3/8
+4. 顶分型有效 + 位于 4/8 下方（1/8~3/8）→ 反抽结束顺势做空：entry=分型高点下方就近分位，stopLoss=分型高点，takeProfit1=1/8，takeProfit2=2/8
+5. 共振加分：分型极值贴近八分位（±0.3%，数据已标注）= 分型分位共振，置信度 80+；强分型再加分
+6. 分型失效（顶分型高点被突破 / 底分型低点被跌破）→ 该分型信号作废，等待新分型，否则 neutral
+7. 近端无有效分型、或分型与所在分位区矛盾（如下方支撑区出现顶分型）→ neutral，不勉强给方向
 
 【价位铁律】
-- entryPrice / stopLoss / takeProfit1 / takeProfit2 必须精确等于八分位价格，禁止自创价位
+- entryPrice / takeProfit1 / takeProfit2 必须等于八分位价格；stopLoss = 分型极值（分型极值贴近分位时用该分位价）
 - 用户只挂限价单进场，不追市价
 
 你必须以严格的 JSON 格式返回，不要包含任何其他文字。JSON 格式如下：
 {
   "direction": "long" | "short" | "neutral",
-  "confidence": 数字(0-100，分位依托清晰度：价格贴近强分位且规则情形明确=高分；分位间悬空=低分),
+  "confidence": 数字(0-100，分型分位共振+强分型+近端新鲜=高分，分型失效或无分型=低分),
   "entryPrice": 八分位价格或null（neutral时为null）,
-  "stopLoss": 相邻外侧分位价格或null,
-  "takeProfit1": 下一档分位价格或null,
-  "takeProfit2": 再下一档分位价格或null,
-  "summary": "一句话：现价位于X/8~Y/8之间 + 挂单动作（如：位于4/8~5/8，挂3/8限价多）",
-  "reasoning": "两三句：命中规则第几条的哪种情形、依托哪个分位"
+  "stopLoss": 分型极值价格或null,
+  "takeProfit1": 八分位价格或null,
+  "takeProfit2": 八分位价格或null,
+  "summary": "一句话：触发分型+分位+进场动作（如：3/8处底分型有效，挂2465限价多，止损2458看2505）",
+  "reasoning": "两三句：命中进场规则第几条、依托哪个分型分位、止损为何放在分型极值"
 }`
 
-/** 构建用户 prompt（纯江恩八分法：阶梯 + 1h 近期价格行为，无其他数据） */
+/** 构建用户 prompt（江恩八分位框架 + 顶底分型触发，无其他数据） */
 function buildUserPrompt(
   symbol: string,
   label: string,
   currentPrice: number,
   k1h: KlineData[],
   gannText: string,
+  fractalText: string,
 ): string {
-  return `请按江恩八分法规则分析 ${label} (${symbol})：
+  return `请按「江恩八分位 + 顶底分型」规则分析 ${label} (${symbol})：
+
+当前价格: ${currentPrice}
 
 ${gannText}
 
-=== 近期价格行为（1小时K线摘要，用于判断分位的突破/回踩状态） ===
+${fractalText}
+
+=== 近期价格行为（1小时K线摘要，用于判断分型与分位的突破/回踩状态） ===
 ${buildKlineSummary(k1h, '1H K线')}
 
-严格按八分位规则返回 JSON，不要包含任何其他文字。`;
+严格按规则返回 JSON，不要包含任何其他文字。`;
 }
 
 // ==================== AI API 调用 ====================
@@ -578,11 +691,14 @@ export async function analyzeMarketWithAI(
     throw new Error('无法获取 K 线数据');
   }
 
-  // 3.5 计算江恩八分位阶梯（近72小时摆动区间 8 等分 — 唯一分析依据，注入 prompt + 回填 meta 供前端展示）
+  // 3.5 计算江恩八分位阶梯（近72小时摆动区间 8 等分 — 价位框架，注入 prompt + 回填 meta 供前端展示）
   const gann = computeGannEighths(k1h, price);
 
-  // 4. 构建 prompt（纯江恩：阶梯 + 1h 价格行为，无其他数据）
-  const userPrompt = buildUserPrompt(symbol, label, price, k1h, buildGannText(gann, price));
+  // 3.6 计算近端顶底分型（进场触发器 — 注入 prompt + 回填 meta 供前端展示）
+  const fractal = computeFractalSignal(k1h, gann);
+
+  // 4. 构建 prompt（八分位框架 + 分型触发 + 1h 价格行为，无其他数据）
+  const userPrompt = buildUserPrompt(symbol, label, price, k1h, buildGannText(gann, price), buildFractalText(fractal, price));
 
   // 5. 调用 AI API
   const rawResponse = await callChatCompletions(config, SYSTEM_PROMPT, userPrompt);
@@ -593,6 +709,8 @@ export async function analyzeMarketWithAI(
 
   // 回填江恩八分位（服务端客观计算，前端阶梯图展示；不依赖 AI 复述避免幻觉）
   result.meta.gann = gann;
+  // 回填顶底分型（服务端客观计算，前端徽章展示）
+  result.meta.fractal = fractal;
 
   return result;
 }

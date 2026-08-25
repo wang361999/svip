@@ -19,11 +19,18 @@ interface AiAnalysis {
   keyLevels: { price: number; type: string; note: string }[] | null;
   meta?: {
     regime?: string;
-    /** 江恩八分位阶梯（服务端客观计算 — 唯一分析依据） */
+    /** 江恩八分位阶梯（服务端客观计算 — 价位框架） */
     gann?: {
       swingHigh: number; swingLow: number; rangePct: number;
       positionPct: number; zoneLabel: string;
       levels: { division: string; index: number; price: number; distPct: number; meaning: string }[];
+    } | null;
+    /** 顶底分型信号（服务端客观计算 — 进场触发器） */
+    fractal?: {
+      lastTop: { price: number; barsAgo: number; strong: boolean; nearDivision: string } | null;
+      lastBottom: { price: number; barsAgo: number; strong: boolean; nearDivision: string } | null;
+      topBroken: boolean;
+      bottomBroken: boolean;
     } | null;
   } | null;
   riskWarning: string | null;

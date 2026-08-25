@@ -129,6 +129,12 @@ function parseMeta(raw: string | null): {
     positionPct: number; zoneLabel: string;
     levels: { division: string; index: number; price: number; distPct: number; meaning: string }[];
   } | null;
+  fractal?: {
+    lastTop: { price: number; barsAgo: number; strong: boolean; nearDivision: string } | null;
+    lastBottom: { price: number; barsAgo: number; strong: boolean; nearDivision: string } | null;
+    topBroken: boolean;
+    bottomBroken: boolean;
+  } | null;
 } | null {
   if (!raw) return null;
   try {
@@ -216,6 +222,31 @@ function parseMeta(raw: string | null): {
       }
     }
 
+    // 顶底分型透传（服务端客观计算回填的 meta，非 AI 生成）
+    let fractal: {
+      lastTop: { price: number; barsAgo: number; strong: boolean; nearDivision: string } | null;
+      lastBottom: { price: number; barsAgo: number; strong: boolean; nearDivision: string } | null;
+      topBroken: boolean;
+      bottomBroken: boolean;
+    } | null = null;
+    if (parsed.fractal && typeof parsed.fractal === 'object') {
+      const pt = (x: unknown) =>
+        x && typeof x === 'object' && Number((x as any).price) > 0
+          ? {
+              price: Number((x as any).price),
+              barsAgo: Number((x as any).barsAgo) > 0 ? Number((x as any).barsAgo) : 0,
+              strong: (x as any).strong === true,
+              nearDivision: String((x as any).nearDivision || ''),
+            }
+          : null;
+      fractal = {
+        lastTop: pt(parsed.fractal.lastTop),
+        lastBottom: pt(parsed.fractal.lastBottom),
+        topBroken: parsed.fractal.topBroken === true,
+        bottomBroken: parsed.fractal.bottomBroken === true,
+      };
+    }
+
     return {
       regime: String(parsed.regime || 'unknown'),
       aPlusChecklist:
@@ -227,6 +258,7 @@ function parseMeta(raw: string | null): {
       ...(plans.length > 0 ? { plans } : {}),
       ...(noTradeZone ? { noTradeZone } : {}),
       ...(gann ? { gann } : {}),
+      ...(fractal ? { fractal } : {}),
     };
   } catch {
     return null;
