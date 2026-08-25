@@ -768,6 +768,16 @@ export async function runEngine(userId: string): Promise<{
       const aiConfig = parseAiConfig(settings as unknown as Record<string, string | null>);
 
       if (aiConfig.enabled && aiConfig.autoTrade && account.autoTrade) {
+        // ===== 置信度动态校准：按模型已复盘的真实胜率提高开仓门槛 =====
+        // 原理：若模型 70-79 分段历史胜率只有 40%，硬编码 60 门槛照开仓 = 亏钱
+        // 校准只在战绩差时收紧门槛，战绩好不放松纪律（门槛只升不降）
+        const { getCalibratedThreshold, evaluatePendingPredictions } = await import('./ai-feedback');
+        evaluatePendingPredictions().catch(() => {}); // 引擎轮询顺手评估到期预测
+        const calib = await getCalibratedThreshold(aiConfig.model, 60).catch(() => ({ threshold: 60, winRate: null, sample: 0 }));
+        if (calib.threshold > 60) {
+          result.errors.push(`置信度门槛校准：${aiConfig.model || '当前模型'} 历史胜率不足（样本 ${calib.sample}，胜率 ${calib.winRate}%），开仓门槛 60 → ${calib.threshold}`);
+        }
+
         // AI 自动开仓同样只针对当前选中币种
         // （修复：原来遍历所有币种，1 小时内的旧 AI 分析记录会被拿去开非当前币种的仓）
         for (const sym of autoTargets) {
@@ -808,7 +818,11 @@ export async function runEngine(userId: string): Promise<{
           if (aiMeta.regime === 'chop') continue;
           // range 区间：只有区间边缘的高把握交易才值得做 → 置信度 ≥ 70
           // event 事件：等事件消化，方向明确才进场 → 置信度 ≥ 75
-          const confGate = aiMeta.regime === 'range' ? 70 : aiMeta.regime === 'event' ? 75 : 60;
+          // calib.threshold：按模型真实胜率校准的动态门槛（战绩差自动提高）
+          const confGate = Math.max(
+            aiMeta.regime === 'range' ? 70 : aiMeta.regime === 'event' ? 75 : 60,
+            calib.threshold,
+          );
           if (latestAi.confidence < confGate) continue;
 
           // ===== A+ 清单闸门：五项核心检查至少 4 项通过，且市场状态必须明确 =====

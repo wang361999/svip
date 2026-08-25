@@ -13,6 +13,7 @@
 
 import { fetchKlines, fetchPrice, type KlineData } from './market-data';
 import { fetchMarketContext, buildMarketContextText, fetchBtcSnapshot, buildBtcContextText } from './market-context';
+import { evaluatePendingPredictions, getRecentFeedbackText } from './ai-feedback';
 import {
   calcMACD,
   calcRSI,
@@ -359,11 +360,18 @@ const SYSTEM_PROMPT = `你是一位顶级加密货币短线合约交易员，交
 - 亚盘流动性差假突破多、美盘波动最剧烈；资金费率结算（UTC 0/8/16 点）前 30 分钟常有异动，追高追低需谨慎
 - 数据会提供当前时段与距下次结算的分钟数
 
+第五步：吸收你的历史战绩（真实复盘数据）
+- 数据会提供你近期预测的真实结果（触止损/触止盈/方向对错）
+- 若近期被扫损比例高：检查止损是否太近、是否把碎波误判成趋势，主动收紧 regime 判定
+- 若近期方向错误率高：信号矛盾时优先 neutral，不要强行选边
+- 连胜时不放宽标准；这不是让你机械跟随战绩，而是从错误模式中修正判断框架
+
 风控铁律：
 1. 单笔风险不超过 2%；止盈第一目标 1.5R-2R，第二目标 3R
 2. 震荡/碎波市宁可观望也要给 neutral；不交易也是一种交易
 3. 置信度 0-100 反映真实把握：五项 A+ 清单全中才能给 80+；缺任何一项都应下调
 4. 衍生品数据是关键领先指标：资金费率极端正=多头拥挤（追多谨慎）；突破伴随持仓量增加=可信，缩量突破=疑似陷阱；重大新闻权重高于技术形态
+5. 多空比是反向指标：散户多头账户极度拥挤（>2）时追多大概率被收割，散户空头极度拥挤（<0.5）时追空同理；主动买卖比反映真实资金方向，比账户比更即时
 
 你必须以严格的 JSON 格式返回，不要包含任何其他文字。JSON 格式如下：
 {
@@ -451,6 +459,7 @@ function buildUserPrompt(
   marketContextText: string,
   btcContextText: string,
   atr15m: number | null,
+  feedbackText: string,
 ): string {
   const ind5m = computeIndicatorSnapshot(k5m);
   const ind15m = computeIndicatorSnapshot(k15m);
@@ -466,6 +475,8 @@ function buildUserPrompt(
 15m ATR(14): ${atr15m != null ? `${atr15m.toFixed(2)}（现价的 ${(atr15m / currentPrice * 100).toFixed(2)}%）；止损距离应控制在 0.5-1.5 倍 ATR = ${(atr15m * 0.5).toFixed(2)} ~ ${(atr15m * 1.5).toFixed(2)}` : '暂无'}
 
 ${buildTimeContext()}
+
+${feedbackText}
 
 ${marketContextText}
 ${btcContextText ? `\n${btcContextText}\n` : ''}
@@ -730,6 +741,12 @@ export async function analyzeMarketWithAI(
   // 3.5 计算 15m ATR（无效点/止损距离的客观标尺）
   const atr15m = k15m.length >= 15 ? calcATR(k15m, 14) : null;
 
+  // 3.6 反馈闭环：先评估到期的历史预测（不阻塞主流程），再取近期战绩注入 prompt
+  evaluatePendingPredictions().catch(() => {}); // fire-and-forget：评估失败不影响本次分析
+  const feedbackText = await getRecentFeedbackText(symbol).catch(
+    () => '=== 你的近期预测战绩 === 暂无数据',
+  );
+
   // 4. 构建 prompt
   const userPrompt = buildUserPrompt(
     symbol,
@@ -741,6 +758,7 @@ export async function analyzeMarketWithAI(
     marketCtx ? buildMarketContextText(marketCtx) : '=== 衍生品与市场情绪 === 暂无数据',
     isBtc ? '' : buildBtcContextText(btcSnap),
     atr15m,
+    feedbackText,
   );
 
   // 5. 调用 AI API

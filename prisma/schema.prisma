@@ -332,9 +332,15 @@ model AiAnalysis {
   provider      String?                        // 使用的 AI 供应商
   model         String?                        // 使用的模型名称
   rawResponse   String?  @db.Text              // 原始响应（调试用）
+  // ===== 预测结果评估（反馈闭环：N 分钟后用真实行情验证 AI 说对了没） =====
+  outcome       String?                        // 'hit_tp1' | 'hit_tp2' | 'hit_sl' | 'expired' | 'correct' | 'wrong' | 'neutral_skip'
+  outcomePrice  Float?                         // 评估时价格
+  outcomeAt     DateTime?                      // 评估时间
+  outcomeNote   String?                        // 评估说明（如「入场后45分钟触止损」）
   createdAt     DateTime @default(now())
 
   @@index([symbol])
   @@index([createdAt])
   @@index([direction])
+  @@index([outcome])
 }

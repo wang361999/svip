@@ -32,6 +32,10 @@ export interface MarketContext {
   openInterestUsd: number | null;
   /** 1 小时持仓量变化 %（快照积累不足时为 null） */
   oiChange1hPct: number | null;
+  /** 散户多空比（账户数口径，>1 多头账户占多） */
+  longShortAccountRatio: number | null;
+  /** 主动买卖多空比（taker 成交量口径，>1 主动买盘占优） */
+  takerLongShortRatio: number | null;
   fearGreed: { value: number; classification: string } | null;
   news: NewsItem[];
 }
@@ -81,6 +85,8 @@ const NEWS_TTL_MS = 20 * 60_000;
 interface DerivData {
   fundingRate8h: number | null;
   openInterestUsd: number | null;
+  longShortAccountRatio: number | null;
+  takerLongShortRatio: number | null;
 }
 const derivCache = new Map<string, { data: DerivData; at: number }>();
 const fearCache = { data: null as MarketContext['fearGreed'], at: 0 };
@@ -93,10 +99,18 @@ const oiHistory = new Map<string, { t: number; oi: number }[]>();
 
 async function fetchFundingAndOI(symbol: string, okxId: string): Promise<DerivData> {
   // --- Binance：premiumIndex 同时拿费率+标记价，openInterest 拿币本位持仓 ---
-  const [premium, oi] = await Promise.all([
+  const [premium, oi, lsAcc, lsTaker] = await Promise.all([
     fetchJson(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${symbol}`),
     fetchJson(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${symbol}`),
+    // 多空比（账户数口径 / 主动买卖口径）— 散户情绪的反向指标
+    fetchJson(`https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=${symbol}&period=5m&limit=1`).catch(() => null),
+    fetchJson(`https://fapi.binance.com/futures/data/takerlongshortRatio?symbol=${symbol}&period=5m&limit=1`).catch(() => null),
   ]);
+
+  const lsAccount = Array.isArray(lsAcc) && lsAcc[0]?.longShortRatio != null
+    ? parseFloat(lsAcc[0].longShortRatio) : null;
+  const lsTakerVal = Array.isArray(lsTaker) && lsTaker[0]?.buySellRatio != null
+    ? parseFloat(lsTaker[0].buySellRatio) : null;
 
   if (premium && premium.lastFundingRate != null) {
     const rate = parseFloat(premium.lastFundingRate);
@@ -109,7 +123,12 @@ async function fetchFundingAndOI(symbol: string, okxId: string): Promise<DerivDa
       }
     }
     if (Number.isFinite(rate)) {
-      return { fundingRate8h: rate, openInterestUsd: oiUsd };
+      return {
+        fundingRate8h: rate,
+        openInterestUsd: oiUsd,
+        longShortAccountRatio: Number.isFinite(lsAccount as number) ? lsAccount : null,
+        takerLongShortRatio: Number.isFinite(lsTakerVal as number) ? lsTakerVal : null,
+      };
     }
   }
 
@@ -133,7 +152,12 @@ async function fetchFundingAndOI(symbol: string, okxId: string): Promise<DerivDa
       if (Number.isFinite(v) && v > 0) oiUsd = v;
     }
   }
-  return { fundingRate8h: rate, openInterestUsd: oiUsd };
+  return {
+    fundingRate8h: rate,
+    openInterestUsd: oiUsd,
+    longShortAccountRatio: null, // OKX 备用路径无对应接口
+    takerLongShortRatio: null,
+  };
 }
 
 /** 计算持仓量 1 小时变化（基于内存快照，冷启动后需积累约 1 小时） */
@@ -190,6 +214,33 @@ async function getFearGreed(): Promise<MarketContext['fearGreed']> {
 
 const NEWS_WINDOW_MS = 3 * 60 * 60_000; // 只取 3 小时内的要闻
 
+/**
+ * 新闻相关性打分：只保留能真正影响短线行情的硬新闻
+ * 快讯流里 2/3 是噪音（分红/汽油/番茄类），噪音会稀释 AI 判断
+ */
+function scoreNewsRelevance(title: string): number {
+  const t = title.toLowerCase();
+  // 一级关键词（监管/安全/宏观事件，直接驱动价格）：+3
+  const critical = ['hack', 'hacked', 'exploit', 'breach', 'sec ', 'lawsuit', 'sue', 'ban', 'bans',
+    'etf', 'fed ', 'fomc', 'cpi', 'rate cut', 'rate hike', 'interest rate', 'treasury',
+    'liquidat', 'crash', 'plunge', 'surge', 'flash', 'insolvency', 'bankrupt', 'arrest'];
+  // 二级关键词（资金流/机构动向）：+2
+  const important = ['bitcoin', 'btc', 'ethereum', 'eth', 'solana', 'sol',
+    'inflow', 'outflow', 'whale', 'etfs', 'approval', 'approve', 'record',
+    'treasury', 'microstrategy', 'binance', 'coinbase', 'stablecoin', 'tether'];
+  // 噪音关键词（与加密行情无关的填充内容）：直接判 0
+  const noise = ['tomato', 'gasoline', 'diesel', 'onlyfans', 'dividend', 'miss universe',
+    'football', 'soccer', 'celebrit', 'movie', 'music', 'fashion'];
+
+  if (noise.some((k) => t.includes(k))) return 0;
+  let score = 0;
+  if (critical.some((k) => t.includes(k))) score += 3;
+  if (important.some((k) => t.includes(k))) score += 2;
+  // 含具体金额（$XXM/B）的加 1（大额事件）
+  if (/\$\d+(\.\d+)?\s*[mb]/.test(t)) score += 1;
+  return score;
+}
+
 async function getNews(): Promise<NewsItem[]> {
   if (newsCache.data && Date.now() - newsCache.at < NEWS_TTL_MS) return newsCache.data;
 
@@ -219,12 +270,15 @@ async function getNews(): Promise<NewsItem[]> {
     });
   }
 
-  // 只保留 3 小时内的，按时间倒序，最多 6 条
+  // 3 小时内 → 相关性打分 → 只保留得分 >= 2 的硬新闻（监管/安全/资金流），最多 5 条
   const now = Date.now();
   const fresh = items
     .filter((i) => i.publishedAt > 0 && now - i.publishedAt <= NEWS_WINDOW_MS)
-    .sort((a, b) => b.publishedAt - a.publishedAt)
-    .slice(0, 6);
+    .map((i) => ({ ...i, score: scoreNewsRelevance(i.title) }))
+    .filter((i) => i.score >= 2)
+    .sort((a, b) => b.score - a.score || b.publishedAt - a.publishedAt)
+    .slice(0, 5)
+    .map(({ score: _s, ...rest }) => rest as NewsItem);
 
   if (fresh.length > 0) newsCache.data = fresh, newsCache.at = Date.now();
   return fresh;
@@ -243,6 +297,8 @@ export async function fetchMarketContext(symbol: string, okxId: string): Promise
     fundingRate8h: deriv.fundingRate8h,
     openInterestUsd: deriv.openInterestUsd,
     oiChange1hPct: deriv.oiChange1hPct,
+    longShortAccountRatio: deriv.longShortAccountRatio,
+    takerLongShortRatio: deriv.takerLongShortRatio,
     fearGreed,
     news,
   };
@@ -379,6 +435,25 @@ export function buildMarketContextText(ctx: MarketContext): string {
     lines.push(`持仓量: ${oiText}（1小时 ${changeText}）`);
   } else {
     lines.push('持仓量: 暂无数据');
+  }
+
+  // 多空比（散户情绪反向指标：极端拥挤的一端常是被收割的一端）
+  if (ctx.longShortAccountRatio != null || ctx.takerLongShortRatio != null) {
+    const accText = ctx.longShortAccountRatio != null
+      ? ctx.longShortAccountRatio.toFixed(2)
+      : '暂无';
+    const takerText = ctx.takerLongShortRatio != null
+      ? ctx.takerLongShortRatio.toFixed(2)
+      : '暂无';
+    // 拥挤度解读（账户口径）：>2 多头极度拥挤（追多危险），<0.5 空头极度拥挤（追空危险）
+    let lsTone = '多空均衡';
+    if (ctx.longShortAccountRatio != null) {
+      if (ctx.longShortAccountRatio >= 2) lsTone = '散户多头极度拥挤，追多谨慎';
+      else if (ctx.longShortAccountRatio >= 1.4) lsTone = '散户偏多';
+      else if (ctx.longShortAccountRatio <= 0.5) lsTone = '散户空头极度拥挤，追空谨慎';
+      else if (ctx.longShortAccountRatio <= 0.7) lsTone = '散户偏空';
+    }
+    lines.push(`多空比(账户/主动买卖): ${accText} / ${takerText}（${lsTone}）`);
   }
 
   // 恐惧贪婪

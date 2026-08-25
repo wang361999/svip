@@ -122,5 +122,42 @@ ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "ab9Line7Color" TEXT DEFAULT 
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "ab9Line8Color" TEXT DEFAULT 'rgba(148, 163, 184, 0.6)';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "ab9Line9Color" TEXT DEFAULT 'rgba(168, 85, 247, 0.6)';
 
+-- 11. AiAnalysis 表：AI 预测反馈闭环（复盘结果字段）
+-- 若表不存在则创建（列清单与 schema.prisma 保持一致）
+CREATE TABLE IF NOT EXISTS "AiAnalysis" (
+    "id" TEXT NOT NULL,
+    "symbol" TEXT NOT NULL,
+    "direction" TEXT NOT NULL,
+    "confidence" INTEGER NOT NULL,
+    "summary" TEXT NOT NULL,
+    "entryPrice" DOUBLE PRECISION,
+    "stopLoss" DOUBLE PRECISION,
+    "takeProfit1" DOUBLE PRECISION,
+    "takeProfit2" DOUBLE PRECISION,
+    "reasoning" TEXT NOT NULL,
+    "keyLevels" TEXT,
+    "meta" TEXT,
+    "riskWarning" TEXT,
+    "provider" TEXT,
+    "model" TEXT,
+    "rawResponse" TEXT,
+    "outcome" TEXT,
+    "outcomePrice" DOUBLE PRECISION,
+    "outcomeAt" TIMESTAMP(3),
+    "outcomeNote" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "AiAnalysis_pkey" PRIMARY KEY ("id")
+);
+-- 旧表补列（IF NOT EXISTS 兼容）
+ALTER TABLE "AiAnalysis" ADD COLUMN IF NOT EXISTS "meta" TEXT;
+ALTER TABLE "AiAnalysis" ADD COLUMN IF NOT EXISTS "outcome" TEXT;
+ALTER TABLE "AiAnalysis" ADD COLUMN IF NOT EXISTS "outcomePrice" DOUBLE PRECISION;
+ALTER TABLE "AiAnalysis" ADD COLUMN IF NOT EXISTS "outcomeAt" TIMESTAMP(3);
+ALTER TABLE "AiAnalysis" ADD COLUMN IF NOT EXISTS "outcomeNote" TEXT;
+CREATE INDEX IF NOT EXISTS "AiAnalysis_symbol_idx" ON "AiAnalysis"("symbol");
+CREATE INDEX IF NOT EXISTS "AiAnalysis_createdAt_idx" ON "AiAnalysis"("createdAt");
+CREATE INDEX IF NOT EXISTS "AiAnalysis_direction_idx" ON "AiAnalysis"("direction");
+CREATE INDEX IF NOT EXISTS "AiAnalysis_outcome_idx" ON "AiAnalysis"("outcome");
+
 -- 完成
 SELECT 'Schema 同步完成' as result;

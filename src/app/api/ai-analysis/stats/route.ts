@@ -90,6 +90,38 @@ export const GET = createHandler(async () => {
     }
   }
 
+  // ===== 预测级准确率（反馈闭环）：AiAnalysis.outcome 复盘结果 =====
+  // 与交易级统计互补：不依赖是否开仓，覆盖 AI 的每一次方向判断
+  const predictions = await prisma.aiAnalysis.findMany({
+    where: { outcome: { in: ['hit_tp1', 'hit_tp2', 'hit_sl', 'correct', 'wrong'] } },
+    orderBy: { createdAt: 'desc' },
+    take: 500,
+    select: { outcome: true, confidence: true, model: true, createdAt: true },
+  });
+
+  const predWin = (o: string) => o === 'hit_tp1' || o === 'hit_tp2' || o === 'correct';
+  const predByModel = new Map<string, Agg>();
+  const predBands = bands.map((b) => ({ band: b.label, min: b.min, max: b.max, agg: EMPTY_AGG() }));
+  const predOverall = EMPTY_AGG();
+  const outcomeDist: Record<string, number> = {};
+
+  for (const p of predictions) {
+    const oc = p.outcome || 'unknown';
+    outcomeDist[oc] = (outcomeDist[oc] || 0) + 1;
+    const win = predWin(oc);
+    const model = p.model || '未知模型';
+    const record = (agg: Agg) => {
+      agg.total++;
+      if (win) agg.wins++;
+    };
+    record(predOverall);
+    const m = predByModel.get(model) || EMPTY_AGG();
+    record(m);
+    predByModel.set(model, m);
+    const band = predBands.find((b) => p.confidence >= b.min && p.confidence < b.max);
+    if (band) record(band.agg);
+  }
+
   return apiSuccess({
     sampleSize: trades.length,
     overall: finalize(overall),
@@ -98,5 +130,21 @@ export const GET = createHandler(async () => {
       ...finalize(agg),
     })).sort((a, b) => b.total - a.total),
     byConfidence: bands.map((b) => ({ band: b.label, ...finalize(b.agg) })),
+    // 预测级统计（每条 AI 分析的复盘结果，无需开仓）
+    predictions: {
+      sampleSize: predictions.length,
+      winRate: predOverall.total > 0 ? Math.round((predOverall.wins / predOverall.total) * 100) : 0,
+      outcomeDist, // hit_tp1 / hit_tp2 / hit_sl / correct / wrong 各多少条
+      byModel: Array.from(predByModel.entries()).map(([model, agg]) => ({
+        model,
+        total: agg.total,
+        winRate: agg.total > 0 ? Math.round((agg.wins / agg.total) * 100) : 0,
+      })).sort((a, b) => b.total - a.total),
+      byConfidence: predBands.map((b) => ({
+        band: b.band,
+        total: b.agg.total,
+        winRate: b.agg.total > 0 ? Math.round((b.agg.wins / b.agg.total) * 100) : 0,
+      })),
+    },
   });
 });
