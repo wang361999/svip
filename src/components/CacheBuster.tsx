@@ -57,8 +57,12 @@ export default function CacheBuster() {
       localStorage.setItem(VERSION_KEY, CACHE_VERSION);
 
       // 非首次（版本更新时）刷新页面
+      // 时序修复：等当前页面（含CSS）完全加载后再刷新 — 慢网络下立即 reload 会
+      // 打断仍在下载的样式表，用户看到无样式裸HTML；且load事件至少已一次完整加载
       if (storedVersion !== null) {
-        window.location.reload();
+        const doReload = () => setTimeout(() => window.location.reload(), 200);
+        if (document.readyState === 'complete') doReload();
+        else window.addEventListener('load', doReload, { once: true });
       }
     }
   }, []);
