@@ -821,6 +821,22 @@ export async function runEngine(userId: string): Promise<{
           // （原限价模式：等价格触达八分位挂单价±0.3%才成交，价格不回踩分位就永远不开仓）
           const execPrice = price;
 
+          // ===== 距离闸门：追价保护（现价偏离建议挂单价过远不追） =====
+          // 整套规则按分位挂单设计：止损=分型极值、止盈=分位。追价进场会拉大止损距离、
+          // 压扁止盈距离（TP1 可能比进场价还近），盈亏比严重倒挂 — 成交率换不来期望值。
+          // 判定：现价距 AI 建议挂单价 > 半个分位（区间宽度/16，从分析 meta 的 gann.rangePct
+          // 自适应读取，无 gann 时兜底 0.2%）→ 本轮等待，等回踩半个分位内再进场。
+          if (latestAi.entryPrice && latestAi.entryPrice > 0) {
+            let gannRangePct = 0;
+            try {
+              const m = JSON.parse(latestAi.meta || '{}');
+              gannRangePct = Number(m?.gann?.rangePct) || 0;
+            } catch {}
+            const halfDivPct = gannRangePct > 0 ? gannRangePct / 16 : 0.2;
+            const distPct = (Math.abs(price - latestAi.entryPrice) / latestAi.entryPrice) * 100;
+            if (distPct > halfDivPct) continue; // 偏离过远：等回踩（引擎每轮重查，回踩到位自动进）
+          }
+
           // ===== 市场状态闸门：不同行情用不同开仓门槛 =====
           // chop 碎波：禁止开仓（AI 侧同样拦截，与策略侧双保险）
           if (aiMeta.regime === 'chop') continue;
