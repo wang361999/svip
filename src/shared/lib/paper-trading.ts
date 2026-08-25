@@ -730,17 +730,15 @@ export async function runEngine(userId: string): Promise<{
       }
     }
 
-    // 3.5 读取当前币种最新 AI 分析的市场状态（regime + ATR + A+清单 + 推荐挂单计划），统一闸门用
+    // 3.5 读取当前币种最新 AI 分析的市场状态（regime + A+清单），统一闸门用
     //     - chop（碎波）状态下禁止一切自动开仓：碎波日反复扫损是短线最大的亏损来源
     //     - atr15m 用于止损无效点校验
-    //     - plan 为推荐挂单计划（Plan A）：引擎按「等价格触达挂单价才成交」模拟限价单
     const aiMeta: {
       regime: string;
       atr15m: number | null;
       checklist: Record<string, boolean> | null;
-      plan: { entryType?: string; entry: number | null; cancelIf: number | null } | null;
     } = {
-      regime: '', atr15m: null, checklist: null, plan: null,
+      regime: '', atr15m: null, checklist: null,
     };
     try {
       const latest = autoTargets.length > 0
@@ -754,17 +752,6 @@ export async function runEngine(userId: string): Promise<{
         aiMeta.regime = typeof m.regime === 'string' ? m.regime : '';
         aiMeta.atr15m = typeof m.atr15m === 'number' && Number.isFinite(m.atr15m) ? m.atr15m : null;
         aiMeta.checklist = m.aPlusChecklist && typeof m.aPlusChecklist === 'object' ? m.aPlusChecklist : null;
-        // 推荐计划（Plan A）的挂单要素：entryType / entry / cancelIf
-        if (Array.isArray(m.plans)) {
-          const rec = m.plans.find((p: any) => p?.recommended === true) || m.plans[0];
-          if (rec && typeof rec === 'object') {
-            aiMeta.plan = {
-              entryType: typeof rec.entryType === 'string' ? rec.entryType : undefined,
-              entry: Number(rec.entry) > 0 ? Number(rec.entry) : null,
-              cancelIf: rec.cancelIf && Number(rec.cancelIf.price) > 0 ? Number(rec.cancelIf.price) : null,
-            };
-          }
-        }
       }
     } catch {
       // meta 解析失败按无状态处理（不阻塞开仓）
@@ -830,15 +817,9 @@ export async function runEngine(userId: string): Promise<{
           const price = priceMap[sym.symbol];
           if (!price || price <= 0) continue;
 
-          // ===== 江恩挂单成交：等价格触达八分位挂单价才成交（模拟限价单，绝不追价）=====
-          // 价格未到挂单分位（容差 0.3%）→ 本轮等待；触达 → 按挂单分位价成交（限价单语义）
-          const execPrice = (() => {
-            const gannEntry = latestAi.entryPrice;
-            if (!gannEntry || gannEntry <= 0) return price; // 无挂单价（异常兜底）按现价
-            if (Math.abs(price - gannEntry) / gannEntry > 0.003) return -1; // 未触达分位，本轮等待
-            return gannEntry; // 按八分位挂单价成交
-          })();
-          if (execPrice <= 0) continue;
+          // ===== 正常模式：信号通过全部闸门即按现价市价进场 =====
+          // （原限价模式：等价格触达八分位挂单价±0.3%才成交，价格不回踩分位就永远不开仓）
+          const execPrice = price;
 
           // ===== 市场状态闸门：不同行情用不同开仓门槛 =====
           // chop 碎波：禁止开仓（AI 侧同样拦截，与策略侧双保险）
@@ -914,19 +895,19 @@ export async function runEngine(userId: string): Promise<{
             await openPosition(userId, {
               symbol: sym.symbol,
               side: latestAi.direction as 'long' | 'short',
-              entryPrice: execPrice, // 挂单触达按挂单价成交（限价单语义）；市价计划为现价
+              entryPrice: execPrice, // 正常模式：信号通过闸门即按现价成交
               margin: aiMargin > 0 ? aiMargin : undefined,
               stopLoss,
               takeProfit1,
               takeProfit2,
               strategyId: `ai_${latestAi.provider}`,
-              signalPrice: latestAi.entryPrice || execPrice,
+              signalPrice: latestAi.entryPrice || execPrice, // 保留 AI 建议的八分位挂单价作参考
               // 记录开仓时的模型信息 + 分析ID，平仓后用于准确率统计；analysisId 供防护3防重放
               aiMeta: JSON.stringify({
                 provider: latestAi.provider,
                 model: latestAi.model,
                 confidence: latestAi.confidence,
-                entryType: aiMeta.plan?.entryType || 'market',
+                entryType: 'market', // 正常模式：市价进场
                 analysisId: latestAi.id,
               }),
             });
