@@ -75,6 +75,11 @@ export default function Header() {
             <Link href="/trading" className="px-3 py-2 text-dark-300 hover:text-white rounded-lg hover:bg-dark-800 transition-colors">
               交易
             </Link>
+            {isAuthenticated && (
+              <Link href="/writer" className="px-3 py-2 text-dark-300 hover:text-white rounded-lg hover:bg-dark-800 transition-colors">
+                文章
+              </Link>
+            )}
             {isAuthenticated ? (
               <>
                 {user?.role === 'admin' && (
@@ -129,6 +134,11 @@ export default function Header() {
               <Link href="/trading" className="px-3 py-2 text-dark-300 hover:text-white rounded-lg hover:bg-dark-800">
                 交易
               </Link>
+              {isAuthenticated && (
+                <Link href="/writer" className="px-3 py-2 text-dark-300 hover:text-white rounded-lg hover:bg-dark-800">
+                  文章
+                </Link>
+              )}
               {isAuthenticated ? (
                 <>
                   {user?.role === 'admin' && (

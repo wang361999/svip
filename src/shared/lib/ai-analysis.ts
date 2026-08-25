@@ -589,8 +589,8 @@ ${buildKlineSummary(k1h, '1H K线')}
 
 // ==================== AI API 调用 ====================
 
-/** 调用 OpenAI 兼容的 Chat Completions API */
-async function callChatCompletions(
+/** 调用 OpenAI 兼容的 Chat Completions API（导出供文章生成等模块复用） */
+export async function callChatCompletions(
   config: AiConfig,
   systemPrompt: string,
   userPrompt: string,
@@ -654,8 +654,8 @@ async function callChatCompletions(
 
 // ==================== 结果解析 ====================
 
-/** 从 AI 返回的文本中提取 JSON */
-function extractJson(text: string): any {
+/** 从 AI 返回的文本中提取 JSON（导出供文章生成等模块复用） */
+export function extractJson(text: string): any {
   // 尝试直接解析
   try {
     return JSON.parse(text);
