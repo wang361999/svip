@@ -748,14 +748,42 @@ export async function runEngine(userId: string): Promise<{
           const price = priceMap[sym.symbol];
           if (!price || price <= 0) continue;
 
+          // ===== 风控闸门：止损必须存在且距离合理 =====
+          // 止损距离占价格 0.3% ~ 25% 才视为有效；过近会被瞬时波动扫损，过远等于没有止损
+          const MIN_SL_PCT = 0.003;
+          const MAX_SL_PCT = 0.25;
+          let stopLoss = latestAi.stopLoss;
+          if (stopLoss != null) {
+            const distPct = Math.abs(price - stopLoss) / price;
+            if (distPct < MIN_SL_PCT || distPct > MAX_SL_PCT) stopLoss = null; // 距离不合理 → 丢弃 AI 的止损
+          }
+          // AI 没给有效止损时，按账户默认风险参数生成（不裸奔开仓）
+          if (stopLoss == null) {
+            const slPct = account.stopLossPct > 0 ? account.stopLossPct / 100 : 0.02;
+            stopLoss = latestAi.direction === 'long'
+              ? price * (1 - slPct)
+              : price * (1 + slPct);
+          }
+
+          // 止盈同样校验方向；无效则按 1.5R / 3R（基于止损距离）生成
+          const slDist = Math.abs(price - stopLoss);
+          let takeProfit1 = latestAi.takeProfit1;
+          if (takeProfit1 == null || (latestAi.direction === 'long' ? takeProfit1 <= price : takeProfit1 >= price)) {
+            takeProfit1 = latestAi.direction === 'long' ? price + slDist * 1.5 : price - slDist * 1.5;
+          }
+          let takeProfit2 = latestAi.takeProfit2;
+          if (takeProfit2 == null || (latestAi.direction === 'long' ? takeProfit2 <= price : takeProfit2 >= price)) {
+            takeProfit2 = latestAi.direction === 'long' ? price + slDist * 3 : price - slDist * 3;
+          }
+
           try {
             await openPosition(userId, {
               symbol: sym.symbol,
               side: latestAi.direction as 'long' | 'short',
               entryPrice: price, // 以当前价格入场（AI 分析时可能已变化）
-              stopLoss: latestAi.stopLoss || undefined,
-              takeProfit1: latestAi.takeProfit1 || undefined,
-              takeProfit2: latestAi.takeProfit2 || undefined,
+              stopLoss,
+              takeProfit1,
+              takeProfit2,
               strategyId: `ai_${latestAi.provider}`,
               signalPrice: latestAi.entryPrice || price,
             });

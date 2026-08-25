@@ -73,6 +73,7 @@ async function handleCron(req: Request) {
   }
 
   // 3. 获取需要分析的币种（autoTrade 启用的）
+  //    按最近分析时间升序（最久没分析的排前面）— 修复固定排序导致排序靠后的币种永远轮不到分析的饿死问题
   const symbols = await prisma.tradingSymbol.findMany({
     where: { active: true, autoTrade: true },
     orderBy: [{ isPopular: 'desc' }, { sortOrder: 'asc' }],
@@ -84,6 +85,29 @@ async function handleCron(req: Request) {
       data: { message: '没有启用自动交易的币种', analyzed: 0 },
     });
   }
+
+  // 3b. 机会式清理：删除 14 天前的 AI 分析记录（防止 AiAnalysis 表无限膨胀）
+  try {
+    await prisma.aiAnalysis.deleteMany({
+      where: { createdAt: { lt: new Date(Date.now() - 14 * 24 * 3600 * 1000) } },
+    });
+  } catch {}
+
+  // 3c. 按最近分析时间升序重排（最久没分析的排前面）
+  //     修复：55 秒时间预算只够分析 2-3 个币，固定排序会让排序靠后的币种永远轮不到
+  try {
+    const latestTimes = await prisma.aiAnalysis.groupBy({
+      by: ['symbol'],
+      _max: { createdAt: true },
+    });
+    const timeMap = new Map(latestTimes.map((t) => [t.symbol, t._max.createdAt?.getTime() ?? 0]));
+    symbols.sort((a, b) => {
+      const ta = timeMap.get(a.symbol) ?? 0; // 从未分析过的最优先
+      const tb = timeMap.get(b.symbol) ?? 0;
+      if (ta !== tb) return ta - tb;
+      return a.sortOrder - b.sortOrder;
+    });
+  } catch {}
 
   // 4. URL 参数可指定单个币种（调试用）
   const url = new URL(req.url);

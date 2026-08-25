@@ -98,21 +98,17 @@ export function getProviderMeta(providerId: string): AiProviderMeta | undefined 
 }
 
 /**
- * 供应商级别预配置凭证
- * 当数据库中的 aiApiUrl / aiApiKey / aiModel 为空时，按当前 provider 回退到这里的默认值
- * 这样切换供应商时无需手动输入凭证
+ * 供应商级别预配置（仅地址与模型，不含密钥）
+ * API Key 只存数据库（后台设置），严禁写入源码 — 仓库是公开的
+ * 当数据库中的 aiApiUrl / aiModel 为空时回退到这里
  */
-const PROVIDER_DEFAULTS: Record<string, { apiUrl: string; apiKey: string; model: string }> = {
-  // 模型 1: Agnes-AI (agnes-2.5-flash)
+const PROVIDER_DEFAULTS: Record<string, { apiUrl: string; model: string }> = {
   custom: {
     apiUrl: 'https://api.agnes-ai.cn/v1/chat/completions',
-    apiKey: 'sk-cLl30kp5lGb1p8RUmrQRepLg3YcqUYBHbVk1qk4SrL3UKCNh',
     model: 'agnes-2.5-flash',
   },
-  // 模型 2: NVIDIA GLM-5.2
   nvidia: {
     apiUrl: 'https://integrate.api.nvidia.com/v1/chat/completions',
-    apiKey: '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',
     model: 'z-ai/glm-5.2',
   },
 };
@@ -160,7 +156,7 @@ export function parseAiConfig(settings: Record<string, string | null | undefined
     enabled: settings.aiEnabled === 'true',
     provider: providerId,
     apiUrl: settings.aiApiUrl || defaults?.apiUrl || meta?.defaultApiUrl || '',
-    apiKey: settings.aiApiKey || defaults?.apiKey || '',
+    apiKey: settings.aiApiKey || '', // 密钥只来自数据库，不回落到源码
     model: settings.aiModel || defaults?.model || meta?.defaultModel || '',
     temperature: parseFloat(settings.aiTemperature || '0.3') || 0.3,
     maxTokens: parseInt(settings.aiMaxTokens || '4000', 10) || 4000,
@@ -435,19 +431,48 @@ function extractJson(text: string): any {
   throw new Error('无法从 AI 响应中解析 JSON');
 }
 
-/** 将解析的 JSON 转为标准 AiAnalysisResult */
-function normalizeResult(parsed: any, config: AiConfig, rawResponse: string): AiAnalysisResult {
+/**
+ * 将解析的 JSON 转为标准 AiAnalysisResult
+ * @param currentPrice 当前价格 — 用于校验 AI 给出的止损/止盈方向是否合理
+ */
+function normalizeResult(parsed: any, config: AiConfig, rawResponse: string, currentPrice: number): AiAnalysisResult {
   const direction = ['long', 'short', 'neutral'].includes(parsed.direction)
     ? parsed.direction
     : 'neutral';
 
-  const confidence = Math.max(0, Math.min(100, parseInt(parsed.confidence, 10) || 0));
+  // 置信度：兼容 "85"、"85%"、85、0.85 等格式，统一映射到 0-100
+  let confidence = 0;
+  const rawConf = Number(parsed.confidence);
+  if (!Number.isNaN(rawConf)) {
+    confidence = rawConf > 0 && rawConf < 1 ? rawConf * 100 : rawConf; // 0.85 → 85
+  }
+  confidence = Math.max(0, Math.min(100, Math.round(confidence)));
 
-  // 清洗 keyLevels 数组，确保每项都有合法的 price/type/note 字段
+  // 止损/止盈方向校验：AI 可能幻觉出方向错误的价位
+  // long: stopLoss < entry < takeProfit；short: stopLoss > entry > takeProfit
+  // 校验基准用当前价（entryPrice 可能为 null 或偏离现价）
+  const validatePrice = (v: unknown, side: 'loss' | 'profit'): number | null => {
+    const n = v != null ? Number(v) : NaN;
+    if (!Number.isFinite(n) || n <= 0) return null;
+    if (direction === 'long') {
+      return side === 'loss' ? (n < currentPrice ? n : null) : (n > currentPrice ? n : null);
+    }
+    if (direction === 'short') {
+      return side === 'loss' ? (n > currentPrice ? n : null) : (n < currentPrice ? n : null);
+    }
+    return null; // neutral 不给价位
+  };
+
+  const stopLoss = validatePrice(parsed.stopLoss, 'loss');
+  const takeProfit1 = validatePrice(parsed.takeProfit1, 'profit');
+  const takeProfit2 = validatePrice(parsed.takeProfit2, 'profit');
+
+  // 清洗 keyLevels 数组，确保每项都有合法的 price/type/note 字段（最多保留 8 个）
   let keyLevels: NonNullable<AiAnalysisResult['keyLevels']> | null = null;
   if (Array.isArray(parsed.keyLevels)) {
     const cleaned = parsed.keyLevels
       .filter((lv: any) => lv != null && typeof lv === 'object')
+      .slice(0, 8)
       .map((lv: any) => ({
         price: Number(lv.price) || 0,
         type: String(lv.type || '未知'),
@@ -461,9 +486,9 @@ function normalizeResult(parsed: any, config: AiConfig, rawResponse: string): Ai
     confidence,
     summary: String(parsed.summary || '无摘要'),
     entryPrice: parsed.entryPrice != null ? Number(parsed.entryPrice) || null : null,
-    stopLoss: parsed.stopLoss != null ? Number(parsed.stopLoss) || null : null,
-    takeProfit1: parsed.takeProfit1 != null ? Number(parsed.takeProfit1) || null : null,
-    takeProfit2: parsed.takeProfit2 != null ? Number(parsed.takeProfit2) || null : null,
+    stopLoss,
+    takeProfit1,
+    takeProfit2,
     reasoning: String(parsed.reasoning || '无分析'),
     keyLevels,
     riskWarning: parsed.riskWarning ? String(parsed.riskWarning) : null,
@@ -532,9 +557,9 @@ export async function analyzeMarketWithAI(
   // 5. 调用 AI API
   const rawResponse = await callChatCompletions(config, SYSTEM_PROMPT, userPrompt);
 
-  // 6. 解析结果
+  // 6. 解析结果（传入当前价用于校验止损/止盈方向）
   const parsed = extractJson(rawResponse);
-  const result = normalizeResult(parsed, config, rawResponse);
+  const result = normalizeResult(parsed, config, rawResponse, price);
 
   return result;
 }
