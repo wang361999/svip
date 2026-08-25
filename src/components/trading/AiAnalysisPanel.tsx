@@ -77,7 +77,14 @@ interface HistoryItem {
 const directionConfig = {
   long: { label: '做多', color: 'text-green-400', bg: 'bg-green-500/10', border: 'border-green-500/30', icon: '▲' },
   short: { label: '做空', color: 'text-red-400', bg: 'bg-red-500/10', border: 'border-red-500/30', icon: '▼' },
-  neutral: { label: '观望', color: 'text-dark-300', bg: 'bg-dark-700/30', border: 'border-dark-600/30', icon: '●' },
+  neutral: { label: '观望', color: 'text-dark-300', bg: 'bg-dark-700/30', border: 'border-dark-600/30', icon: '■' },
+};
+
+/** 挂单类型徽章 */
+const entryTypeMap: Record<string, { label: string; cls: string }> = {
+  limit_pull: { label: '限价回踩', cls: 'text-sky-400 bg-sky-500/10 border-sky-500/30' },
+  limit_break: { label: '突破挂单', cls: 'text-violet-400 bg-violet-500/10 border-violet-500/30' },
+  market: { label: '市价', cls: 'text-dark-400 bg-dark-800/60 border-dark-700/40' },
 };
 
 export default function AiAnalysisPanel() {
@@ -87,8 +94,8 @@ export default function AiAnalysisPanel() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [showReasoning, setShowReasoning] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showPlanB, setShowPlanB] = useState(false);
   const [copiedPlan, setCopiedPlan] = useState<string | null>(null);
   const [autoAnalyze, setAutoAnalyze] = useState(true);
   const [intervalSec, setIntervalSec] = useState(30); // 默认 30 秒
@@ -198,6 +205,17 @@ export default function AiAnalysisPanel() {
     return p.toLocaleString(undefined, { maximumFractionDigits: 2 });
   };
 
+  /** 价位距现价百分比（带色） */
+  const pctFromPrice = (p: number | null) => {
+    if (p == null || currentPrice <= 0) return null;
+    const pct = ((p - currentPrice) / currentPrice) * 100;
+    return (
+      <span className={`text-[10px] ${pct >= 0 ? 'text-red-400/70' : 'text-green-400/70'}`}>
+        {pct > 0 ? '+' : ''}{pct.toFixed(2)}%
+      </span>
+    );
+  };
+
   const formatTime = (iso: string) => {
     const d = new Date(iso);
     const now = new Date();
@@ -210,24 +228,8 @@ export default function AiAnalysisPanel() {
     return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
   };
 
-  // 挂单类型徽章
-  const entryTypeMap: Record<string, { label: string; cls: string }> = {
-    limit_pull: { label: '限价回踩', cls: 'text-sky-400 bg-sky-500/10 border-sky-500/30' },
-    limit_break: { label: '突破挂单', cls: 'text-violet-400 bg-violet-500/10 border-violet-500/30' },
-    market: { label: '市价', cls: 'text-dark-400 bg-dark-800/60 border-dark-700/40' },
-  };
-
   /** 一键复制挂单信息（可直接粘贴到交易所下单） */
-  const copyPlanOrder = async (p: {
-    name: string;
-    entryType?: string;
-    entry: number | null;
-    stopLoss: number | null;
-    takeProfit1: number | null;
-    takeProfit2: number | null;
-    cancelIf?: { price: number; reason: string } | null;
-    validFor?: string;
-  }) => {
+  const copyPlanOrder = async (p: NonNullable<NonNullable<AiAnalysis['meta']>['plans']>[number]) => {
     if (!analysis) return;
     const dirText = analysis.direction === 'long' ? '做多' : analysis.direction === 'short' ? '做空' : '';
     const etText = p.entryType === 'limit_break' ? '突破挂单' : p.entryType === 'market' ? '市价' : '限价';
@@ -238,7 +240,6 @@ export default function AiAnalysisPanel() {
       p.takeProfit1 != null ? `止盈1 ${p.takeProfit1}` : null,
       p.takeProfit2 != null ? `止盈2 ${p.takeProfit2}` : null,
       p.cancelIf ? `撤单价 ${p.cancelIf.price}` : null,
-      p.validFor || null,
     ].filter(Boolean).join(' | ');
     try {
       await navigator.clipboard.writeText(parts);
@@ -247,38 +248,112 @@ export default function AiAnalysisPanel() {
     } catch {}
   };
 
+  const plans = analysis?.meta?.plans || [];
+  const planA = plans.find((p) => p.recommended) || plans[0] || null;
+  const planB = plans.find((p) => p !== planA) || null;
+  const gann = analysis?.meta?.gann || null;
+  const inNoTradeZone = !!(
+    analysis?.meta?.noTradeZone &&
+    currentPrice >= analysis.meta.noTradeZone.from &&
+    currentPrice <= analysis.meta.noTradeZone.to
+  );
+
+  /** 挂单指令卡（纯数字结果） */
+  const OrderCard = ({ p }: { p: NonNullable<NonNullable<AiAnalysis['meta']>['plans']>[number] }) => {
+    const isLong = analysis?.direction === 'long';
+    const accent = p.recommended ? (isLong ? 'border-green-500/40 bg-green-500/5' : 'border-red-500/40 bg-red-500/5') : 'border-dark-800 bg-dark-900/40';
+    return (
+      <div className={`rounded-xl border ${accent} p-3.5`}>
+        {/* 第一行：挂单价（大） + 类型 + 复制 */}
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-baseline gap-2">
+            <span className="text-dark-500 text-xs">{dir?.label}</span>
+            <span className="text-white text-2xl font-bold tracking-tight">{p.entry != null ? formatPrice(p.entry) : '--'}</span>
+            {pctFromPrice(p.entry)}
+          </div>
+          <div className="flex items-center gap-1.5">
+            {p.entryType && (
+              <span className={`text-[10px] px-1.5 py-0.5 rounded border ${entryTypeMap[p.entryType]?.cls || ''}`}>
+                {entryTypeMap[p.entryType]?.label}
+              </span>
+            )}
+            <button
+              onClick={() => copyPlanOrder(p)}
+              className={`text-[10px] px-2.5 py-1 rounded-md border font-medium transition-colors ${
+                copiedPlan === p.name
+                  ? 'text-green-400 border-green-500/40 bg-green-500/10'
+                  : 'text-blue-400 border-blue-500/30 bg-blue-500/10 hover:bg-blue-500/20'
+              }`}
+            >
+              {copiedPlan === p.name ? '✓ 已复制' : '复制挂单'}
+            </button>
+          </div>
+        </div>
+
+        {/* 第二行：止损 / 止盈1 / 止盈2 / 盈亏比 */}
+        <div className="grid grid-cols-4 gap-2 mb-2.5">
+          <div className="rounded-lg bg-red-500/8 border border-red-500/20 py-1.5 text-center">
+            <div className="text-dark-500 text-[10px]">止损</div>
+            <div className="text-red-400 text-sm font-semibold">{formatPrice(p.stopLoss)}</div>
+            {pctFromPrice(p.stopLoss)}
+          </div>
+          <div className="rounded-lg bg-green-500/8 border border-green-500/20 py-1.5 text-center">
+            <div className="text-dark-500 text-[10px]">止盈 1</div>
+            <div className="text-green-400 text-sm font-semibold">{formatPrice(p.takeProfit1)}</div>
+            {pctFromPrice(p.takeProfit1)}
+          </div>
+          <div className="rounded-lg bg-green-500/8 border border-green-500/20 py-1.5 text-center">
+            <div className="text-dark-500 text-[10px]">止盈 2</div>
+            <div className="text-green-400 text-sm font-semibold">{formatPrice(p.takeProfit2)}</div>
+            {pctFromPrice(p.takeProfit2)}
+          </div>
+          <div className="rounded-lg bg-dark-800/60 border border-dark-700/40 py-1.5 text-center">
+            <div className="text-dark-500 text-[10px]">盈亏比</div>
+            <div className="text-white text-sm font-semibold">
+              {p.rr1 != null ? `1:${p.rr1}` : '--'}
+            </div>
+            {p.rr2 != null ? <div className="text-dark-500 text-[10px]">→ {p.rr2}</div> : null}
+          </div>
+        </div>
+
+        {/* 第三行：撤单价（只显示数字） */}
+        {p.cancelIf && p.cancelIf.price > 0 && (
+          <div className="flex items-center justify-center gap-2 py-1.5 rounded-lg bg-dark-900/60 border border-dark-800">
+            <span className="text-dark-500 text-[11px]">撤单价</span>
+            <span className="text-amber-400 text-sm font-semibold">{formatPrice(p.cancelIf.price)}</span>
+            {pctFromPrice(p.cancelIf.price)}
+            <span className="text-dark-600 text-[10px]">越过即撤</span>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="glass-card p-5">
-      {/* 头部 */}
+      {/* ===== 顶部操作栏 ===== */}
       <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <svg className="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-          </svg>
-          <h2 className="text-lg font-semibold text-white">AI 行情分析</h2>
+        <div className="flex items-center gap-2.5">
+          <span className={`text-lg ${dir ? dir.color : 'text-blue-400'}`}>⚡</span>
+          <h2 className="text-base font-semibold text-white">AI 挂单信号</h2>
           <span className="text-xs text-dark-500">{label}</span>
-          {/* 自动分析状态 */}
           {autoAnalyze && (
             <span className="flex items-center gap-1 text-xs">
               {isAnalyzing ? (
                 <span className="flex items-center gap-1 text-blue-400">
                   <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-ping" />
-                  AI 分析中...
+                  分析中
                 </span>
               ) : (
-                <span className="flex items-center gap-1 text-green-400">
-                  <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-                  下次分析 {nextAnalyzeIn}s
-                </span>
+                <span className="text-dark-500">{nextAnalyzeIn}s</span>
               )}
             </span>
           )}
         </div>
         <div className="flex items-center gap-2">
-          {/* 自动/手动切换 */}
           <button
             onClick={() => setAutoAnalyze(!autoAnalyze)}
-            className={`px-3 py-2 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 ${
+            className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 ${
               autoAnalyze
                 ? 'bg-green-600/20 text-green-400 border border-green-500/30'
                 : 'bg-dark-800 text-dark-400 border border-dark-700'
@@ -287,25 +362,19 @@ export default function AiAnalysisPanel() {
             <span className={`w-1.5 h-1.5 rounded-full ${autoAnalyze ? 'bg-green-400 animate-pulse' : 'bg-dark-500'}`} />
             {autoAnalyze ? '自动' : '手动'}
           </button>
-          {/* 手动触发按钮 */}
           <button
             onClick={() => triggerAnalysis(false)}
             disabled={isAnalyzing}
-            className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
           >
             {isAnalyzing ? (
-              <>
-                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                分析中...
-              </>
+              <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
             ) : (
-              <>
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
-                立即分析
-              </>
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
             )}
+            立即分析
           </button>
         </div>
       </div>
@@ -327,228 +396,121 @@ export default function AiAnalysisPanel() {
       {/* 无分析结果 */}
       {!loading && !analysis && !error && (
         <div className="text-center py-12 text-dark-400">
-          <svg className="w-12 h-12 mx-auto mb-3 text-dark-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-          </svg>
-          <p className="text-sm">暂无 AI 分析记录</p>
-          <p className="text-xs text-dark-500 mt-1">点击「立即分析」获取 AI 对当前行情的智能分析</p>
+          <p className="text-sm">暂无分析记录</p>
+          <p className="text-xs text-dark-500 mt-1">点击「立即分析」获取挂单信号</p>
         </div>
       )}
 
-      {/* 分析结果 */}
+      {/* ===== 结果区（只看结果） ===== */}
       {analysis && dir && (
-        <div className="space-y-4">
-          {/* 方向和置信度 */}
-          <div className={`p-4 rounded-lg ${dir.bg} border ${dir.border}`}>
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <span className={`text-2xl ${dir.color}`}>{dir.icon}</span>
-                <div>
-                  <span className={`text-xl font-bold ${dir.color}`}>{dir.label}</span>
-                  <span className="text-dark-500 text-sm ml-2">{analysis.provider} / {analysis.model}</span>
+        <div className="space-y-3.5">
+          {/* 结果头：方向 + 置信度 + 现价 */}
+          <div className="flex items-stretch gap-2.5">
+            <div className={`flex-1 rounded-xl border ${dir.border} ${dir.bg} px-4 py-3 flex items-center justify-between`}>
+              <div>
+                <div className="text-dark-500 text-[10px] mb-0.5">方向</div>
+                <div className={`text-2xl font-bold leading-none ${dir.color}`}>
+                  {dir.icon} {dir.label}
                 </div>
               </div>
               <div className="text-right">
-                <div className="text-dark-400 text-xs">置信度</div>
-                <div className={`text-2xl font-bold ${dir.color}`}>{analysis.confidence}%</div>
+                <div className="text-dark-500 text-[10px] mb-0.5">置信度</div>
+                <div className={`text-2xl font-bold leading-none ${dir.color}`}>{analysis.confidence}</div>
               </div>
             </div>
-            {/* 置信度进度条 */}
-            <div className="w-full h-1.5 bg-dark-800 rounded-full overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all ${
-                  analysis.direction === 'long' ? 'bg-green-500'
-                  : analysis.direction === 'short' ? 'bg-red-500'
-                  : 'bg-dark-500'
-                }`}
-                style={{ width: `${analysis.confidence}%` }}
-              />
+            <div className="rounded-xl border border-dark-700/60 bg-dark-800/40 px-4 py-3 flex flex-col justify-center min-w-[110px]">
+              <div className="text-dark-500 text-[10px] mb-0.5">现价</div>
+              <div className="text-white text-lg font-semibold leading-none">{formatPrice(currentPrice)}</div>
+              <div className="text-dark-600 text-[10px] mt-1">{formatTime(analysis.createdAt)}</div>
             </div>
           </div>
 
-          {/* 总结 */}
-          <div>
-            <p className="text-dark-300 text-sm leading-relaxed">{analysis.summary}</p>
-          </div>
+          {/* 不做区警示（当前处于观望区 = 行动指令） */}
+          {inNoTradeZone && analysis.meta?.noTradeZone && (
+            <div className="flex items-center gap-2 p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/40">
+              <span className="text-amber-400">⛔</span>
+              <span className="text-xs text-amber-400 font-medium">
+                不做区 {formatPrice(analysis.meta.noTradeZone.from)} ~ {formatPrice(analysis.meta.noTradeZone.to)} — 观望
+              </span>
+            </div>
+          )}
 
-          {/* 多维证据表（大神框架核心：每条证据带数值与多空倾向） */}
-          {analysis.meta?.evidence && analysis.meta.evidence.length > 0 && (
+          {/* 挂单指令卡（Plan A） */}
+          {planA && analysis.direction !== 'neutral' && (
+            <OrderCard p={planA} />
+          )}
+
+          {/* 观望时的提示（neutral = 结果本身） */}
+          {analysis.direction === 'neutral' && (
+            <div className="p-4 rounded-xl border border-dark-700 bg-dark-800/40 text-center">
+              <div className="text-dark-300 text-sm">当前无挂单信号</div>
+              <div className="text-dark-500 text-xs mt-1">等待下一次分析或参考下方八分位</div>
+            </div>
+          )}
+
+          {/* Plan B 折叠 */}
+          {planB && analysis.direction !== 'neutral' && (
             <div>
-              <div className="text-dark-400 text-xs font-medium mb-2">
-                多维证据表
-                <span className="ml-2 text-dark-600 font-normal">
-                  {(() => {
-                    const ev = analysis.meta!.evidence!;
-                    const b = ev.filter((e) => e.signal === 'bullish').length;
-                    const s = ev.filter((e) => e.signal === 'bearish').length;
-                    return `${b} 利多 / ${s} 利空 / ${ev.length - b - s} 中性`;
-                  })()}
-                </span>
-              </div>
-              <div className="space-y-1">
-                {analysis.meta.evidence.map((e, i) => (
-                  <div key={i} className="flex items-center gap-2 text-xs px-2 py-1.5 rounded bg-dark-900/40 border border-dark-800/50">
-                    <span className="w-3 flex-shrink-0">
-                      {e.signal === 'bullish' ? '▲' : e.signal === 'bearish' ? '▼' : '●'}
-                    </span>
-                    <span className={`w-3 flex-shrink-0 ${
-                      e.signal === 'bullish' ? 'text-green-400' : e.signal === 'bearish' ? 'text-red-400' : 'text-dark-500'
-                    }`} />
-                    <span className="text-dark-300 w-24 flex-shrink-0 truncate" title={e.dimension}>{e.dimension}</span>
-                    <span className="text-white flex-shrink-0 max-w-[38%] truncate" title={e.data}>{e.data}</span>
-                    <span className="text-dark-500 flex-1 truncate" title={e.note}>{e.note}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* 市场状态 + A+ 清单（大神思维核心） */}
-          {analysis.meta && analysis.meta.regime && (
-            <div className="flex flex-wrap items-center gap-2">
-              {(() => {
-                const rc: Record<string, { label: string; cls: string }> = {
-                  trending: { label: '⚡ 趋势日', cls: 'text-blue-400 bg-blue-500/10 border-blue-500/30' },
-                  range: { label: '⇄ 区间日', cls: 'text-purple-400 bg-purple-500/10 border-purple-500/30' },
-                  chop: { label: '✕ 碎波日（禁开仓）', cls: 'text-dark-300 bg-dark-700/40 border-dark-600/40' },
-                  event: { label: '⚡ 事件日', cls: 'text-amber-400 bg-amber-500/10 border-amber-500/30' },
-                };
-                const cfg = rc[analysis.meta.regime] || rc.chop;
-                return <span className={`text-xs px-2 py-1 rounded border ${cfg.cls}`}>{cfg.label}</span>;
-              })()}
-              {analysis.meta.aPlusChecklist && (
-                <>
-                  {[
-                    ['regimeClear', '状态明确'],
-                    ['timeframeAligned', '多周期共振'],
-                    ['fundingNotExtreme', '费率不极端'],
-                    ['volumeConfirmed', '量能配合'],
-                    ['nearInvalidation', '贴近无效点'],
-                  ].map(([key, name]) => {
-                    const ok = Boolean((analysis.meta!.aPlusChecklist as Record<string, boolean>)[key]);
-                    return (
-                      <span
-                        key={key}
-                        className={`text-[11px] px-1.5 py-0.5 rounded border ${
-                          ok
-                            ? 'text-green-400 bg-green-500/10 border-green-500/25'
-                            : 'text-dark-500 bg-dark-800/40 border-dark-700/30 line-through'
-                        }`}
-                      >
-                        {ok ? '✓' : '✕'} {name}
-                      </span>
-                    );
-                  })}
-                </>
-              )}
-              {analysis.meta.atr15m != null && analysis.meta.atr15m > 0 && (
-                <span className="text-[11px] text-dark-500 px-1.5 py-0.5">
-                  15m ATR: {analysis.meta.atr15m.toFixed(2)}
-                </span>
+              <button
+                onClick={() => setShowPlanB(!showPlanB)}
+                className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-dark-800/40 border border-dark-800 text-dark-400 text-xs hover:text-white transition-colors"
+              >
+                <svg className={`w-3 h-3 transition-transform ${showPlanB ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+                激进备选 Plan B
+              </button>
+              {showPlanB && (
+                <div className="mt-2">
+                  <OrderCard p={planB} />
+                </div>
               )}
             </div>
           )}
 
-          {/* 关键价位 */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div className="bg-dark-800/40 rounded-lg p-3 border border-dark-700/30">
-              <div className="text-dark-500 text-xs mb-1">入场价</div>
-              <div className="text-white font-semibold text-sm">{formatPrice(analysis.entryPrice)}</div>
-            </div>
-            <div className="bg-dark-800/40 rounded-lg p-3 border border-dark-700/30">
-              <div className="text-dark-500 text-xs mb-1">止损</div>
-              <div className="text-red-400 font-semibold text-sm">{formatPrice(analysis.stopLoss)}</div>
-            </div>
-            <div className="bg-dark-800/40 rounded-lg p-3 border border-dark-700/30">
-              <div className="text-dark-500 text-xs mb-1">止盈1</div>
-              <div className="text-green-400 font-semibold text-sm">{formatPrice(analysis.takeProfit1)}</div>
-            </div>
-            <div className="bg-dark-800/40 rounded-lg p-3 border border-dark-700/30">
-              <div className="text-dark-500 text-xs mb-1">止盈2</div>
-              <div className="text-green-400 font-semibold text-sm">{formatPrice(analysis.takeProfit2)}</div>
-            </div>
-          </div>
-
-          {/* 盈亏比计算 */}
-          {analysis.entryPrice && analysis.stopLoss && analysis.takeProfit1 && (
-            <div className="text-xs text-dark-400 flex items-center gap-4">
-              <span>风险: <span className="text-red-400">{Math.abs(analysis.entryPrice - analysis.stopLoss).toFixed(2)}</span></span>
-              <span>收益1: <span className="text-green-400">{Math.abs(analysis.takeProfit1 - analysis.entryPrice).toFixed(2)}</span></span>
-              <span>盈亏比: <span className="text-blue-400 font-medium">
-                {Math.abs(analysis.takeProfit1 - analysis.entryPrice) / Math.abs(analysis.entryPrice - analysis.stopLoss) > 0
-                  ? (Math.abs(analysis.takeProfit1 - analysis.entryPrice) / Math.abs(analysis.entryPrice - analysis.stopLoss)).toFixed(2)
-                  : '-'}
-                :1
-              </span></span>
-            </div>
-          )}
-
-          {/* 江恩八分位阶梯（Gann Eighths — 价位锚定核心面板，服务端客观计算） */}
-          {analysis.meta?.gann && (() => {
-            const g = analysis.meta.gann!;
-            const sorted = [...g.levels].sort((a, b) => b.price - a.price); // 8/8 → 1/8
-            const nearestAbove = sorted.find((l) => l.price >= currentPrice);
-            const nearestBelow = sorted.find((l) => l.price <= currentPrice); // sorted 倒序，从下往上第一个即最近
+          {/* 江恩八分位阶梯（纯点位结果） */}
+          {gann && (() => {
+            const sorted = [...gann.levels].sort((a, b) => b.price - a.price); // 8/8 → 1/8
             return (
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-1.5">
-                    <svg className="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16M8 6v12M12 6v12M16 6v12" />
-                    </svg>
-                    <span className="text-dark-400 text-xs font-medium">江恩八分位阶梯</span>
-                  </div>
+                  <span className="text-dark-400 text-xs font-medium">八分位</span>
                   <span className="text-[10px] text-dark-500">
-                    {formatPrice(g.swingLow)} ~ {formatPrice(g.swingHigh)} · 振幅 {g.rangePct}%
+                    {formatPrice(gann.swingLow)} ~ {formatPrice(gann.swingHigh)} · 位置 {gann.positionPct}%
                   </span>
                 </div>
-
-                {/* 区间位置条：低 → 高，白色标记 = 现价 */}
-                <div className="relative h-2 rounded-full bg-gradient-to-r from-green-500/40 via-dark-600 to-red-500/40 mb-1">
+                {/* 位置条 */}
+                <div className="relative h-1.5 rounded-full bg-gradient-to-r from-green-500/40 via-dark-600 to-red-500/40 mb-2">
                   {[12.5, 25, 37.5, 50, 62.5, 75, 87.5].map((pct) => (
-                    <div key={pct} className="absolute top-0 h-2 w-px bg-dark-900/80" style={{ left: `${pct}%` }} />
+                    <div key={pct} className="absolute top-0 h-1.5 w-px bg-dark-900/80" style={{ left: `${pct}%` }} />
                   ))}
                   {currentPrice > 0 && (
                     <div
-                      className="absolute -top-1 h-4 w-1.5 bg-white rounded-sm shadow-md"
-                      style={{ left: `calc(${Math.min(Math.max(g.positionPct, 0), 100)}% - 3px)` }}
-                      title={`现价 ${formatPrice(currentPrice)}`}
+                      className="absolute -top-1 h-3.5 w-1 bg-white rounded-sm"
+                      style={{ left: `calc(${Math.min(Math.max(gann.positionPct, 0), 100)}% - 2px)` }}
                     />
                   )}
                 </div>
-                <div className="flex justify-between text-[10px] text-dark-500 mb-2.5">
-                  <span>0/8 低点</span>
-                  <span className={g.positionPct >= 87.5 || g.positionPct <= 12.5 ? 'text-amber-400' : 'text-dark-400'}>
-                    当前 {g.positionPct}% · {g.zoneLabel}
-                  </span>
-                  <span>8/8 高点</span>
-                </div>
-
-                {/* 阶梯：8/8 → 1/8，现价上方=阻力（红），下方=支撑（绿），4/8 中轴金色，最近档高亮 */}
-                <div className="space-y-1">
+                {/* 8 档紧凑列表 */}
+                <div className="space-y-0.5">
                   {sorted.map((l) => {
                     const isRes = currentPrice > 0 && l.price > currentPrice;
                     const isAxis = l.index === 4;
-                    const nearest = l === nearestAbove || l === nearestBelow;
                     return (
                       <div
                         key={l.index}
-                        className={`flex items-center gap-2 text-xs px-2 py-1 rounded border ${
-                          isAxis
-                            ? 'bg-amber-500/10 border-amber-500/30'
-                            : nearest
-                              ? isRes ? 'bg-red-500/10 border-red-500/30' : 'bg-green-500/10 border-green-500/30'
-                              : 'bg-dark-800/40 border-dark-800/60'
+                        className={`flex items-center gap-2 text-xs px-2 py-1 rounded ${
+                          isAxis ? 'bg-amber-500/10 border border-amber-500/25' : ''
                         }`}
                       >
-                        <span className={`w-7 text-[10px] font-bold flex-shrink-0 ${isAxis ? 'text-amber-400' : isRes ? 'text-red-400/80' : 'text-green-400/80'}`}>
+                        <span className={`w-7 text-[10px] font-bold ${isAxis ? 'text-amber-400' : isRes ? 'text-red-400/80' : 'text-green-400/80'}`}>
                           {l.division}
                         </span>
-                        <span className="text-white font-medium flex-shrink-0">{formatPrice(l.price)}</span>
-                        <span className={`text-[10px] flex-shrink-0 ${l.distPct >= 0 ? 'text-red-400/60' : 'text-green-400/60'}`}>
+                        <span className="text-white/90 font-medium">{formatPrice(l.price)}</span>
+                        <span className={`text-[10px] ${l.distPct >= 0 ? 'text-red-400/60' : 'text-green-400/60'}`}>
                           {l.distPct > 0 ? '+' : ''}{l.distPct}%
                         </span>
-                        <span className="text-dark-500 text-[10px] truncate flex-1 text-right">{l.meaning}</span>
+                        {isAxis && <span className="text-amber-400/60 text-[10px] ml-auto">中轴</span>}
                       </div>
                     );
                   })}
@@ -557,191 +519,29 @@ export default function AiAnalysisPanel() {
             );
           })()}
 
-          {/* 关键价位列表（AI 标注的补充位：前高前低/形态位等） */}
-          {analysis.keyLevels && analysis.keyLevels.length > 0 && (
-            <div>
-              <div className="text-dark-400 text-xs font-medium mb-2">补充关键位</div>
-              <div className="flex flex-wrap gap-2">
-                {analysis.keyLevels.map((level, i) => (
-                  <div key={i} className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-dark-800/60 border border-dark-700/30">
-                    <span className={String(level.type).includes('支撑') ? 'text-green-400' : String(level.type).includes('阻力') ? 'text-red-400' : 'text-dark-300'}>
-                      {level.type}
-                    </span>
-                    <span className="text-white font-medium">{formatPrice(Number(level.price))}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* 挂单计划：A 推荐 / B 激进（挂单执行框架） */}
-          {analysis.meta?.plans && analysis.meta.plans.length > 0 && (
-            <div>
-              <div className="text-dark-400 text-xs font-medium mb-2">挂单计划</div>
-              <div className="space-y-2">
-                {analysis.meta.plans.map((p, i) => (
-                  <div
-                    key={i}
-                    className={`p-2.5 rounded-lg border ${
-                      p.recommended
-                        ? 'bg-green-500/5 border-green-500/30'
-                        : 'bg-dark-900/40 border-dark-800'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-1.5">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded flex-shrink-0 ${
-                          p.recommended ? 'bg-green-500/20 text-green-400' : 'bg-dark-800 text-dark-400'
-                        }`}>
-                          Plan {p.name}
-                        </span>
-                        <span className="text-dark-300 text-xs truncate">{p.style}</span>
-                        {p.entryType && (
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded border flex-shrink-0 ${entryTypeMap[p.entryType]?.cls || ''}`}>
-                            {entryTypeMap[p.entryType]?.label || p.entryType}
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-1.5 flex-shrink-0">
-                        {p.recommended && (
-                          <span className="text-[10px] text-green-400 font-medium">推荐</span>
-                        )}
-                        <button
-                          onClick={() => copyPlanOrder(p)}
-                          className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${
-                            copiedPlan === p.name
-                              ? 'text-green-400 border-green-500/40 bg-green-500/10'
-                              : 'text-dark-400 border-dark-700 bg-dark-900/60 hover:text-white hover:border-dark-500'
-                          }`}
-                        >
-                          {copiedPlan === p.name ? '已复制' : '复制挂单'}
-                        </button>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-5 gap-1.5 text-center mb-1.5">
-                      <div>
-                        <div className="text-dark-600 text-[10px]">挂单价</div>
-                        <div className="text-white text-xs font-semibold">{p.entry != null ? formatPrice(p.entry) : '--'}</div>
-                        {p.entry != null && currentPrice > 0 && (
-                          <div className={`text-[9px] ${p.entry < currentPrice ? 'text-sky-500' : 'text-violet-500'}`}>
-                            {(((p.entry - currentPrice) / currentPrice) * 100).toFixed(2)}%
-                          </div>
-                        )}
-                      </div>
-                      <div>
-                        <div className="text-dark-600 text-[10px]">止损</div>
-                        <div className="text-red-400 text-xs font-medium">{p.stopLoss != null ? formatPrice(p.stopLoss) : '--'}</div>
-                      </div>
-                      <div>
-                        <div className="text-dark-600 text-[10px]">止盈1</div>
-                        <div className="text-green-400 text-xs font-medium">{p.takeProfit1 != null ? formatPrice(p.takeProfit1) : '--'}</div>
-                      </div>
-                      <div>
-                        <div className="text-dark-600 text-[10px]">止盈2</div>
-                        <div className="text-green-400 text-xs font-medium">{p.takeProfit2 != null ? formatPrice(p.takeProfit2) : '--'}</div>
-                      </div>
-                      <div>
-                        <div className="text-dark-600 text-[10px]">盈亏比</div>
-                        <div className="text-white text-xs font-medium">
-                          {p.rr1 != null ? `1:${p.rr1}` : '--'}
-                          {p.rr2 != null ? <span className="text-dark-500"> / {p.rr2}</span> : null}
-                        </div>
-                      </div>
-                    </div>
-                    {p.cancelIf && (
-                      <div className="flex items-start gap-1.5 text-[11px] leading-relaxed mb-1">
-                        <span className="text-red-400/90 flex-shrink-0">撤单条件：</span>
-                        <span className="text-dark-400">
-                          价格越过 <span className="text-red-400 font-semibold">{formatPrice(p.cancelIf.price)}</span>
-                          {p.cancelIf.reason ? ` — ${p.cancelIf.reason}` : '（错过即撤，禁止追单）'}
-                        </span>
-                      </div>
-                    )}
-                    <div className="flex items-start gap-1.5 text-[11px] leading-relaxed flex-wrap">
-                      {p.validFor && (
-                        <span className="text-dark-500">有效期：{p.validFor}</span>
-                      )}
-                      {p.condition && (
-                        <span className="text-dark-400">成交前提：{p.condition}</span>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* 不做区（盈亏比最差的观望区间） */}
-          {analysis.meta?.noTradeZone && currentPrice >= analysis.meta.noTradeZone.from && currentPrice <= analysis.meta.noTradeZone.to ? (
-            <div className="flex items-center gap-2 p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/40">
-              <svg className="w-4 h-4 text-amber-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-              </svg>
-              <div className="text-xs">
-                <span className="text-amber-400 font-medium">
-                  当前处于不做区（{formatPrice(analysis.meta.noTradeZone.from)} ~ {formatPrice(analysis.meta.noTradeZone.to)}）
-                </span>
-                <span className="text-dark-400"> — {analysis.meta.noTradeZone.reason}，建议观望</span>
-              </div>
-            </div>
-          ) : null}
-
-          {/* 风险提示 */}
-          {analysis.riskWarning && (
-            <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-500/5 border border-amber-500/20">
-              <svg className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-              </svg>
-              <span className="text-amber-400/80 text-xs">{analysis.riskWarning}</span>
-            </div>
-          )}
-
-          {/* 详细分析 */}
-          <div>
-            <button
-              onClick={() => setShowReasoning(!showReasoning)}
-              className="flex items-center gap-1 text-sm text-blue-400 hover:text-blue-300 transition-colors"
-            >
-              <svg className={`w-4 h-4 transition-transform ${showReasoning ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
-              详细分析逻辑
-            </button>
-            {showReasoning && (
-              <div className="mt-2 p-3 rounded-lg bg-dark-900/60 border border-dark-800">
-                <p className="text-dark-300 text-sm leading-relaxed whitespace-pre-wrap">{analysis.reasoning}</p>
-              </div>
-            )}
-          </div>
-
-          {/* 时间和模型信息 */}
-          <div className="flex items-center justify-between text-xs text-dark-500 pt-2 border-t border-dark-800">
-            <span>分析时间: {formatTime(analysis.createdAt)}</span>
-            <span>模型: {analysis.provider} / {analysis.model}</span>
-          </div>
-
-          {/* 历史记录 */}
+          {/* 历史（极简折叠：方向 + 挂单价 + 止损 + 时间） */}
           {history.length > 1 && (
             <div>
               <button
                 onClick={() => setShowHistory(!showHistory)}
-                className="flex items-center gap-1 text-sm text-dark-400 hover:text-white transition-colors"
+                className="flex items-center gap-1 text-xs text-dark-500 hover:text-white transition-colors"
               >
-                <svg className={`w-4 h-4 transition-transform ${showHistory ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className={`w-3 h-3 transition-transform ${showHistory ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                 </svg>
-                历史记录 ({history.length})
+                历史 ({history.length})
               </button>
               {showHistory && (
-                <div className="mt-2 space-y-2 max-h-48 overflow-y-auto">
+                <div className="mt-2 space-y-1 max-h-44 overflow-y-auto">
                   {history.map((item) => {
                     const hDir = directionConfig[item.direction as keyof typeof directionConfig] || directionConfig.neutral;
                     return (
-                      <div key={item.id} className="flex items-center gap-3 p-2 rounded-lg bg-dark-900/40 border border-dark-800/50">
-                        <span className={`text-sm font-medium ${hDir.color}`}>{hDir.icon} {hDir.label}</span>
-                        <span className="text-dark-500 text-xs">{item.confidence}%</span>
-                        <span className="text-dark-400 text-xs flex-1 truncate">{item.summary}</span>
-                        <span className="text-dark-500 text-xs flex-shrink-0">{formatTime(item.createdAt)}</span>
+                      <div key={item.id} className="flex items-center gap-3 px-2 py-1.5 rounded-lg bg-dark-900/40 border border-dark-800/50 text-xs">
+                        <span className={`font-bold ${hDir.color} w-16 flex-shrink-0`}>{hDir.icon} {hDir.label}</span>
+                        <span className="text-dark-500">{item.confidence}%</span>
+                        <span className="text-white/80">{item.entryPrice != null ? formatPrice(item.entryPrice) : '--'}</span>
+                        <span className="text-red-400/70">{item.stopLoss != null ? `止损 ${formatPrice(item.stopLoss)}` : ''}</span>
+                        <span className="text-dark-600 ml-auto flex-shrink-0">{formatTime(item.createdAt)}</span>
                       </div>
                     );
                   })}
