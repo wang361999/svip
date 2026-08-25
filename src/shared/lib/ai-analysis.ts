@@ -183,36 +183,6 @@ export function parseAiConfig(settings: Record<string, string | null | undefined
 
 // ==================== Prompt 构建 ====================
 
-/** 检测摆动高低点（枢轴点：左右各2根K线更低→摆动高点；更高→摆动低点） */
-function detectSwings(klines: KlineData[], lookback = 20, radius = 2): { type: 'H' | 'L'; price: number }[] {
-  const seg = klines.slice(-lookback);
-  const swings: { type: 'H' | 'L'; price: number }[] = [];
-  for (let i = radius; i < seg.length - radius; i++) {
-    let isHigh = true;
-    let isLow = true;
-    for (let j = i - radius; j <= i + radius; j++) {
-      if (j === i) continue;
-      if (seg[j].high >= seg[i].high) isHigh = false;
-      if (seg[j].low <= seg[i].low) isLow = false;
-    }
-    if (isHigh) swings.push({ type: 'H', price: seg[i].high });
-    if (isLow) swings.push({ type: 'L', price: seg[i].low });
-  }
-  return swings;
-}
-
-/** 根据摆动点序列判断市场结构（HH/HL=上升，LH/LL=下降，否则震荡） */
-function classifyStructure(swings: { type: 'H' | 'L'; price: number }[]): string {
-  const highs = swings.filter((s) => s.type === 'H');
-  const lows = swings.filter((s) => s.type === 'L');
-  if (highs.length < 2 || lows.length < 2) return '结构不明（摆动点不足）';
-  const hh = highs[highs.length - 1].price > highs[highs.length - 2].price;
-  const hl = lows[lows.length - 1].price > lows[lows.length - 2].price;
-  if (hh && hl) return '上升结构(HH+HL)';
-  if (!hh && !hl) return '下降结构(LH+LL)';
-  return '震荡结构(高低点方向分歧)';
-}
-
 /** 构建 K 线摘要文本（避免传太多数据消耗 token） */
 // ==================== 江恩八分位（Gann Eighths）客观计算 ====================
 
@@ -378,6 +348,58 @@ function buildStructureText(s15: StructureInfo, s1h: StructureInfo, s4h: Structu
 4小时结构：${label(s4h)}${s4h.seq ? ` | ${s4h.seq}` : ''}`;
 }
 
+/**
+ * 服务端固定模板摘要（覆盖 AI 自由文本 — 面板展示永远稳定格式，不乱）
+ * 有方向：「触发分型@分位 · 挂X 多/空 · 损Y · 看A/B · 结构 升/降/震/升/降/震」
+ * 观望：「观望：{客观原因} · 现价 · 位置 · 结构」
+ */
+export function buildDeterministicSummary(
+  direction: 'long' | 'short' | 'neutral',
+  entryPrice: number | null,
+  stopLoss: number | null,
+  takeProfit1: number | null,
+  takeProfit2: number | null,
+  gann: GannEighths | null,
+  fractal: FractalSignal | null,
+  s15: StructureInfo,
+  s1h: StructureInfo,
+  s4h: StructureInfo,
+  currentPrice: number,
+): string {
+  const tag = (s: StructureInfo) => (s.trend === 'up' ? '升' : s.trend === 'down' ? '降' : s.trend === 'range' ? '震' : '–');
+  const structShort = `${tag(s15)}/${tag(s1h)}/${tag(s4h)}`; // 15m/1h/4h
+  const fmt = (p: number | null) =>
+    p != null && Number.isFinite(p) ? p.toLocaleString('en-US', { maximumFractionDigits: p >= 100 ? 2 : 4 }) : '–';
+  const nearDiv = (p: number, g: GannEighths) => {
+    const nearest = g.levels.reduce((a, b) => (Math.abs(b.price - p) < Math.abs(a.price - p) ? b : a));
+    return nearest.division;
+  };
+
+  // 观望：客观说明原因（可判定顺序：区间 → 分型 → 结构 → 其他）
+  if (direction === 'neutral') {
+    let why = '未命中进场规则';
+    if (!gann) why = '区间过窄（横盘压缩），八分位间距无意义';
+    else if (!fractal || (!fractal.lastTop && !fractal.lastBottom)) why = '近端无已确认分型';
+    else if (fractal.topBroken) why = '顶分型已被突破，信号失效';
+    else if (fractal.bottomBroken) why = '底分型已被跌破，信号失效';
+    else if (s4h.trend === 'range' || s1h.trend === 'range') why = '结构震荡，信号不通过过滤';
+    return `观望：${why}${gann ? ` · 现价 ${fmt(currentPrice)} 位于 ${gann.zoneLabel}` : ''} · 结构 ${structShort}`;
+  }
+
+  // 有方向：固定模板（触发分型 → 挂单价/止损/止盈 → 结构过滤结果）
+  const trig =
+    direction === 'long'
+      ? fractal?.lastBottom
+        ? `底分型${fractal.lastBottom.strong ? '(强)' : ''}${fractal.lastBottom.nearDivision ? `·共振${fractal.lastBottom.nearDivision}` : ''}`
+        : '底分型'
+      : fractal?.lastTop
+        ? `顶分型${fractal.lastTop.strong ? '(强)' : ''}${fractal.lastTop.nearDivision ? `·共振${fractal.lastTop.nearDivision}` : ''}`
+        : '顶分型';
+  const entryDiv = gann && entryPrice ? `@${nearDiv(entryPrice, gann)}` : '';
+  const dirText = direction === 'long' ? '多' : '空';
+  return `${trig}${entryDiv} · 挂 ${fmt(entryPrice)} ${dirText} · 损 ${fmt(stopLoss)} · 看 ${fmt(takeProfit1)}/${fmt(takeProfit2)} · 结构 ${structShort}`;
+}
+
 // ==================== 顶底分型（Fractal）客观计算 ====================
 
 /** 分型点：三根K线中的极值（已确认：右侧K线走完才算） */
@@ -482,34 +504,18 @@ function buildKlineSummary(klines: KlineData[], label: string): string {
   const prev = klines.length > 1 ? klines[klines.length - 2] : last;
   const recent20 = klines.slice(-20);
 
-  // 最近 20 根 K 线的简化摘要
-  const recentCloses = recent20.map((k) => k.close);
   const high20 = Math.max(...recent20.map((k) => k.high));
   const low20 = Math.min(...recent20.map((k) => k.low));
-  const avgVol = recent20.reduce((s, k) => s + k.volume, 0) / recent20.length;
 
   // 计算涨跌幅
   const changePct = prev.close > 0 ? ((last.close - prev.close) / prev.close * 100) : 0;
 
-  // 市场结构：摆动高低点序列 + 趋势形态判断
-  const swings = detectSwings(recent20);
-  const structure = classifyStructure(swings);
-  const swingText = swings.length > 0
-    ? swings.slice(-4).map((s) => `${s.type}=${s.price}`).join(' → ')
-    : '无';
-
-  // 量能：最新一根相对均量的放大/萎缩（判断突破是否有量能配合）
-  const volRatio = avgVol > 0 ? last.volume / avgVol : 0;
-  const volStatus = volRatio >= 1.5 ? '显著放量' : volRatio >= 1.1 ? '温和放量' : volRatio <= 0.6 ? '明显缩量' : '量能持平';
-
+  // 纯事实摘要：只保留 OHLC 与区间事实。
+  // 不注入结构判定（由多周期结构文本统一提供，避免双结构矛盾）、不注入量能（规则明确不看）
   return `${label}:
-  最新K线: O=${last.open} H=${last.high} L=${last.low} C=${last.close} V=${last.volume.toFixed(2)}
+  最新K线: O=${last.open} H=${last.high} L=${last.low} C=${last.close}
   涨跌幅: ${changePct.toFixed(2)}%
-  近20根最高: ${high20}, 最低: ${low20}
-  近20根均价: ${(recentCloses.reduce((s, c) => s + c, 0) / recentCloses.length).toFixed(2)}
-  近20根均量: ${avgVol.toFixed(2)}
-  市场结构: ${structure} | 摆动点(旧→新): ${swingText}
-  量能对比: 最新量为均量的 ${volRatio.toFixed(2)} 倍 (${volStatus})`;
+  近20根最高: ${high20}, 最低: ${low20}`;
 }
 
 /** 构建系统 prompt */
@@ -552,8 +558,7 @@ const SYSTEM_PROMPT = `你是严格执行「江恩八分位 + 顶底分型」的
   "stopLoss": 分型极值价格或null,
   "takeProfit1": 八分位价格或null,
   "takeProfit2": 八分位价格或null,
-  "summary": "一句话：触发分型+分位+进场动作（如：3/8处底分型有效，挂2465限价多，止损2458看2505）",
-  "reasoning": "两三句：命中进场规则第几条、依托哪个分型分位、止损为何放在分型极值"
+  "reasoning": "一两句：命中进场规则第几条、结构过滤结论。摘要由系统自动生成，无需输出"
 }`
 
 /** 构建用户 prompt（江恩八分位框架 + 顶底分型触发 + 多周期结构过滤） */
@@ -824,6 +829,20 @@ export async function analyzeMarketWithAI(
   result.meta.fractal = fractal;
   // 回填多周期结构趋势（服务端客观计算，前端周期徽章展示）
   result.meta.structure = { m15: struct15.trend, h1: struct1h.trend, h4: struct4h.trend };
+  // 摘要改为服务端固定模板（AI 不再自由发挥文案 — 每次分析格式恒定，面板不乱）
+  result.summary = buildDeterministicSummary(
+    result.direction,
+    result.entryPrice,
+    result.stopLoss,
+    result.takeProfit1,
+    result.takeProfit2,
+    gann,
+    fractal,
+    struct15,
+    struct1h,
+    struct4h,
+    price,
+  );
 
   return result;
 }
