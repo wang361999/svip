@@ -23,6 +23,23 @@ interface AiAnalysis {
   createdAt: string;
 }
 
+/**
+ * 兼容 keyLevels 为 JSON 字符串的历史数据（数据库 TEXT 列直出）
+ * 直接 .map() 字符串会抛 TypeError 导致整个面板崩溃
+ */
+function safeKeyLevels(raw: unknown): { price: number; type: string; note: string }[] | null {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 interface HistoryItem {
   id: string;
   direction: string;
@@ -63,7 +80,7 @@ export default function AiAnalysisPanel() {
       const data = await apiGet<{ latest: AiAnalysis | null; history: HistoryItem[]; analysisIntervalSec?: number }>(
         `/api/ai-analysis?symbol=${symbol}`,
       );
-      setAnalysis(data.latest);
+      setAnalysis(data.latest ? { ...data.latest, keyLevels: safeKeyLevels(data.latest.keyLevels) } : null);
       setHistory(data.history || []);
       // 从后端读取分析间隔（秒），直接使用
       if (data.analysisIntervalSec && data.analysisIntervalSec > 0) {
@@ -94,7 +111,7 @@ export default function AiAnalysisPanel() {
         label,
         currentPrice: currentPrice > 0 ? currentPrice : undefined,
       });
-      setAnalysis(result);
+      setAnalysis({ ...result, keyLevels: safeKeyLevels(result.keyLevels) });
       // 刷新历史列表
       const data = await apiGet<{ latest: AiAnalysis | null; history: HistoryItem[] }>(
         `/api/ai-analysis?symbol=${symbol}`,
@@ -333,10 +350,10 @@ export default function AiAnalysisPanel() {
               <div className="flex flex-wrap gap-2">
                 {analysis.keyLevels.map((level, i) => (
                   <div key={i} className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-dark-800/60 border border-dark-700/30">
-                    <span className={level.type.includes('支撑') ? 'text-green-400' : level.type.includes('阻力') ? 'text-red-400' : 'text-dark-300'}>
+                    <span className={String(level.type).includes('支撑') ? 'text-green-400' : String(level.type).includes('阻力') ? 'text-red-400' : 'text-dark-300'}>
                       {level.type}
                     </span>
-                    <span className="text-white font-medium">{formatPrice(level.price)}</span>
+                    <span className="text-white font-medium">{formatPrice(Number(level.price))}</span>
                   </div>
                 ))}
               </div>

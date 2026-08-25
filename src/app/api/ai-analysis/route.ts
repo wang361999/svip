@@ -71,7 +71,8 @@ export const GET = createHandler(async ({ req }) => {
           takeProfit1: latest.takeProfit1,
           takeProfit2: latest.takeProfit2,
           reasoning: latest.reasoning,
-          keyLevels: latest.keyLevels,
+          // 数据库以 TEXT 存储 JSON，必须解析后返回；前端直接 .map() 会崩溃
+          keyLevels: parseKeyLevels(latest.keyLevels),
           riskWarning: latest.riskWarning,
           provider: latest.provider,
           model: latest.model,
@@ -82,6 +83,25 @@ export const GET = createHandler(async ({ req }) => {
     analysisIntervalSec,
   });
 });
+
+/** 将数据库 TEXT 列安全解析为 keyLevels 数组 */
+function parseKeyLevels(raw: string | null): { price: number; type: string; note: string }[] | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    return parsed
+      .filter((lv: unknown) => lv != null && typeof lv === 'object')
+      .slice(0, 8)
+      .map((lv: any) => ({
+        price: Number(lv.price) || 0,
+        type: String(lv.type || '未知'),
+        note: String(lv.note || ''),
+      }));
+  } catch {
+    return null;
+  }
+}
 
 /** POST — 触发新的 AI 分析 */
 const analyzeSchema = z.object({
