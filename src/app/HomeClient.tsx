@@ -20,14 +20,14 @@ export default function HomeClient({ title, subtitle }: HomeClientProps) {
       icon: 'M3 3v18h18M7 15l3-3 3 2 5-7',
     },
     {
-      title: '策略信号工作台',
-      desc: '内置趋势、布林带、RSI、斐波那契、TD、ATR 等策略维度，帮助你更系统地观察入场机会。',
+      title: 'AI 智能分析',
+      desc: '接入 AI 结合技术指标、多周期趋势与市场情绪自动研判行情，短线决策更有依据。',
       color: 'cyan',
       icon: 'M9 17v-6m4 6V7m4 10v-4M5 21h14',
     },
     {
       title: '模拟盘风控验证',
-      desc: '用模拟资金验证策略表现，记录持仓、盈亏、手续费、滑点和胜率，先复盘再实盘。',
+      desc: '用模拟资金验证交易表现，记录持仓、盈亏、手续费、滑点和胜率，先复盘再实盘。',
       color: 'green',
       icon: 'M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8V7m0 10v-1',
     },
@@ -41,14 +41,14 @@ export default function HomeClient({ title, subtitle }: HomeClientProps) {
 
   const advantages = [
     { label: '行情来源', value: 'Binance / OKX', sub: '多源行情适配' },
-    { label: '交易模式', value: '模拟盘优先', sub: '先验证策略再决策' },
+    { label: '交易模式', value: '模拟盘优先', sub: '先验证再决策' },
     { label: '风控配置', value: '杠杆 / 止损 / 仓位', sub: '参数可后台调整' },
     { label: '自动范围', value: '白名单控制', sub: '只交易允许币种' },
   ];
 
   const workflow = [
     '选择关注币种，查看实时K线与指标',
-    '启用策略信号，观察多周期共振',
+    '查看 AI 分析与多周期趋势（15m / 1h / 4h / 1d）',
     '在模拟盘验证开仓、止盈、止损表现',
     '后台设置自动交易白名单与风控参数',
   ];
@@ -67,16 +67,16 @@ export default function HomeClient({ title, subtitle }: HomeClientProps) {
               <div>
                 <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-300 text-xs font-semibold mb-5">
                   <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-                  多币种策略分析与模拟交易系统
+                  多币种 AI 分析与模拟交易系统
                 </div>
                 <h1 className="text-4xl sm:text-5xl lg:text-6xl font-black text-white tracking-tight leading-tight">
                   让交易决策先经过
                   <span className="block text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-cyan-300 to-green-300">
-                    数据、策略与风控验证
+                    数据、AI 与风控验证
                   </span>
                 </h1>
                 <p className="text-base sm:text-lg text-dark-300 mt-6 max-w-2xl leading-8">
-                  {title} 不只是行情页面，而是一套面向数字货币交易者的专业工具：实时行情、技术指标、策略信号、模拟盘复盘和自动交易白名单集中在一个工作台。
+                  {title} 不只是行情页面，而是一套面向数字货币交易者的专业工具：实时行情、技术指标、AI 智能分析、模拟盘复盘和自动交易白名单集中在一个工作台。
                 </p>
                 <p className="text-sm text-dark-500 mt-2">
                   {subtitle}
@@ -84,9 +84,6 @@ export default function HomeClient({ title, subtitle }: HomeClientProps) {
                 <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 mt-8">
                   <Link href="/trading" className="btn-primary text-base px-7 py-3 text-center">
                     进入交易工作台
-                  </Link>
-                  <Link href="/strategies" className="btn-secondary text-base px-7 py-3 text-center">
-                    查看策略信号
                   </Link>
                 </div>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-8">
@@ -134,9 +131,9 @@ export default function HomeClient({ title, subtitle }: HomeClientProps) {
 
                   <div className="grid grid-cols-2 gap-3">
                     <div className="rounded-xl bg-dark-800/50 border border-dark-700/50 p-3">
-                      <div className="text-[10px] text-dark-500">策略信号</div>
-                      <div className="text-sm font-bold text-cyan-300 mt-1">多周期共振</div>
-                      <div className="text-[10px] text-dark-500 mt-1">15m / 1h / 4h</div>
+                      <div className="text-[10px] text-dark-500">AI 分析</div>
+                      <div className="text-sm font-bold text-cyan-300 mt-1">多周期趋势研判</div>
+                      <div className="text-[10px] text-dark-500 mt-1">15m / 1h / 4h / 1d</div>
                     </div>
                     <div className="rounded-xl bg-dark-800/50 border border-dark-700/50 p-3">
                       <div className="text-[10px] text-dark-500">自动交易</div>
@@ -170,7 +167,7 @@ export default function HomeClient({ title, subtitle }: HomeClientProps) {
               </h2>
             </div>
             <p className="text-dark-400 max-w-xl leading-7">
-              从行情监控到策略验证，从手动观察到自动执行范围控制，每一步都围绕“减少随意交易、强化风控”设计。
+              从行情监控到 AI 研判验证，从手动观察到自动执行范围控制，每一步都围绕“减少随意交易、强化风控”设计。
             </p>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
@@ -202,7 +199,7 @@ export default function HomeClient({ title, subtitle }: HomeClientProps) {
                 把交易从“感觉”变成可复盘的流程
               </h2>
               <p className="text-dark-400 text-sm leading-7 mb-6">
-                好的工具不应该替你盲目下单，而应该帮你过滤机会、记录决策、验证策略，并把自动交易控制在明确范围内。
+                好的工具不应该替你盲目下单，而应该帮你过滤机会、记录决策、验证想法，并把自动交易控制在明确范围内。
               </p>
               <Link href="/trading" className="btn-primary inline-block">
                 打开工作台
@@ -236,7 +233,7 @@ export default function HomeClient({ title, subtitle }: HomeClientProps) {
                   先用模拟盘验证，再决定是否执行
                 </h2>
                 <p className="text-dark-300 max-w-2xl leading-7">
-                  所有行情、策略和模拟盘数据仅用于辅助分析，不构成投资建议。专业交易的第一步，是把风险控制在你能理解和接受的范围内。
+                  所有行情、AI 分析和模拟盘数据仅用于辅助分析，不构成投资建议。专业交易的第一步，是把风险控制在你能理解和接受的范围内。
                 </p>
               </div>
               <div className="flex flex-col sm:flex-row gap-3">

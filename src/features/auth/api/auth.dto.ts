@@ -12,8 +12,3 @@ export type AuthUser = Pick<
   prefAutoFib?: string;
   prefAB9Labels?: string;
 };
-
-/** 登录响应 */
-export interface LoginResult {
-  user: AuthUser;
-}

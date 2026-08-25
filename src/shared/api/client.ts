@@ -98,8 +98,3 @@ export function apiPut<T = unknown>(url: string, body?: unknown, options?: Omit<
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
 }
-
-/** DELETE 请求 */
-export function apiDelete<T = unknown>(url: string, options?: Omit<RequestInit, 'method' | 'body'>): Promise<T> {
-  return request<T>(url, { ...options, method: 'DELETE' });
-}

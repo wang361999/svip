@@ -75,12 +75,6 @@ export default function Header() {
             <Link href="/trading" className="px-3 py-2 text-dark-300 hover:text-white rounded-lg hover:bg-dark-800 transition-colors">
               交易
             </Link>
-            {isAuthenticated && (
-              <Link href="/strategies" className="px-3 py-2 text-dark-300 hover:text-white rounded-lg hover:bg-dark-800 transition-colors flex items-center gap-1">
-                策略
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-              </Link>
-            )}
             {isAuthenticated ? (
               <>
                 {user?.role === 'admin' && (
@@ -135,12 +129,6 @@ export default function Header() {
               <Link href="/trading" className="px-3 py-2 text-dark-300 hover:text-white rounded-lg hover:bg-dark-800">
                 交易
               </Link>
-              {isAuthenticated && (
-                <Link href="/strategies" className="px-3 py-2 text-dark-300 hover:text-white rounded-lg hover:bg-dark-800 flex items-center gap-1">
-                  策略
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                </Link>
-              )}
               {isAuthenticated ? (
                 <>
                   {user?.role === 'admin' && (

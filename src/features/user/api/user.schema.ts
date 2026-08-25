@@ -5,5 +5,3 @@ export const updatePreferencesSchema = z.object({
   prefAutoFib: z.boolean().optional(),
   prefAB9Labels: z.boolean().optional(),
 });
-
-export const updateStrategyConfigSchema = z.object({}).passthrough();

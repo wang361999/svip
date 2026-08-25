@@ -13,9 +13,10 @@ import { apiGet, apiPost, apiPut } from '@/shared/api/client';
 import usePriceStore from '@/store/priceStore';
 import useSymbolStore from '@/store/symbolStore';
 
-// ==================== 策略名称映射 ====================
+// ==================== 开仓来源名称映射 ====================
 
-const STRATEGY_NAME_MAP: Record<string, string> = {
+// 历史策略 ID 映射保留用于展示旧交易记录；新开仓来源只有「手动」和「AI 信号」。
+const LEGACY_STRATEGY_NAME_MAP: Record<string, string> = {
   trend_macd_ema: '双线趋势流',
   bollinger_squeeze: '布林带收缩突破',
   rsi_divergence: 'RSI 背离反转',
@@ -36,7 +37,8 @@ const STRATEGY_NAME_MAP: Record<string, string> = {
 
 function getStrategyName(id: string | null): string {
   if (!id) return '手动';
-  return STRATEGY_NAME_MAP[id] || id;
+  if (id.startsWith('ai_')) return `AI 信号（${id.slice(3).toUpperCase()}）`;
+  return LEGACY_STRATEGY_NAME_MAP[id] || id;
 }
 
 // ==================== 类型 ====================
@@ -506,10 +508,10 @@ export default function PaperTradingPanel() {
         </div>
       )}
 
-      {/* 策略胜率统计 */}
+      {/* 开仓来源胜率统计（手动 / AI 信号） */}
       {stats && stats.strategyStats && Object.keys(stats.strategyStats).length > 0 && (
         <div className="rounded-xl border border-dark-600/30 bg-dark-800/20 p-3 space-y-2">
-          <div className="text-[10px] text-dark-400 font-medium uppercase tracking-wider">策略胜率</div>
+          <div className="text-[10px] text-dark-400 font-medium uppercase tracking-wider">开仓来源胜率</div>
           <div className="grid grid-cols-1 gap-1">
             {Object.entries(stats.strategyStats)
               .sort(([, a], [, b]) => b.count - a.count)
@@ -1035,7 +1037,7 @@ function ConfigTab({
           </span>
         </div>
         <p className="text-[10px] text-dark-500 leading-relaxed">
-          开启后，引擎将根据已启用的策略信号自动开仓。需在 VPS 上部署 trigger 脚本持续触发 /api/paper/engine。
+          开启后，引擎将根据 AI 信号自动开仓（受多周期趋势、白名单、ATR 波动闸门约束，碎波市自动暂停）。需在 VPS 上部署 trigger 脚本持续触发 /api/paper/engine。
           最多同时持有 5 个仓位，同方向不重复开仓。
         </p>
       </div>

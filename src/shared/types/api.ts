@@ -19,23 +19,3 @@ export interface ApiError {
   /** 字段级错误（zod 校验失败时） */
   fieldErrors?: Record<string, string[]>;
 }
-
-/** 分页响应数据 */
-export interface Paginated<T> {
-  items: T[];
-  total: number;
-  page: number;
-  pageSize: number;
-  totalPages: number;
-}
-
-/** 分页查询参数 */
-export interface PageQuery {
-  page: number;
-  limit: number;
-}
-
-/** 通用 ID 参数 */
-export interface IdParams {
-  id: string;
-}

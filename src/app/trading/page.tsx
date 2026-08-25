@@ -7,7 +7,6 @@ import Footer from '@/components/layout/Footer';
 import PriceTicker from '@/components/trading/PriceTicker';
 import KlineChart from '@/components/trading/KlineChart';
 import TrendPanel from '@/components/trading/TrendPanel';
-import StrategyPanel from '@/components/trading/StrategyPanel';
 import PaperTradingPanel from '@/components/trading/PaperTradingPanel';
 import AiAnalysisPanel from '@/components/trading/AiAnalysisPanel';
 import ErrorBoundary from '@/components/ErrorBoundary';
@@ -136,13 +135,6 @@ export default function TradingPage() {
           {!isFullscreen && (
             <ErrorBoundary>
               <TrendPanel />
-            </ErrorBoundary>
-          )}
-
-          {/* 策略面板（用户在 /strategies 启用的策略实时信号） */}
-          {!isFullscreen && (
-            <ErrorBoundary>
-              <StrategyPanel />
             </ErrorBoundary>
           )}
 

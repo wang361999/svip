@@ -6,12 +6,7 @@
  * - 账户管理
  */
 import { prisma } from './prisma';
-import { fetchPrice, fetchKlines } from './market-data';
-import {
-  computeAllSignals,
-  normalizeStrategyConfig,
-  type StrategyConfig,
-} from './strategies';
+import { fetchPrice } from './market-data';
 
 // ==================== 类型定义 ====================
 
@@ -750,8 +745,9 @@ export async function runEngine(userId: string): Promise<{
     }
     const regimeIsChop = aiMeta.regime === 'chop';
 
-    // 4. 自动开仓（如果开启）- 只对当前选中币种计算信号
-    // （修复：原来遍历所有 autoTrade 币种，会开出用户没在看的币种的仓位）
+    // 4. 自动开仓入口说明：
+    //    策略信号开仓已随策略页面/面板下线而移除（无 UI 可配置的策略不应再隐形开仓）。
+    //    现在自动开仓只来源于 AI 信号（见下方 4b 段），受 regime/清单/ATR 多重闸门约束。
     if (account.autoTrade && autoTargets.length === 0) {
       result.errors.push(
         account.currentSymbol
@@ -759,59 +755,9 @@ export async function runEngine(userId: string): Promise<{
           : '未记录当前选中币种（打开交易页后会自动记录），跳过自动开仓',
       );
     }
-    // 策略信号方向共识（触发信号中多空票数），供 4b 段 AI 信号冲突判断
-    let strategyConsensus: 'long' | 'short' | null = null;
-    // 碎波市拦截：AI 判定 chop 时暂停策略自动开仓（反复扫损是短线最大亏损来源）
+    // 碎波市拦截：AI 判定 chop 时暂停一切自动开仓（反复扫损是短线最大亏损来源）
     if (account.autoTrade && regimeIsChop) {
-      result.errors.push('AI 判定市场状态为碎波(chop)，本轮暂停策略自动开仓（短线风控）');
-    }
-    if (account.autoTrade && !regimeIsChop) {
-      for (const sym of autoTargets) {
-        const price = priceMap[sym.symbol];
-        if (!price || price <= 0) continue;
-
-        try {
-          const signals = await computeAutoSignals(userId, sym.symbol, sym.okxId, price);
-          // 统计已触发信号的多空方向（多数派为共识，平票视为无共识）
-          const triggered = signals.filter((s) => s.triggered && s.direction !== 'neutral');
-          if (triggered.length > 0) {
-            const longs = triggered.filter((s) => s.direction === 'long').length;
-            const shorts = triggered.filter((s) => s.direction === 'short').length;
-            strategyConsensus = longs > shorts ? 'long' : shorts > longs ? 'short' : null;
-          }
-          for (const sig of signals) {
-            if (sig.triggered && sig.direction !== 'neutral' && sig.entryPrice) {
-              // 限制最大持仓数（全局）
-              const openCount = await prisma.paperPosition.count({
-                where: { userId, status: 'open' },
-              });
-              if (openCount >= 5) break;
-
-              // 检查该币种同方向是否已有持仓（含本次运行内新开的）
-              if (openDirKeys.has(`${sym.symbol}:${sig.direction}`)) continue;
-
-              try {
-                await openPosition(userId, {
-                  symbol: sym.symbol,
-                  side: sig.direction as 'long' | 'short',
-                  entryPrice: sig.entryPrice,
-                  stopLoss: sig.stopLoss,
-                  takeProfit1: sig.takeProfit1,
-                  takeProfit2: sig.takeProfit2,
-                  strategyId: sig.strategyId,
-                  signalPrice: sig.entryPrice,
-                });
-                openDirKeys.add(`${sym.symbol}:${sig.direction}`);
-                result.opened++;
-              } catch (err) {
-                result.errors.push(`${sym.symbol} 自动开仓失败: ${err instanceof Error ? err.message : String(err)}`);
-              }
-            }
-          }
-        } catch (err) {
-          result.errors.push(`${sym.symbol} 信号计算失败: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
+      result.errors.push('AI 判定市场状态为碎波(chop)，本轮暂停自动开仓（短线风控）');
     }
 
     // 4b. AI 信号自动开仓（如果开启 aiAutoTrade）
@@ -856,11 +802,6 @@ export async function runEngine(userId: string): Promise<{
             const drift = Math.abs(price - refPrice) / refPrice;
             if (drift > 0.003) continue;
           }
-
-          // ===== 共振模式：策略信号与 AI 信号冲突时不开仓 =====
-          // 策略共识方向明确且与 AI 方向相反 → 放弃 AI 信号（防止同一币种一多一空对开、保证金内耗）
-          // 策略无共识（未触发/平票/未启用策略）时 AI 独立判断
-          if (strategyConsensus && strategyConsensus !== latestAi.direction) continue;
 
           // ===== 市场状态闸门：不同行情用不同开仓门槛 =====
           // chop 碎波：禁止开仓（AI 侧同样拦截，与策略侧双保险）
@@ -978,39 +919,9 @@ export async function runEngine(userId: string): Promise<{
   return result;
 }
 
-/** 计算自动交易信号（指定币种） */
-async function computeAutoSignals(userId: string, symbol: string, okxId: string, currentPrice: number) {
-  // 获取用户策略配置
-  let config: StrategyConfig;
-  try {
-    const { userService } = await import('@/features/user/api/user.service');
-    const rawConfig = await userService.getStrategyConfig(userId);
-    config = normalizeStrategyConfig(rawConfig);
-  } catch {
-    // 用户不存在或查询失败，视为无启用策略（不自动开仓）
-    config = normalizeStrategyConfig(null);
-  }
-
-  // 修复：移除「全部关闭时强制启用默认策略」的逻辑。
-  // 原逻辑：用户策略全部 disabled 时，引擎强制开启 trend_macd_ema 等 3 个默认策略，
-  // 导致用户在策略中心明确关闭所有策略后仍然自动开仓，且与前端「尚未启用任何策略」
-  // 的显示状态矛盾。
-  // 现在：引擎严格遵循用户配置 — 用户启用了哪些策略就计算哪些信号；全部关闭 = 不开仓。
-  const anyEnabled = Object.values(config).some((c) => c.enabled);
-  if (!anyEnabled) {
-    return []; // 用户未启用任何策略，不产生信号
-  }
-
-  // 获取K线数据
-  const [k15m, k1h, k4h] = await Promise.all([
-    fetchKlines(symbol, okxId, '15m'),
-    fetchKlines(symbol, okxId, '1h').catch(() => []),
-    fetchKlines(symbol, okxId, '4h').catch(() => []),
-  ]);
-
-  const signals = computeAllSignals(config, { k15m, k1h, k4h, currentPrice });
-  return signals;
-}
+/** 计算自动交易信号（指定币种）
+ *  已随策略系统下线移除 — 自动开仓现只来源于 AI 信号（见 runEngine 4b 段）
+ */
 
 // ==================== 重置账户 ====================
 

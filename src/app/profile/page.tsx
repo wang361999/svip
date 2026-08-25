@@ -10,7 +10,7 @@ import { apiGet, apiPost, apiPut } from '@/shared/api/client';
 
 // 平台全部功能列表
 const FEATURES = [
-  '量化策略中心',
+  'AI 智能分析',
   '斐波那契自动画线',
   '分型出场信号',
   '多周期趋势',

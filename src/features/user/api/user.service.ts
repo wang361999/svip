@@ -58,34 +58,6 @@ export const userService = {
     };
   },
 
-  /** 获取用户策略配置（数据库以 JSON 字符串存储，解析后返回） */
-  async getStrategyConfig(userId: string): Promise<unknown> {
-    const record = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { strategyConfig: true },
-    });
-    if (!record) {
-      throw new NotFoundError('USER_NOT_FOUND', '用户不存在');
-    }
-    if (record.strategyConfig) {
-      try {
-        return JSON.parse(record.strategyConfig);
-      } catch {
-        return null;
-      }
-    }
-    return null;
-  },
-
-  /** 保存用户策略配置（序列化为 JSON 字符串存储） */
-  async updateStrategyConfig(userId: string, config: unknown): Promise<void> {
-    const existing = await prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
-    if (!existing) {
-      throw new NotFoundError('USER_NOT_FOUND', '用户不存在');
-    }
-    await prisma.user.update({
-      where: { id: userId },
-      data: { strategyConfig: JSON.stringify(config) },
-    });
-  },
+  // 策略配置的读写已随策略系统下线移除（原 getStrategyConfig / updateStrategyConfig）
+  // 数据库 User.strategyConfig 列保留不动，避免迁移；历史数据不再被使用。
 };
