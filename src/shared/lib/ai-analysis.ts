@@ -160,12 +160,18 @@ export interface AiAnalysisResult {
     atr15m: number | null;
     /** 多维证据表：每条证据带具体数值与多空倾向（大神分析框架核心） */
     evidence?: { dimension: string; data: string; signal: 'bullish' | 'bearish' | 'neutral'; note: string }[];
-    /** 双交易计划：A=推荐主计划（顶层价位字段与其一致），B=激进备选（逆势/小仓） */
+    /** 双交易计划：A=推荐主计划（顶层价位字段与其一致），B=激进备选（逆势/小仓）— 挂单执行框架 */
     plans?: {
       name: string; style: string; recommended: boolean;
       entry: number | null; stopLoss: number | null;
       takeProfit1: number | null; takeProfit2: number | null;
       rr1: number | null; rr2: number | null; condition: string;
+      /** 挂单类型：limit_pull 限价回踩 / limit_break 突破挂单 / market 市价 */
+      entryType?: 'limit_pull' | 'limit_break' | 'market';
+      /** 撤单条件：价格越过此价位挂单作废（错过即撤，禁止追单） */
+      cancelIf?: { price: number; reason: string } | null;
+      /** 挂单有效期（多久不成交撤单） */
+      validFor?: string;
     }[];
     /** 不做区：盈亏比最差、应观望的价格区间 */
     noTradeZone?: { from: number; to: number; reason: string } | null;
@@ -350,6 +356,8 @@ function buildIndicatorText(ind: IndicatorSnapshot, currentPrice: number): strin
 /** 构建系统 prompt */
 const SYSTEM_PROMPT = `你是一位顶级加密货币短线合约交易员，交易风格为短线波段（持仓数十分钟到数小时）。你的盈利哲学：方向预测只是入场券，真正的钱来自「什么时候不做、错了亏多少、对了赚多少」。
 
+【交易者画像 — 挂单执行者】你的用户不盯盘追市价，只提前在关键位挂限价单进场。因此你的输出必须「挂单可执行」：每个计划给出精确挂单价位 + 撤单条件（价格到哪挂单作废）+ 有效期（多久不成交撤单）。挂在幻想价位、成交后才发现止损放不下的计划都是废计划。
+
 分析必须按以下顺序进行：
 
 第一步：判定市场状态（regime）— 最重要的判断，先于方向
@@ -380,12 +388,16 @@ const SYSTEM_PROMPT = `你是一位顶级加密货币短线合约交易员，交
 第六步：证据表 + 双计划 + 不做区（大神输出框架）
 - evidence 证据表 6-8 条，每条必须带具体数值（如「RSI 80.4 极端超买」），禁止空泛描述；dimension 覆盖：趋势/动量（多周期 RSI/MACD）、量能（持仓量24h变化/成交量）、情绪（资金费率/多空比/恐贪）、结构（价格与枢轴/布林位置、K线形态）、BTC联动、消息面；signal 标 bullish/bearish/neutral
 - 多空矛盾是常态（日线多头 + 15m 动能衰竭 = 回调中继），证据表如实呈现，不要为了统一而扭曲
-- plans 双计划：Plan A = 推荐（顺势或高把握，recommended=true，顶层 entryPrice/stopLoss/takeProfit1/takeProfit2 必须与 Plan A 一致）；Plan B = 激进备选（逆势/抢反弹，recommended=false，condition 里注明仓位减半）
-- 每个计划给 rr1/rr2（R 倍数，1位小数）；condition 写清进场前提（如「15m出现看涨吞没后进场」「反弹至2490滞涨」）
+- plans 双计划（挂单执行框架）：Plan A = 推荐（顺势或高把握，recommended=true，顶层 entryPrice/stopLoss/takeProfit1/takeProfit2 必须与 Plan A 一致）；Plan B = 激进备选（逆势/抢反弹，recommended=false，condition 里注明仓位减半）
+- entryType 判定：趋势健康等回踩 = limit_pull 限价回踩单（挂在现价与无效点之间的支撑/EMA/斐氏位）；现价贴近关键位待突破 = limit_break 突破挂单（挂在关键位外侧）；现价已贴近无效点、不会回踩 = market 市价
+- 挂单铁律：挂单价位必须有真实触达概率（摆动点/EMA/斐氏回撤/区间边缘），禁止挂在永不到达的幻想价；entry 与 stopLoss 距离必须 <= 1.5 倍 15m ATR（成交后止损放得下才有意义）
+- cancelIf 撤单条件：多单挂回踩位时，价格不回踩直接上穿 cancelIf.price = 追单盈亏比已坏，挂单作废；空单反向同理。挂单流核心风控 — 宁可错过不可追单
+- validFor 有效期：挂单不是无限期等（信号有半衰期，到位越晚越接近失效），典型 2-8 小时；碎波/事件日不给挂单计划，给 neutral
+- 每个计划给 rr1/rr2（R 倍数，1位小数）；condition 写清成交前提（如「15m出现看涨吞没更佳，无形态直接成交也可接受」）
 - noTradeZone：明确标注当前盈亏比最差、应观望的价格区间（通常夹在现价与关键位中间的无人区）及原因；无明确不做区给 null
 
-summary 必须结论先行，格式：短线方向 + 目标区间 + 当前最优动作。
-示例："短线看多至 2533，日线趋势多头；最优动作 = 2478 限价多，不追现价"
+summary 必须结论先行，格式：短线方向 + 目标区间 + 挂单动作（含撤单价）。
+示例："短线看多至 2533，日线趋势多头；挂 2478 限价多（止损 2462），2506 上方撤单"
 
 风控铁律：
 1. 单笔风险不超过 2%；止盈第一目标 1.5R-2R，第二目标 3R
@@ -411,8 +423,8 @@ summary 必须结论先行，格式：短线方向 + 目标区间 + 当前最优
     {"dimension": "持仓量24h", "data": "-2.2% 价涨仓减", "signal": "bearish", "note": "获利了结迹象"}
   ],
   "plans": [
-    {"name": "A", "style": "顺势回调接多", "recommended": true, "entry": 2479, "stopLoss": 2462, "takeProfit1": 2505, "takeProfit2": 2533, "rr1": 1.5, "rr2": 3.2, "condition": "15m出现止跌形态（看涨吞没/长下影）后进场"},
-    {"name": "B", "style": "激进逆势短空", "recommended": false, "entry": 2490, "stopLoss": 2512, "takeProfit1": 2478, "takeProfit2": 2464, "rr1": 0.5, "rr2": 1.2, "condition": "反弹至2490-2495滞涨，仓位减半"}
+    {"name": "A", "style": "顺势回调接多", "recommended": true, "entryType": "limit_pull", "entry": 2479, "stopLoss": 2462, "takeProfit1": 2505, "takeProfit2": 2533, "rr1": 1.5, "rr2": 3.2, "condition": "15m出现看涨吞没更佳，无形态直接成交也可接受", "cancelIf": {"price": 2506, "reason": "不回踩直接突破2505，追单盈亏比<1，撤单放弃"}, "validFor": "未来4小时（16根15m）内未成交则撤单"},
+    {"name": "B", "style": "激进逆势短空", "recommended": false, "entryType": "limit_pull", "entry": 2490, "stopLoss": 2512, "takeProfit1": 2478, "takeProfit2": 2464, "rr1": 0.5, "rr2": 1.2, "condition": "反弹至2490-2495滞涨，仓位减半", "cancelIf": {"price": 2477, "reason": "不反弹直接跌破2478，动能过强不接空"}, "validFor": "未来2小时内未成交则撤单"}
   ],
   "noTradeZone": {"from": 2486, "to": 2505, "reason": "现价与失效区之间的无人区，上下空间不足，盈亏比最差"} 或 null,
   "riskWarning": "当前市场风险提示",
@@ -430,7 +442,12 @@ checklist 各项含义（诚实自评，五项全 true 才配得上 80+ 置信�
 - timeframeAligned: 5m/15m/1h 至少两个周期方向一致
 - fundingNotExtreme: 资金费率不在极端区间（|费率| < 0.05%）
 - volumeConfirmed: 近期量能支持该方向（放量突破/缩量回调等）
-- nearInvalidation: 入场价距止损无效点 <= 1.5 倍 15m ATR（盈亏比好）`;
+- nearInvalidation: 入场价距止损无效点 <= 1.5 倍 15m ATR（盈亏比好）
+
+plans 各字段含义（挂单执行框架）：
+- entryType: limit_pull 限价回踩单（挂现价与无效点之间）/ limit_break 突破挂单（挂关键位外侧）/ market 市价（现价已是最优位）
+- cancelIf: 挂单作废价 — 多单挂回踩时价格上穿此价=错过即撤（禁止追单）；空单反向同理。必须给出，这是挂单流的核心风控
+- validFor: 挂单有效期（如「未来4小时/16根15m内未成交撤单」），依据信号半衰期`
 
 // ==================== 市场状态客观判定（供 AI 参考 + 引擎闸门） ====================
 
@@ -726,6 +743,13 @@ function normalizeResult(parsed: any, config: AiConfig, rawResponse: string, cur
           rr1: Number.isFinite(Number(p.rr1)) ? Number(Number(p.rr1).toFixed(1)) : null,
           rr2: Number.isFinite(Number(p.rr2)) ? Number(Number(p.rr2).toFixed(1)) : null,
           condition: String(p.condition || ''),
+          // 挂单执行框架字段
+          entryType: ['limit_pull', 'limit_break', 'market'].includes(p.entryType) ? p.entryType : undefined,
+          cancelIf:
+            p.cancelIf && typeof p.cancelIf === 'object' && Number(p.cancelIf.price) > 0
+              ? { price: Number(p.cancelIf.price), reason: String(p.cancelIf.reason || '') }
+              : null,
+          validFor: String(p.validFor || ''),
         }))
     : [];
 

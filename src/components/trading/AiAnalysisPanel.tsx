@@ -27,6 +27,9 @@ interface AiAnalysis {
       entry: number | null; stopLoss: number | null;
       takeProfit1: number | null; takeProfit2: number | null;
       rr1: number | null; rr2: number | null; condition: string;
+      entryType?: 'limit_pull' | 'limit_break' | 'market';
+      cancelIf?: { price: number; reason: string } | null;
+      validFor?: string;
     }[];
     noTradeZone?: { from: number; to: number; reason: string } | null;
   } | null;
@@ -80,6 +83,7 @@ export default function AiAnalysisPanel() {
   const [error, setError] = useState('');
   const [showReasoning, setShowReasoning] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [copiedPlan, setCopiedPlan] = useState<string | null>(null);
   const [autoAnalyze, setAutoAnalyze] = useState(true);
   const [intervalSec, setIntervalSec] = useState(30); // 默认 30 秒
   const [nextAnalyzeIn, setNextAnalyzeIn] = useState(30); // 倒计时秒数
@@ -198,6 +202,43 @@ export default function AiAnalysisPanel() {
     const diffHr = Math.floor(diffMin / 60);
     if (diffHr < 24) return `${diffHr}小时前`;
     return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  };
+
+  // 挂单类型徽章
+  const entryTypeMap: Record<string, { label: string; cls: string }> = {
+    limit_pull: { label: '限价回踩', cls: 'text-sky-400 bg-sky-500/10 border-sky-500/30' },
+    limit_break: { label: '突破挂单', cls: 'text-violet-400 bg-violet-500/10 border-violet-500/30' },
+    market: { label: '市价', cls: 'text-dark-400 bg-dark-800/60 border-dark-700/40' },
+  };
+
+  /** 一键复制挂单信息（可直接粘贴到交易所下单） */
+  const copyPlanOrder = async (p: {
+    name: string;
+    entryType?: string;
+    entry: number | null;
+    stopLoss: number | null;
+    takeProfit1: number | null;
+    takeProfit2: number | null;
+    cancelIf?: { price: number; reason: string } | null;
+    validFor?: string;
+  }) => {
+    if (!analysis) return;
+    const dirText = analysis.direction === 'long' ? '做多' : analysis.direction === 'short' ? '做空' : '';
+    const etText = p.entryType === 'limit_break' ? '突破挂单' : p.entryType === 'market' ? '市价' : '限价';
+    const parts = [
+      `${label} ${etText}${dirText}`,
+      p.entry != null ? `挂单价 ${p.entry}` : null,
+      p.stopLoss != null ? `止损 ${p.stopLoss}` : null,
+      p.takeProfit1 != null ? `止盈1 ${p.takeProfit1}` : null,
+      p.takeProfit2 != null ? `止盈2 ${p.takeProfit2}` : null,
+      p.cancelIf ? `撤单价 ${p.cancelIf.price}` : null,
+      p.validFor || null,
+    ].filter(Boolean).join(' | ');
+    try {
+      await navigator.clipboard.writeText(parts);
+      setCopiedPlan(p.name);
+      setTimeout(() => setCopiedPlan(null), 1500);
+    } catch {}
   };
 
   return (
@@ -453,10 +494,10 @@ export default function AiAnalysisPanel() {
             </div>
           )}
 
-          {/* 双交易计划：A 推荐 / B 激进 */}
+          {/* 挂单计划：A 推荐 / B 激进（挂单执行框架） */}
           {analysis.meta?.plans && analysis.meta.plans.length > 0 && (
             <div>
-              <div className="text-dark-400 text-xs font-medium mb-2">双计划</div>
+              <div className="text-dark-400 text-xs font-medium mb-2">挂单计划</div>
               <div className="space-y-2">
                 {analysis.meta.plans.map((p, i) => (
                   <div
@@ -468,22 +509,44 @@ export default function AiAnalysisPanel() {
                     }`}
                   >
                     <div className="flex items-center justify-between mb-1.5">
-                      <div className="flex items-center gap-1.5">
-                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded flex-shrink-0 ${
                           p.recommended ? 'bg-green-500/20 text-green-400' : 'bg-dark-800 text-dark-400'
                         }`}>
                           Plan {p.name}
                         </span>
-                        <span className="text-dark-300 text-xs">{p.style}</span>
+                        <span className="text-dark-300 text-xs truncate">{p.style}</span>
+                        {p.entryType && (
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded border flex-shrink-0 ${entryTypeMap[p.entryType]?.cls || ''}`}>
+                            {entryTypeMap[p.entryType]?.label || p.entryType}
+                          </span>
+                        )}
                       </div>
-                      {p.recommended && (
-                        <span className="text-[10px] text-green-400 font-medium">推荐</span>
-                      )}
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        {p.recommended && (
+                          <span className="text-[10px] text-green-400 font-medium">推荐</span>
+                        )}
+                        <button
+                          onClick={() => copyPlanOrder(p)}
+                          className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${
+                            copiedPlan === p.name
+                              ? 'text-green-400 border-green-500/40 bg-green-500/10'
+                              : 'text-dark-400 border-dark-700 bg-dark-900/60 hover:text-white hover:border-dark-500'
+                          }`}
+                        >
+                          {copiedPlan === p.name ? '已复制' : '复制挂单'}
+                        </button>
+                      </div>
                     </div>
                     <div className="grid grid-cols-5 gap-1.5 text-center mb-1.5">
                       <div>
-                        <div className="text-dark-600 text-[10px]">入场</div>
-                        <div className="text-white text-xs font-medium">{p.entry != null ? formatPrice(p.entry) : '--'}</div>
+                        <div className="text-dark-600 text-[10px]">挂单价</div>
+                        <div className="text-white text-xs font-semibold">{p.entry != null ? formatPrice(p.entry) : '--'}</div>
+                        {p.entry != null && currentPrice > 0 && (
+                          <div className={`text-[9px] ${p.entry < currentPrice ? 'text-sky-500' : 'text-violet-500'}`}>
+                            {(((p.entry - currentPrice) / currentPrice) * 100).toFixed(2)}%
+                          </div>
+                        )}
                       </div>
                       <div>
                         <div className="text-dark-600 text-[10px]">止损</div>
@@ -505,11 +568,23 @@ export default function AiAnalysisPanel() {
                         </div>
                       </div>
                     </div>
-                    {p.condition && (
-                      <p className="text-dark-400 text-[11px] leading-relaxed">
-                        <span className="text-dark-600">进场前提：</span>{p.condition}
-                      </p>
+                    {p.cancelIf && (
+                      <div className="flex items-start gap-1.5 text-[11px] leading-relaxed mb-1">
+                        <span className="text-red-400/90 flex-shrink-0">撤单条件：</span>
+                        <span className="text-dark-400">
+                          价格越过 <span className="text-red-400 font-semibold">{formatPrice(p.cancelIf.price)}</span>
+                          {p.cancelIf.reason ? ` — ${p.cancelIf.reason}` : '（错过即撤，禁止追单）'}
+                        </span>
+                      </div>
                     )}
+                    <div className="flex items-start gap-1.5 text-[11px] leading-relaxed flex-wrap">
+                      {p.validFor && (
+                        <span className="text-dark-500">有效期：{p.validFor}</span>
+                      )}
+                      {p.condition && (
+                        <span className="text-dark-400">成交前提：{p.condition}</span>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>

@@ -119,6 +119,9 @@ function parseMeta(raw: string | null): {
     entry: number | null; stopLoss: number | null;
     takeProfit1: number | null; takeProfit2: number | null;
     rr1: number | null; rr2: number | null; condition: string;
+    entryType?: 'limit_pull' | 'limit_break' | 'market';
+    cancelIf?: { price: number; reason: string } | null;
+    validFor?: string;
   }[];
   noTradeZone?: { from: number; to: number; reason: string } | null;
 } | null {
@@ -157,9 +160,15 @@ function parseMeta(raw: string | null): {
             stopLoss: num(p.stopLoss),
             takeProfit1: num(p.takeProfit1),
             takeProfit2: num(p.takeProfit2),
-            rr1: Number.isFinite(Number(p.rr1)) ? Number(p.rr1) : null,
-            rr2: Number.isFinite(Number(p.rr2)) ? Number(p.rr2) : null,
+            rr1: Number.isFinite(Number(p.rr1)) ? Number(Number(p.rr1).toFixed(1)) : null,
+            rr2: Number.isFinite(Number(p.rr2)) ? Number(Number(p.rr2).toFixed(1)) : null,
             condition: String(p.condition || ''),
+            entryType: ['limit_pull', 'limit_break', 'market'].includes(p.entryType) ? p.entryType : undefined,
+            cancelIf:
+              p.cancelIf && typeof p.cancelIf === 'object' && Number(p.cancelIf.price) > 0
+                ? { price: Number(p.cancelIf.price), reason: String(p.cancelIf.reason || '') }
+                : null,
+            validFor: String(p.validFor || ''),
           }))
       : [];
 

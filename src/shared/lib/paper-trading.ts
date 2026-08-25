@@ -730,11 +730,17 @@ export async function runEngine(userId: string): Promise<{
       }
     }
 
-    // 3.5 读取当前币种最新 AI 分析的市场状态（regime + ATR + A+清单），统一闸门用
+    // 3.5 读取当前币种最新 AI 分析的市场状态（regime + ATR + A+清单 + 推荐挂单计划），统一闸门用
     //     - chop（碎波）状态下禁止一切自动开仓：碎波日反复扫损是短线最大的亏损来源
     //     - atr15m 用于止损无效点校验
-    const aiMeta: { regime: string; atr15m: number | null; checklist: Record<string, boolean> | null } = {
-      regime: '', atr15m: null, checklist: null,
+    //     - plan 为推荐挂单计划（Plan A）：引擎按「等价格触达挂单价才成交」模拟限价单
+    const aiMeta: {
+      regime: string;
+      atr15m: number | null;
+      checklist: Record<string, boolean> | null;
+      plan: { entryType?: string; entry: number | null; cancelIf: number | null } | null;
+    } = {
+      regime: '', atr15m: null, checklist: null, plan: null,
     };
     try {
       const latest = autoTargets.length > 0
@@ -748,6 +754,17 @@ export async function runEngine(userId: string): Promise<{
         aiMeta.regime = typeof m.regime === 'string' ? m.regime : '';
         aiMeta.atr15m = typeof m.atr15m === 'number' && Number.isFinite(m.atr15m) ? m.atr15m : null;
         aiMeta.checklist = m.aPlusChecklist && typeof m.aPlusChecklist === 'object' ? m.aPlusChecklist : null;
+        // 推荐计划（Plan A）的挂单要素：entryType / entry / cancelIf
+        if (Array.isArray(m.plans)) {
+          const rec = m.plans.find((p: any) => p?.recommended === true) || m.plans[0];
+          if (rec && typeof rec === 'object') {
+            aiMeta.plan = {
+              entryType: typeof rec.entryType === 'string' ? rec.entryType : undefined,
+              entry: Number(rec.entry) > 0 ? Number(rec.entry) : null,
+              cancelIf: rec.cancelIf && Number(rec.cancelIf.price) > 0 ? Number(rec.cancelIf.price) : null,
+            };
+          }
+        }
       }
     } catch {
       // meta 解析失败按无状态处理（不阻塞开仓）
@@ -813,14 +830,33 @@ export async function runEngine(userId: string): Promise<{
           const price = priceMap[sym.symbol];
           if (!price || price <= 0) continue;
 
-          // ===== 信号时效防护：价格漂移检查 =====
-          // AI 分析时的参考价与当前价偏离超过 0.3%，说明行情已经走出一段，
-          // 短线的入场窗口已过（追高追低），跳过等待下一次新分析
-          const refPrice = latestAi.entryPrice;
-          if (refPrice && refPrice > 0) {
-            const drift = Math.abs(price - refPrice) / refPrice;
-            if (drift > 0.003) continue;
-          }
+          // ===== 挂单执行：等价格触达挂单价才成交（模拟限价单，与 AI 挂单导向输出对齐）=====
+          // Plan A 为 limit_pull/limit_break 时：价格未触达挂单价（容差 0.12%）→ 本轮等待，绝不追价；
+          // 价格越过 cancelIf（撤单价）→ 信号作废，等待下一次新分析；触达 → 按挂单价成交。
+          // market 计划或旧记录（无 plan 字段）：退回原漂移检查（偏离 >0.3% = 窗口已过，跳过）
+          const execPrice = (() => {
+            const planEntry = aiMeta.plan?.entry ?? latestAi.entryPrice;
+            if (!planEntry || planEntry <= 0) return price;
+            const isLong = latestAi.direction === 'long';
+            const et = aiMeta.plan?.entryType;
+            const cancelAt = aiMeta.plan?.cancelIf ?? null;
+
+            if (et === 'limit_pull' || et === 'limit_break') {
+              // 撤单检查（错过即撤）：多单挂回踩位但价格直接上穿撤单价；空单反向
+              if (cancelAt && cancelAt > 0 && (isLong ? price >= cancelAt : price <= cancelAt)) return -1;
+              // 触达判定（限价单语义：价格到达即成交，穿透也按挂单价成交）
+              const reached = et === 'limit_pull'
+                ? (isLong ? price <= planEntry * 1.0012 : price >= planEntry * 0.9988)
+                : (isLong ? price >= planEntry * 0.9988 : price <= planEntry * 1.0012);
+              if (!reached) return -1; // 未触达，本轮等待
+              return planEntry; // 按挂单价成交
+            }
+
+            // market / 旧记录：现价偏离参考价超 0.3% = 入场窗口已过
+            if (Math.abs(price - planEntry) / planEntry > 0.003) return -1;
+            return price;
+          })();
+          if (execPrice <= 0) continue;
 
           // ===== 市场状态闸门：不同行情用不同开仓门槛 =====
           // chop 碎波：禁止开仓（AI 侧同样拦截，与策略侧双保险）
@@ -846,41 +882,42 @@ export async function runEngine(userId: string): Promise<{
           // 检查该币种同方向是否已有持仓（含本次运行内新开的）
           if (openDirKeys.has(`${sym.symbol}:${latestAi.direction}`)) continue;
 
-          // ===== 风控闸门：止损必须存在且距离合理（短线标准） =====
+          // ===== 风控闸门：止损必须存在且距离合理（短线标准）=====
           // 止损距离占价格 0.3% ~ 5% 才视为有效；过近会被瞬时波动扫损，
           // 超过 5% 属于波段/中线级别的止损，不符合短线定位（丢弃后按账户默认止损重算）
+          // 距离以挂单成交价 execPrice 计算（模拟限价单成交后的真实风险敞口）
           const MIN_SL_PCT = 0.003;
           const MAX_SL_PCT = 0.05;
           let stopLoss = latestAi.stopLoss;
           if (stopLoss != null) {
-            const distPct = Math.abs(price - stopLoss) / price;
+            const distPct = Math.abs(execPrice - stopLoss) / execPrice;
             if (distPct < MIN_SL_PCT || distPct > MAX_SL_PCT) stopLoss = null; // 距离不合理 → 丢弃 AI 的止损
           }
           // ===== 无效点校验（大神思维的核心）：入场离无效点太远 = 盈亏比差 = 放弃 =====
           // 止损距离超过 1.5 倍 15m ATR，说明这笔交易要扛过多根 K 线的噪音才能证明自己错了
           if (stopLoss != null && aiMeta.atr15m && aiMeta.atr15m > 0) {
-            if (Math.abs(price - stopLoss) > aiMeta.atr15m * 1.5) continue;
+            if (Math.abs(execPrice - stopLoss) > aiMeta.atr15m * 1.5) continue;
           }
           // AI 没给有效止损时，按 ATR 生成贴近无效点的止损（0.75×ATR），无 ATR 再退回账户默认
           if (stopLoss == null) {
             const atrDist = aiMeta.atr15m && aiMeta.atr15m > 0
-              ? Math.max(aiMeta.atr15m * 0.75, price * MIN_SL_PCT)
+              ? Math.max(aiMeta.atr15m * 0.75, execPrice * MIN_SL_PCT)
               : null;
-            const slDist = atrDist ?? price * (account.stopLossPct > 0 ? account.stopLossPct / 100 : 0.02);
+            const slDist0 = atrDist ?? execPrice * (account.stopLossPct > 0 ? account.stopLossPct / 100 : 0.02);
             stopLoss = latestAi.direction === 'long'
-              ? price - slDist
-              : price + slDist;
+              ? execPrice - slDist0
+              : execPrice + slDist0;
           }
 
           // 止盈同样校验方向；无效则按 1.5R / 3R（基于止损距离）生成
-          const slDist = Math.abs(price - stopLoss);
+          const slDist = Math.abs(execPrice - stopLoss);
           let takeProfit1 = latestAi.takeProfit1;
-          if (takeProfit1 == null || (latestAi.direction === 'long' ? takeProfit1 <= price : takeProfit1 >= price)) {
-            takeProfit1 = latestAi.direction === 'long' ? price + slDist * 1.5 : price - slDist * 1.5;
+          if (takeProfit1 == null || (latestAi.direction === 'long' ? takeProfit1 <= execPrice : takeProfit1 >= execPrice)) {
+            takeProfit1 = latestAi.direction === 'long' ? execPrice + slDist * 1.5 : execPrice - slDist * 1.5;
           }
           let takeProfit2 = latestAi.takeProfit2;
-          if (takeProfit2 == null || (latestAi.direction === 'long' ? takeProfit2 <= price : takeProfit2 >= price)) {
-            takeProfit2 = latestAi.direction === 'long' ? price + slDist * 3 : price - slDist * 3;
+          if (takeProfit2 == null || (latestAi.direction === 'long' ? takeProfit2 <= execPrice : takeProfit2 >= execPrice)) {
+            takeProfit2 = latestAi.direction === 'long' ? execPrice + slDist * 3 : execPrice - slDist * 3;
           }
 
           try {
@@ -892,18 +929,19 @@ export async function runEngine(userId: string): Promise<{
             await openPosition(userId, {
               symbol: sym.symbol,
               side: latestAi.direction as 'long' | 'short',
-              entryPrice: price, // 以当前价格入场（AI 分析时可能已变化）
+              entryPrice: execPrice, // 挂单触达按挂单价成交（限价单语义）；市价计划为现价
               margin: aiMargin > 0 ? aiMargin : undefined,
               stopLoss,
               takeProfit1,
               takeProfit2,
               strategyId: `ai_${latestAi.provider}`,
-              signalPrice: latestAi.entryPrice || price,
+              signalPrice: latestAi.entryPrice || execPrice,
               // 记录开仓时的模型信息，平仓后用于准确率统计
               aiMeta: JSON.stringify({
                 provider: latestAi.provider,
                 model: latestAi.model,
                 confidence: latestAi.confidence,
+                entryType: aiMeta.plan?.entryType || 'market',
               }),
             });
             openDirKeys.add(`${sym.symbol}:${latestAi.direction}`);
