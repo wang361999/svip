@@ -506,8 +506,8 @@ export function analyzeGannOctave(
       });
     }
 
-    // --- 突破追多：收盘强势上破87.5% + AI确认 → 目标100% ---
-    if (c > ocs[7] && c > bars[i].open && ai.buy >= p.aiConfThreshold) {
+    // --- 突破追多：收盘强势上破87.5% + AI确认 → 目标100%（进场必须在87.5%~100%之间，越过100%目标失效） ---
+    if (c > ocs[7] && c < ocs[8] && c > bars[i].open && ai.buy >= p.aiConfThreshold) {
       const stop0 = ocs[7];
       const stop = c - stop0 >= p.atrStopFloorMult * a ? stop0 : c - p.atrStopFloorMult * a;
       signals.push({
@@ -522,8 +522,8 @@ export function analyzeGannOctave(
       });
     }
 
-    // --- 突破追空：收盘跌破12.5% + AI确认 → 目标0% ---
-    if (c < ocs[1] && c < bars[i].open && ai.sell >= p.aiConfThreshold) {
+    // --- 突破追空：收盘跌破12.5% + AI确认 → 目标0%（进场必须在0%~12.5%之间） ---
+    if (c < ocs[1] && c > ocs[0] && c < bars[i].open && ai.sell >= p.aiConfThreshold) {
       const stop0 = ocs[1];
       const stop = stop0 - c >= p.atrStopFloorMult * a ? stop0 : c + p.atrStopFloorMult * a;
       signals.push({
