@@ -651,7 +651,7 @@ export default function AiAnalysisPanel() {
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-dark-400 text-xs font-medium">八分位</span>
                   <span className="text-[10px] text-dark-500">
-                    {formatPrice(gann.swingLow)} ~ {formatPrice(gann.swingHigh)} · 位置 {gann.positionPct}%
+                    {formatPrice(gann.swingLow)} ~ {formatPrice(gann.swingHigh)} · 位置 {gann.positionPct.toFixed(1)}%
                   </span>
                 </div>
                 {/* 位置条 */}
@@ -683,7 +683,7 @@ export default function AiAnalysisPanel() {
                         </span>
                         <span className="text-white/90 font-medium">{formatPrice(l.price)}</span>
                         <span className={`text-[10px] ${l.distPct >= 0 ? 'text-red-400/60' : 'text-green-400/60'}`}>
-                          {l.distPct > 0 ? '+' : ''}{l.distPct}%
+                          {l.distPct > 0 ? '+' : ''}{l.distPct.toFixed(2)}%
                         </span>
                         {isAxis && <span className="text-amber-400/60 text-[10px] ml-auto">中轴</span>}
                       </div>
