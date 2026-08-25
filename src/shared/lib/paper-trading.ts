@@ -782,10 +782,10 @@ export async function runEngine(userId: string): Promise<{
             orderBy: { createdAt: 'desc' },
           });
 
-          // 只使用 1 小时内的分析结果
+          // 只使用 15 分钟内的分析结果（短线节奏：AI 面板 30 秒级刷新，旧信号快速失效）
           if (!latestAi) continue;
           const ageMs = Date.now() - latestAi.createdAt.getTime();
-          if (ageMs > 3600000) continue; // 超过 1 小时的分析不使用
+          if (ageMs > 15 * 60 * 1000) continue; // 超过 15 分钟的分析不使用
 
           // 只在方向明确且置信度 >= 60 时开仓
           if (latestAi.direction === 'neutral' || latestAi.confidence < 60) continue;
@@ -794,12 +794,12 @@ export async function runEngine(userId: string): Promise<{
           if (!price || price <= 0) continue;
 
           // ===== 信号时效防护：价格漂移检查 =====
-          // AI 分析时的参考价与当前价偏离超过 0.5%，说明行情已经走出一段，
-          // 入场价/止损位已失效（追高追低），跳过等待下一次新分析
+          // AI 分析时的参考价与当前价偏离超过 0.3%，说明行情已经走出一段，
+          // 短线的入场窗口已过（追高追低），跳过等待下一次新分析
           const refPrice = latestAi.entryPrice;
           if (refPrice && refPrice > 0) {
             const drift = Math.abs(price - refPrice) / refPrice;
-            if (drift > 0.005) continue;
+            if (drift > 0.003) continue;
           }
 
           // ===== 共振模式：策略信号与 AI 信号冲突时不开仓 =====
@@ -810,10 +810,11 @@ export async function runEngine(userId: string): Promise<{
           // 检查该币种同方向是否已有持仓（含本次运行内新开的）
           if (openDirKeys.has(`${sym.symbol}:${latestAi.direction}`)) continue;
 
-          // ===== 风控闸门：止损必须存在且距离合理 =====
-          // 止损距离占价格 0.3% ~ 25% 才视为有效；过近会被瞬时波动扫损，过远等于没有止损
+          // ===== 风控闸门：止损必须存在且距离合理（短线标准） =====
+          // 止损距离占价格 0.3% ~ 5% 才视为有效；过近会被瞬时波动扫损，
+          // 超过 5% 属于波段/中线级别的止损，不符合短线定位（丢弃后按账户默认止损重算）
           const MIN_SL_PCT = 0.003;
-          const MAX_SL_PCT = 0.25;
+          const MAX_SL_PCT = 0.05;
           let stopLoss = latestAi.stopLoss;
           if (stopLoss != null) {
             const distPct = Math.abs(price - stopLoss) / price;

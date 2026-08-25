@@ -320,16 +320,17 @@ function buildIndicatorText(ind: IndicatorSnapshot, currentPrice: number): strin
 }
 
 /** 构建系统 prompt */
-const SYSTEM_PROMPT = `你是一位专业的加密货币合约交易分析师，精通技术分析、市场结构和风险管理。
+const SYSTEM_PROMPT = `你是一位专业的加密货币短线合约交易分析师，精通技术分析、市场结构和风险管理，交易风格为短线波段（持仓数十分钟到数小时）。
 
 你的任务是分析提供的实时行情数据和技术指标，给出结构化的交易建议。
 
 分析原则：
-1. 综合多周期（15分钟、1小时、4小时）信号，寻找共振机会
-2. 严格遵守风险控制，止损必须基于技术位，单笔风险不超过2%
-3. 止盈设置要符合合理的盈亏比（至少1:1.5）
-4. 当市场方向不明确时，明确给出"neutral"（观望）建议
-5. 置信度反映你对分析结果的把握程度，0-100
+1. 短线思维：以 5 分钟周期捕捉入场时机，15 分钟周期为主判定，1 小时周期只做大方向过滤；三周期同向时信号最可靠
+2. 止损基于最近的结构位（摆动点/前高低），距离控制在现价的 0.5%-2%；若找不到近端有效止损位，说明行情不适合短线，应给出 neutral
+3. 止盈目标贴近短线节奏：第一目标 1.5R-2R，第二目标 3R；不要给出需要持仓数天的远端目标
+4. 震荡市（ADX 低位、均线纠缠、区间内反复）宁可观望也要给 neutral；短线最怕在无趋势行情中反复扫损
+5. 严格遵守风险控制，单笔风险不超过 2%
+6. 置信度反映你对分析结果的把握程度，0-100
 
 你必须以严格的 JSON 格式返回，不要包含任何其他文字。JSON 格式如下：
 {
@@ -350,32 +351,32 @@ function buildUserPrompt(
   symbol: string,
   label: string,
   currentPrice: number,
+  k5m: KlineData[],
   k15m: KlineData[],
   k1h: KlineData[],
-  k4h: KlineData[],
 ): string {
+  const ind5m = computeIndicatorSnapshot(k5m);
   const ind15m = computeIndicatorSnapshot(k15m);
   const ind1h = computeIndicatorSnapshot(k1h);
-  const ind4h = computeIndicatorSnapshot(k4h);
 
   return `请分析以下 ${label} (${symbol}) 的实时行情数据：
 
 当前价格: ${currentPrice}
 
-=== 15分钟周期 ===
+=== 5分钟周期（短线入场时机的核心依据） ===
+${buildKlineSummary(k5m, '5M K线')}
+技术指标:
+${buildIndicatorText(ind5m, currentPrice)}
+
+=== 15分钟周期（短线主判定周期） ===
 ${buildKlineSummary(k15m, '15M K线')}
 技术指标:
 ${buildIndicatorText(ind15m, currentPrice)}
 
-=== 1小时周期 ===
+=== 1小时周期（大方向过滤） ===
 ${buildKlineSummary(k1h, '1H K线')}
 技术指标:
 ${buildIndicatorText(ind1h, currentPrice)}
-
-=== 4小时周期 ===
-${buildKlineSummary(k4h, '4H K线')}
-技术指标:
-${buildIndicatorText(ind4h, currentPrice)}
 
 请综合以上多周期数据和指标，给出你的交易分析建议。记住，只返回 JSON 格式。`;
 }
@@ -583,19 +584,19 @@ export async function analyzeMarketWithAI(
     throw new Error('无法获取当前价格');
   }
 
-  // 3. 获取多周期 K 线数据
-  const [k15m, k1h, k4h] = await Promise.all([
+  // 3. 获取多周期 K 线数据（短线风格：5m 即时动能 / 15m 主判定 / 1h 大方向过滤）
+  const [k5m, k15m, k1h] = await Promise.all([
+    fetchKlines(symbol, okxId, '5m', 200).catch(() => []),
     fetchKlines(symbol, okxId, '15m', 200).catch(() => []),
     fetchKlines(symbol, okxId, '1h', 200).catch(() => []),
-    fetchKlines(symbol, okxId, '4h', 200).catch(() => []),
   ]);
 
-  if (k15m.length === 0 && k1h.length === 0 && k4h.length === 0) {
+  if (k5m.length === 0 && k15m.length === 0 && k1h.length === 0) {
     throw new Error('无法获取 K 线数据');
   }
 
   // 4. 构建 prompt
-  const userPrompt = buildUserPrompt(symbol, label, price, k15m, k1h, k4h);
+  const userPrompt = buildUserPrompt(symbol, label, price, k5m, k15m, k1h);
 
   // 5. 调用 AI API
   const rawResponse = await callChatCompletions(config, SYSTEM_PROMPT, userPrompt);
