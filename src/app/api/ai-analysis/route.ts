@@ -252,11 +252,12 @@ function parseMeta(raw: string | null): {
       };
     }
 
-    // 多周期结构透传（服务端客观计算回填的 meta，非 AI 生成）
+    // 多周期结构透传（服务端客观计算回填的 meta，非 AI 生成；d1=日线趋势锚，旧记录可能缺失）
     let structure: {
       m15: 'up' | 'down' | 'range' | 'unknown';
       h1: 'up' | 'down' | 'range' | 'unknown';
       h4: 'up' | 'down' | 'range' | 'unknown';
+      d1: 'up' | 'down' | 'range' | 'unknown';
     } | null = null;
     if (parsed.structure && typeof parsed.structure === 'object') {
       const trendOf = (v: unknown): 'up' | 'down' | 'range' | 'unknown' =>
@@ -265,6 +266,7 @@ function parseMeta(raw: string | null): {
         m15: trendOf(parsed.structure.m15),
         h1: trendOf(parsed.structure.h1),
         h4: trendOf(parsed.structure.h4),
+        d1: trendOf(parsed.structure.d1),
       };
     }
 

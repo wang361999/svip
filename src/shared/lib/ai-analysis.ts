@@ -150,11 +150,12 @@ export interface AiAnalysisResult {
       topBroken: boolean;
       bottomBroken: boolean;
     } | null;
-    /** 多周期结构趋势（服务端客观计算回填 — 方向过滤层，前端周期徽章展示用） */
+    /** 多周期结构趋势（服务端客观计算回填 — 方向过滤层，前端周期徽章展示用；d1=日线趋势锚） */
     structure?: {
       m15: StructureTrend;
       h1: StructureTrend;
       h4: StructureTrend;
+      d1: StructureTrend;
     } | null;
   };
 }
@@ -338,14 +339,16 @@ export function computeStructureTrend(klines: KlineData[], tfLabel: string): Str
   return { trend: 'range', seq, note: `${tfLabel} 摆动方向分歧，震荡（加权 ${Math.round(ratio * 100)}%）` };
 }
 
-/** 多周期结构文本（注入 prompt — 方向过滤层） */
-function buildStructureText(s15: StructureInfo, s1h: StructureInfo, s4h: StructureInfo): string {
+/** 多周期结构文本（注入 prompt — 方向过滤层，15m/1h/4h/1d 四周期） */
+function buildStructureText(s15: StructureInfo, s1h: StructureInfo, s4h: StructureInfo, s1d: StructureInfo): string {
   const label = (s: StructureInfo) =>
     s.trend === 'up' ? '上升（HH+HL）' : s.trend === 'down' ? '下降（LH+LL）' : s.trend === 'range' ? '震荡（矛盾）' : '不明（数据不足）';
   return `=== 多周期结构趋势（道氏 HH/HL/LH/LL，服务端客观计算 — 方向过滤层） ===
 15分钟结构：${label(s15)}${s15.seq ? ` | ${s15.seq}` : ''}
 1小时结构：${label(s1h)}${s1h.seq ? ` | ${s1h.seq}` : ''}
-4小时结构：${label(s4h)}${s4h.seq ? ` | ${s4h.seq}` : ''}`;
+4小时结构：${label(s4h)}${s4h.seq ? ` | ${s4h.seq}` : ''}
+1天结构：${label(s1d)}${s1d.seq ? ` | ${s1d.seq}` : ''}
+（1天结构为最高级趋势锚：日线结构明确时，短线信号逆日线 = 逆大势，禁止给该方向信号）`;
 }
 
 /**
@@ -364,10 +367,11 @@ export function buildDeterministicSummary(
   s15: StructureInfo,
   s1h: StructureInfo,
   s4h: StructureInfo,
+  s1d: StructureInfo,
   currentPrice: number,
 ): string {
   const tag = (s: StructureInfo) => (s.trend === 'up' ? '升' : s.trend === 'down' ? '降' : s.trend === 'range' ? '震' : '–');
-  const structShort = `${tag(s15)}/${tag(s1h)}/${tag(s4h)}`; // 15m/1h/4h
+  const structShort = `${tag(s15)}/${tag(s1h)}/${tag(s4h)}/${tag(s1d)}`; // 15m/1h/4h/1d
   const fmt = (p: number | null) =>
     p != null && Number.isFinite(p) ? p.toLocaleString('en-US', { maximumFractionDigits: p >= 100 ? 2 : 4 }) : '–';
   const nearDiv = (p: number, g: GannEighths) => {
@@ -539,10 +543,12 @@ const SYSTEM_PROMPT = `你是严格执行「江恩八分位 + 顶底分型」的
 6. 分型失效（顶分型高点被突破 / 底分型低点被跌破）→ 该分型信号作废，等待新分型，否则 neutral
 7. 近端无有效分型、或分型与所在分位区矛盾（如下方支撑区出现顶分型）→ neutral，不勉强给方向
 
-【方向过滤：多周期结构对齐】
-数据提供 15m/1h/4h 三个周期的市场结构（HH+HL=上升、LH+LL=下降、矛盾=震荡，服务端客观计算）。分型信号必须经结构过滤：
-- 顺势信号：信号方向与 1h、4h 结构一致（或至少不逆 4h）→ 正常置信度；三周期同向共振 → 置信度 85+
-- 逆势信号：信号方向与 1h 结构相反 → 置信度上限 55（不自动开仓）；与 4h 结构也相反 → 直接 neutral
+【方向过滤：多周期结构对齐（15m/1h/4h/1d 四周期）】
+数据提供 15m/1h/4h/1d 四个周期的市场结构（HH+HL=上升、LH+LL=下降、矛盾=震荡，服务端客观计算）。分型信号必须经结构过滤，1d 为最高级趋势锚：
+- 日线否决（最优先）：信号方向与 1d 结构相反（如 1d 上升 HH+HL 却想做空）→ 直接 neutral。日线结构明确时禁止逆日线给信号 — 短线回调不改变大势
+- 顺势信号：信号方向与 1h、4h 结构一致（或至少不逆 4h）且不逆 1d → 正常置信度；四周期同向共振 → 置信度 85+
+- 逆势信号：信号方向与 1h 结构相反（但不逆 1d/4h）→ 置信度上限 55（不自动开仓）；与 4h 结构也相反 → 直接 neutral
+- 日线上升 + 1h 下降 = 大级别回调：只允许顺势多（在支撑分位等底分型），禁止抄顶做空
 - 结构不明（unknown）：不加仓不重仓，置信度上限 65
 - 结构与分位矛盾时以结构为准：如下方支撑区的底分型但 1h 是 LH+LL 下降结构，反弹多只看 4/8 不看 5/8，且置信度降档
 
@@ -783,11 +789,12 @@ export async function analyzeMarketWithAI(
     throw new Error('无法获取当前价格');
   }
 
-  // 3. 获取 K 线：1h（八分位区间 + 分型触发）+ 15m/4h（结构趋势判定）
-  const [k1h, k15m, k4h] = await Promise.all([
+  // 3. 获取 K 线：1h（八分位区间 + 分型触发）+ 15m/4h/1d（结构趋势判定）
+  const [k1h, k15m, k4h, k1d] = await Promise.all([
     fetchKlines(symbol, okxId, '1h', 200).catch(() => [] as KlineData[]),
     fetchKlines(symbol, okxId, '15m', 120).catch(() => [] as KlineData[]),
     fetchKlines(symbol, okxId, '4h', 60).catch(() => [] as KlineData[]),
+    fetchKlines(symbol, okxId, '1d', 60).catch(() => [] as KlineData[]),
   ]);
 
   if (k1h.length === 0) {
@@ -800,10 +807,11 @@ export async function analyzeMarketWithAI(
   // 3.6 计算近端顶底分型（进场触发器 — 注入 prompt + 回填 meta 供前端展示）
   const fractal = computeFractalSignal(k1h, gann);
 
-  // 3.7 计算多周期结构趋势（15m/1h/4h 道氏结构 — 方向过滤层）
+  // 3.7 计算多周期结构趋势（15m/1h/4h/1d 道氏结构 — 方向过滤层，1d 为最高级趋势锚）
   const struct15 = computeStructureTrend(k15m, '15分钟');
   const struct1h = computeStructureTrend(k1h, '1小时');
   const struct4h = computeStructureTrend(k4h, '4小时');
+  const struct1d = computeStructureTrend(k1d, '1天');
 
   // 4. 构建 prompt（八分位框架 + 分型触发 + 多周期结构过滤）
   const userPrompt = buildUserPrompt(
@@ -813,7 +821,7 @@ export async function analyzeMarketWithAI(
     k1h,
     buildGannText(gann, price),
     buildFractalText(fractal, price),
-    buildStructureText(struct15, struct1h, struct4h),
+    buildStructureText(struct15, struct1h, struct4h, struct1d),
   );
 
   // 5. 调用 AI API
@@ -823,26 +831,43 @@ export async function analyzeMarketWithAI(
   const parsed = extractJson(rawResponse);
   const result = normalizeResult(parsed, config, rawResponse, price);
 
+  // 6.5 日线一票否决（服务端硬约束 — AI 忽略提示词规则时代码层强制拦截）：
+  //     1d 结构明确（up/down）时，信号方向逆 1d → 强制 neutral。
+  //     短线回调不改变大势，杜绝"日线强多头里给逆势空单"这类信号与走势背离。
+  if (
+    (struct1d.trend === 'up' && result.direction === 'short') ||
+    (struct1d.trend === 'down' && result.direction === 'long')
+  ) {
+    result.direction = 'neutral';
+    result.confidence = Math.min(result.confidence, 50);
+    result.summary = `观望：信号方向与日线结构（${struct1d.trend === 'up' ? '上升 HH+HL' : '下降 LH+LL'}）相反，已否决 · 现价 ${price.toLocaleString('en-US', { maximumFractionDigits: 2 })} · 结构 ${struct1h.trend === 'up' ? '升' : struct1h.trend === 'down' ? '降' : struct1h.trend === 'range' ? '震' : '–'}/日线${struct1d.trend === 'up' ? '升' : '降'}`;
+  }
+
   // 回填江恩八分位（服务端客观计算，前端阶梯图展示；不依赖 AI 复述避免幻觉）
   result.meta.gann = gann;
   // 回填顶底分型（服务端客观计算，前端徽章展示）
   result.meta.fractal = fractal;
   // 回填多周期结构趋势（服务端客观计算，前端周期徽章展示）
-  result.meta.structure = { m15: struct15.trend, h1: struct1h.trend, h4: struct4h.trend };
+  result.meta.structure = { m15: struct15.trend, h1: struct1h.trend, h4: struct4h.trend, d1: struct1d.trend };
   // 摘要改为服务端固定模板（AI 不再自由发挥文案 — 每次分析格式恒定，面板不乱）
-  result.summary = buildDeterministicSummary(
-    result.direction,
-    result.entryPrice,
-    result.stopLoss,
-    result.takeProfit1,
-    result.takeProfit2,
-    gann,
-    fractal,
-    struct15,
-    struct1h,
-    struct4h,
-    price,
-  );
+  // （若上方日线否决已写 summary 则保留否决理由，不再覆盖）
+  const vetoed = result.direction === 'neutral' && result.summary.startsWith('观望：信号方向与日线结构');
+  if (!vetoed) {
+    result.summary = buildDeterministicSummary(
+      result.direction,
+      result.entryPrice,
+      result.stopLoss,
+      result.takeProfit1,
+      result.takeProfit2,
+      gann,
+      fractal,
+      struct15,
+      struct1h,
+      struct4h,
+      struct1d,
+      price,
+    );
+  }
 
   return result;
 }

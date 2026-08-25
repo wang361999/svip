@@ -1,22 +1,15 @@
 /**
- * 多周期趋势分析
+ * 多周期趋势分析（15分钟 / 1小时 / 4小时 / 1天）
  *
- * 对 15分钟 / 1小时 / 4小时 / 1天 四个周期分别判定趋势方向：
- * - 多头 / 空头 / 震荡
+ * 判定逻辑：道氏市场结构（HH/HL/LH/LL 摆动点加权投票）— 与 AI 信号的方向过滤层完全同源，
+ * 保证本面板与 AI 面板的结构结论永远一致（不再出现指标说多、结构说空的矛盾）。
  *
- * 判定逻辑（多因子打分，共 5 项，每项 ±1）：
- * 1. 价格相对 EMA20 的位置（站上=+1，跌破=-1）
- * 2. EMA20 相对 SMA50 的位置（多头排列=+1，空头排列=-1）
- * 3. 价格相对 SMA200 的位置（长期趋势方向）
- * 4. MACD 柱状图方向（>0=多头动能，<0=空头动能）
- * 5. EMA20 斜率（近 10 根上倾=+1，下倾=-1）
- *
- * 综合判定：
- * - ADX < 18（无趋势）或 |score| < 2 → 震荡
- * - score >= +2 → 多头；score <= -2 → 空头
+ * 每周期同时展示辅助信息（不参与方向判定）：
+ * - ADX 趋势强度、因子得分、近 12 根涨跌幅
  */
 import { fetchKlines, type KlineData } from './market-data';
 import { calcADX, calcEMAArray, calcSMAArray, calcMACD } from './indicators';
+import { computeStructureTrend } from './ai-analysis';
 
 export type TrendDirection = 'long' | 'short' | 'neutral';
 
@@ -26,15 +19,15 @@ export interface TrendTimeframe {
   /** 中文标签：15分钟 | 1小时 | 4小时 | 1天 */
   label: string;
   trend: TrendDirection;
-  /** 归一化得分 -100 ~ +100（正=多头，负=空头） */
+  /** 归一化得分 -100 ~ +100（正=多头，负=空头）— 辅助信息，不参与方向判定 */
   score: number;
-  /** ADX 趋势强度（0-100，>25 强趋势，<18 无趋势） */
+  /** ADX 趋势强度（0-100，>25 强趋势，<18 无趋势）— 辅助信息 */
   adx: number;
   /** 该周期最近收盘价 */
   close: number;
   /** 近 12 根 K 线累计涨跌幅 % */
   changePct: number;
-  /** 命中的因子说明（最多 5 条） */
+  /** 命中的因子说明（结构结论 + 辅助指标） */
   reasons: string[];
 }
 
@@ -54,9 +47,9 @@ export interface TrendAnalysis {
   };
 }
 
-/** 单周期趋势判定 */
+/** 单周期趋势判定（道氏结构为准，指标为辅） */
 function classifyTimeframe(tf: string, label: string, klines: KlineData[]): TrendTimeframe | null {
-  if (klines.length < 60) return null; // 数据不足（需要 SMA200 尽量可用，至少 60 根做核心判定）
+  if (klines.length < 60) return null; // 结构判定至少 60 根（摆动点序列足够）
 
   const last = klines.length - 1;
   const close = klines[last].close;
@@ -73,56 +66,32 @@ function classifyTimeframe(tf: string, label: string, klines: KlineData[]): Tren
   const sma200 = sma200Arr[last];
 
   let score = 0;
-  const reasons: string[] = [];
 
   // 因子1：价格 vs EMA20
-  if (ema20 != null) {
-    if (close > ema20) { score++; reasons.push('价格站上EMA20'); }
-    else { score--; reasons.push('价格跌破EMA20'); }
-  }
-
+  if (ema20 != null) score += close > ema20 ? 1 : -1;
   // 因子2：EMA20 vs SMA50（均线排列）
-  if (ema20 != null && sma50 != null) {
-    if (ema20 > sma50) { score++; reasons.push('EMA20>SMA50 多头排列'); }
-    else { score--; reasons.push('EMA20<SMA50 空头排列'); }
-  }
-
+  if (ema20 != null && sma50 != null) score += ema20 > sma50 ? 1 : -1;
   // 因子3：价格 vs SMA200（长期方向）
-  if (sma200 != null) {
-    if (close > sma200) { score++; reasons.push('价格在SMA200上方'); }
-    else { score--; reasons.push('价格在SMA200下方'); }
-  }
-
+  if (sma200 != null) score += close > sma200 ? 1 : -1;
   // 因子4：MACD 动能
-  if (macd) {
-    if (macd.lastHist > 0) { score++; reasons.push('MACD多头动能'); }
-    else { score--; reasons.push('MACD空头动能'); }
-  }
-
+  if (macd) score += macd.lastHist > 0 ? 1 : -1;
   // 因子5：EMA20 斜率
-  if (ema20Prev != null) {
-    if (ema20 > ema20Prev) { score++; reasons.push('EMA20上倾'); }
-    else { score--; reasons.push('EMA20下倾'); }
-  }
+  if (ema20Prev != null) score += ema20 > ema20Prev ? 1 : -1;
 
-  // 归一化到 -100 ~ +100
+  // 归一化到 -100 ~ +100（辅助信息）
   const normalized = Math.round((score / 5) * 100);
 
-  // 综合判定：方向一致（|score|>=2）且 ADX 不处于无趋势区（>=18）
-  let trend: TrendDirection;
-  if (adx > 0 && adx < 18) {
-    trend = 'neutral'; // ADX 显示无趋势 → 震荡
-    reasons.push(`ADX=${adx.toFixed(0)} 无趋势`);
-  } else if (score >= 2) {
-    trend = 'long';
-    if (adx >= 25) reasons.push(`ADX=${adx.toFixed(0)} 趋势强劲`);
-  } else if (score <= -2) {
-    trend = 'short';
-    if (adx >= 25) reasons.push(`ADX=${adx.toFixed(0)} 趋势强劲`);
-  } else {
-    trend = 'neutral'; // 多空因子分歧 → 震荡
-    reasons.push('多空因子分歧');
-  }
+  // 方向判定：道氏结构（与 AI 方向过滤层同源同值）
+  const structure = computeStructureTrend(klines, label);
+  const trend: TrendDirection =
+    structure.trend === 'up' ? 'long' : structure.trend === 'down' ? 'short' : 'neutral';
+
+  const reasons: string[] = [structure.note || `${label}结构不明`];
+  if (structure.trend === 'up') reasons.push('HH+HL 摆动点加权占优');
+  if (structure.trend === 'down') reasons.push('LH+LL 摆动点加权占优');
+  if (structure.trend === 'range') reasons.push('高低点矛盾，结构震荡');
+  if (adx >= 25) reasons.push(`ADX=${adx.toFixed(0)} 趋势强劲（辅助）`);
+  else if (adx > 0 && adx < 18) reasons.push(`ADX=${adx.toFixed(0)} 动能弱（辅助）`);
 
   // 近 12 根累计涨跌幅
   const refIdx = Math.max(0, last - 11);

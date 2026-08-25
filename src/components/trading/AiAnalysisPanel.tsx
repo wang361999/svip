@@ -40,6 +40,7 @@ interface AiAnalysis {
       m15: StructureTrend;
       h1: StructureTrend;
       h4: StructureTrend;
+      d1?: StructureTrend;
     } | null;
   } | null;
   riskWarning: string | null;
@@ -393,9 +394,15 @@ export default function AiAnalysisPanel() {
       {/* ===== 结果区（只看结果） ===== */}
       {analysis && dir && (
         <div className="space-y-3.5">
+          {/* 逆势弱信号提示（置信度 ≤55 不会自动开仓，降级展示避免误读为完整信号） */}
+          {analysis.direction !== 'neutral' && analysis.confidence <= 55 && (
+            <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs">
+              ⚠ 弱信号（置信度 ≤55）：逆小周期结构，不满足自动开仓门槛，仅供观察
+            </div>
+          )}
           {/* 结果头：方向 + 置信度 + 现价 */}
           <div className="flex items-stretch gap-2.5">
-            <div className={`flex-1 rounded-xl border ${dir.border} ${dir.bg} px-4 py-3 flex items-center justify-between`}>
+            <div className={`flex-1 rounded-xl border ${dir.border} ${dir.bg} px-4 py-3 flex items-center justify-between ${analysis.direction !== 'neutral' && analysis.confidence <= 55 ? 'opacity-70' : ''}`}>
               <div>
                 <div className="text-dark-500 text-[10px] mb-0.5">方向</div>
                 <div className={`text-2xl font-bold leading-none ${dir.color}`}>
@@ -414,17 +421,18 @@ export default function AiAnalysisPanel() {
             </div>
           </div>
 
-          {/* 多周期结构趋势（道氏 HH/HL/LH/LL，服务端客观计算 — 方向过滤层） */}
+          {/* 多周期结构趋势（道氏 HH/HL/LH/LL，服务端客观计算 — 方向过滤层，日线为趋势锚） */}
           {analysis.meta?.structure && (() => {
             const s = analysis.meta.structure!;
             const cells: { tf: string; trend: StructureTrend }[] = [
               { tf: '15分', trend: s.m15 },
               { tf: '1时', trend: s.h1 },
               { tf: '4时', trend: s.h4 },
+              ...(s.d1 ? [{ tf: '日线', trend: s.d1 }] : []),
             ];
-            // 三周期同向共振提示
+            // 全周期同向共振提示（日线明确时最可信）
             const known = cells.filter((c) => c.trend !== 'unknown').map((c) => c.trend);
-            const allSame = known.length === 3 && new Set(known).size === 1;
+            const allSame = known.length === cells.length && cells.length >= 3 && new Set(known).size === 1;
             return (
               <div>
                 <div className="flex items-center justify-between mb-1.5">
@@ -435,16 +443,17 @@ export default function AiAnalysisPanel() {
                       known[0] === 'down' ? 'text-red-400 bg-red-500/10' :
                       'text-amber-400 bg-amber-500/10'
                     }`}>
-                      三周期共振
+                      全周期共振
                     </span>
                   )}
                 </div>
-                <div className="grid grid-cols-3 gap-2">
+                <div className={`grid gap-2 ${cells.length === 4 ? 'grid-cols-4' : 'grid-cols-3'}`}>
                   {cells.map(({ tf, trend }) => {
                     const c = structureConfig[trend];
+                    const isDaily = tf === '日线';
                     return (
-                      <div key={tf} className={`rounded-lg border ${c.border} ${c.bg} py-1.5 text-center`}>
-                        <div className="text-dark-500 text-[10px]">{tf}</div>
+                      <div key={tf} className={`rounded-lg border ${c.border} ${c.bg} py-1.5 text-center ${isDaily ? 'ring-1 ring-dark-500' : ''}`}>
+                        <div className="text-dark-500 text-[10px]">{tf}{isDaily ? ' ·锚' : ''}</div>
                         <div className={`text-xs font-bold ${c.color} leading-tight`}>
                           {c.icon} {c.label}
                         </div>
