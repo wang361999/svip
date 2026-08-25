@@ -881,8 +881,8 @@ export async function runEngine(userId: string): Promise<{
           });
           if (replayCount > 0) continue;
 
-          // ===== 江恩止损：AI 止损 = 相邻外侧分位，直接采用（严格江恩规则，不按距离/ATR 丢弃） =====
-          // 仅当 AI 未给止损时按账户默认百分比兜底
+          // ===== 止损：直接采用信号止损（趋势回调策略=分型极值±0.3%缓冲） =====
+          // 仅当信号未给止损时按账户默认百分比兜底
           let stopLoss = latestAi.stopLoss;
           if (stopLoss == null || stopLoss <= 0) {
             const slDist0 = execPrice * (account.stopLossPct > 0 ? account.stopLossPct / 100 : 0.02);
@@ -892,6 +892,7 @@ export async function runEngine(userId: string): Promise<{
           }
 
           // 止盈同样校验方向；无效则按 1.5R / 3R（基于止损距离）生成
+          // （趋势回调策略固定给 1R/2R，此处兜底一般不触发）
           const slDist = Math.abs(execPrice - stopLoss);
           let takeProfit1 = latestAi.takeProfit1;
           if (takeProfit1 == null || (latestAi.direction === 'long' ? takeProfit1 <= execPrice : takeProfit1 >= execPrice)) {

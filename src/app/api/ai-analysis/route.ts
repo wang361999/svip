@@ -270,6 +270,18 @@ function parseMeta(raw: string | null): {
       };
     }
 
+    // A+ 清单透传（引擎闸门用，规则引擎确定性计算）
+    let aPlusChecklist: Record<string, boolean> | null = null;
+    if (parsed.aPlusChecklist && typeof parsed.aPlusChecklist === 'object') {
+      aPlusChecklist = parsed.aPlusChecklist as Record<string, boolean>;
+    }
+
+    // 趋势回调策略状态透传（前端展示挂单生命周期）
+    let strategy: Record<string, unknown> | null = null;
+    if (parsed.strategy && typeof parsed.strategy === 'object') {
+      strategy = parsed.strategy as Record<string, unknown>;
+    }
+
     return {
       regime: String(parsed.regime || 'unknown'),
       aPlusChecklist:
@@ -283,6 +295,8 @@ function parseMeta(raw: string | null): {
       ...(gann ? { gann } : {}),
       ...(fractal ? { fractal } : {}),
       ...(structure ? { structure } : {}),
+      ...(aPlusChecklist ? { aPlusChecklist } : {}),
+      ...(strategy ? { strategy } : {}),
     };
   } catch {
     return null;
@@ -361,15 +375,12 @@ export const POST = createHandler(async ({ req }) => {
 
   const input = analyzeSchema.parse(await req.json());
 
-  // 1. 读取 AI 配置
+  // 1. 读取 AI 配置（只需总开关 — 信号由规则引擎生成，不再依赖外部 AI 接口地址/密钥/模型）
   const settings = await settingsService.getSettings();
   const config = parseAiConfig(settings as unknown as Record<string, string | null>);
 
   if (!config.enabled) {
     return apiError('AI_DISABLED', 'AI 分析功能未启用，请在后台设置中开启', 400);
-  }
-  if (!config.apiUrl || !config.apiKey || !config.model) {
-    return apiError('AI_NOT_CONFIGURED', 'AI 模型配置不完整，请检查 API 地址、Key 和模型名称', 400);
   }
 
   // 1.5 并发去重：同币种分析进行中，直接共享这一次的结果

@@ -12,6 +12,12 @@
  */
 
 import { fetchKlines, fetchPrice, type KlineData } from './market-data';
+import {
+  analyzeTrendPullback,
+  DEFAULT_TP_PARAMS,
+  STRATEGY_ID,
+  type TrendPullbackState,
+} from './trend-pullback';
 
 // ==================== 供应商定义 ====================
 
@@ -137,6 +143,16 @@ export interface AiAnalysisResult {
   meta: {
     /** AI 判定的市场状态：trending 趋势 / range 区间 / chop 碎波 / event 事件驱动 */
     regime: 'trending' | 'range' | 'chop' | 'event';
+    /** 引擎闸门清单（确定性计算：环境/周期共振/费率/量能/止损距离） */
+    aPlusChecklist?: {
+      regimeClear: boolean;
+      timeframeAligned: boolean;
+      fundingNotExtreme: boolean;
+      volumeConfirmed: boolean;
+      nearInvalidation: boolean;
+    };
+    /** 趋势回调策略完整状态（复盘/前端展示用） */
+    strategy?: TrendPullbackState & { symbol: string };
     /** 江恩八分位阶梯（服务端客观计算回填 — 价位框架，前端阶梯展示用） */
     gann?: {
       swingHigh: number; swingLow: number; rangePct: number;
@@ -767,18 +783,9 @@ export async function analyzeMarketWithAI(
   label: string,
   currentPrice?: number,
 ): Promise<AiAnalysisResult> {
-  // 1. 校验配置
+  // 1. 校验启用（LLM 已下线：信号由「趋势回调」规则引擎确定性生成 — 与回测同参数、可复现、零外部 AI 调用）
   if (!config.enabled) {
     throw new Error('AI 分析功能未启用');
-  }
-  if (!config.apiUrl) {
-    throw new Error('未配置 AI API 地址');
-  }
-  if (!config.apiKey) {
-    throw new Error('未配置 AI API Key');
-  }
-  if (!config.model) {
-    throw new Error('未配置 AI 模型名称');
   }
 
   // 2. 获取当前价格
@@ -790,9 +797,9 @@ export async function analyzeMarketWithAI(
     throw new Error('无法获取当前价格');
   }
 
-  // 3. 获取 K 线：1h（八分位区间 + 分型触发）+ 15m/4h/1d（结构趋势判定）
+  // 3. 获取 K 线：1h 300 根（EMA150 预热 + 斜率回看 + 分型三根）+ 15m/4h/1d（结构趋势判定）
   const [k1h, k15m, k4h, k1d] = await Promise.all([
-    fetchKlines(symbol, okxId, '1h', 200).catch(() => [] as KlineData[]),
+    fetchKlines(symbol, okxId, '1h', 300).catch(() => [] as KlineData[]),
     fetchKlines(symbol, okxId, '15m', 120).catch(() => [] as KlineData[]),
     fetchKlines(symbol, okxId, '4h', 60).catch(() => [] as KlineData[]),
     fetchKlines(symbol, okxId, '1d', 60).catch(() => [] as KlineData[]),
@@ -802,86 +809,126 @@ export async function analyzeMarketWithAI(
     throw new Error('无法获取 K 线数据');
   }
 
-  // 3.5 计算江恩八分位阶梯（近72小时摆动区间 8 等分 — 价位框架，注入 prompt + 回填 meta 供前端展示）
+  // 4. 策略核心：趋势回调规则引擎（EMA150 环境 + 回调计数 + 1h 分型突破确认，参数与回测冻结一致）
+  const strategy = analyzeTrendPullback(k1h);
+
+  // 5. 展示层客观计算（面板阶梯 / 分型徽章 / 结构徽章沿用）
   const gann = computeGannEighths(k1h, price);
-
-  // 3.6 计算近端顶底分型（进场触发器 — 注入 prompt + 回填 meta 供前端展示）
   const fractal = computeFractalSignal(k1h, gann);
-
-  // 3.7 计算多周期结构趋势（15m/1h/4h/1d 道氏结构 — 方向过滤层，1d 为最高级趋势锚）
   const struct15 = computeStructureTrend(k15m, '15分钟');
   const struct1h = computeStructureTrend(k1h, '1小时');
   const struct4h = computeStructureTrend(k4h, '4小时');
   const struct1d = computeStructureTrend(k1d, '1天');
 
-  // 4. 构建 prompt（八分位框架 + 分型触发 + 多周期结构过滤）
-  const userPrompt = buildUserPrompt(
-    symbol,
-    label,
-    price,
-    k1h,
-    buildGannText(gann, price),
-    buildFractalText(fractal, price),
-    buildStructureText(struct15, struct1h, struct4h, struct1d),
-  );
-
-  // 5. 调用 AI API
-  const rawResponse = await callChatCompletions(config, SYSTEM_PROMPT, userPrompt);
-
-  // 6. 解析结果（传入当前价用于校验止损/止盈方向）
-  const parsed = extractJson(rawResponse);
-  const result = normalizeResult(parsed, config, rawResponse, price);
-
-  // 6.5 服务端硬否决（AI 忽略提示词规则时代码层强制拦截 — 两道闸）：
-  //     ① 日线一票否决：1d 结构明确（up/down）时信号逆 1d → 强制 neutral。
-  //        短线回调不改变大势，杜绝"日线强多头里给逆势空单"。
-  //     ② 共振支撑：信号方向在 15m/1h/4h/1d 四周期中至少一个结构同向，
-  //        全震荡或全反向（无任何周期支撑的方向猜测）→ 强制 neutral。
-  let vetoSummary: string | null = null;
-  const priceStr = price.toLocaleString('en-US', { maximumFractionDigits: price >= 100 ? 2 : 4 });
-
-  if (
-    (struct1d.trend === 'up' && result.direction === 'short') ||
-    (struct1d.trend === 'down' && result.direction === 'long')
-  ) {
-    result.direction = 'neutral';
-    result.confidence = Math.min(result.confidence, 50);
-    vetoSummary = `观望：信号方向与日线结构（${struct1d.trend === 'up' ? '上升 HH+HL' : '下降 LH+LL'}）相反，已否决 · 现价 ${priceStr} · 结构 ${struct1h.trend === 'up' ? '升' : struct1h.trend === 'down' ? '降' : struct1h.trend === 'range' ? '震' : '–'}/日线${struct1d.trend === 'up' ? '升' : '降'}`;
-  } else if (result.direction !== 'neutral') {
-    const trends = [struct15.trend, struct1h.trend, struct4h.trend, struct1d.trend];
-    const hasSupport =
-      result.direction === 'long' ? trends.includes('up') : trends.includes('down');
-    if (!hasSupport) {
-      result.direction = 'neutral';
-      result.confidence = Math.min(result.confidence, 50);
-      vetoSummary = `观望：信号方向无任何周期结构支撑（四周期全震荡或反向）· 现价 ${priceStr} · 结构 ${trends.map((t) => (t === 'up' ? '升' : t === 'down' ? '降' : t === 'range' ? '震' : '–')).join('/')}`;
-    }
+  // 6. 方向与置信度（确定性）：
+  //    只有「挂单中」给方向 — 与回测的进场条件完全一致；
+  //    已成交/已了结/观望一律 neutral，防止引擎对同一信号重复开仓。
+  const isPending = strategy.status === 'pending';
+  const direction: 'long' | 'short' | 'neutral' = isPending ? strategy.direction : 'neutral';
+  let confidence = 50;
+  if (isPending) {
+    // 基础 75 = 回测正期望信号；4h/1d 结构双同向 +5、双反向 -10（不破 60 开仓门槛，只影响排序）
+    const want = strategy.direction === 'long' ? 'up' : 'down';
+    const big = [struct4h.trend, struct1d.trend];
+    const aligned = big.filter((t) => t === want).length;
+    const directional = big.filter((t) => t === 'up' || t === 'down').length;
+    confidence = Math.max(60, Math.min(80, 75 + (aligned === 2 ? 5 : 0) - (directional - aligned === 2 ? 10 : 0)));
   }
 
-  // 回填江恩八分位（服务端客观计算，前端阶梯图展示；不依赖 AI 复述避免幻觉）
-  result.meta.gann = gann;
-  // 回填顶底分型（服务端客观计算，前端徽章展示）
-  result.meta.fractal = fractal;
-  // 回填多周期结构趋势（服务端客观计算，前端周期徽章展示）
-  result.meta.structure = { m15: struct15.trend, h1: struct1h.trend, h4: struct4h.trend, d1: struct1d.trend };
-  // 摘要改为服务端固定模板（AI 不再自由发挥文案 — 每次分析格式恒定，面板不乱）
-  // （若上方否决已写 summary 则保留否决理由，不再覆盖）
-  result.summary = vetoSummary
-    ? vetoSummary
-    : buildDeterministicSummary(
-        result.direction,
-        result.entryPrice,
-        result.stopLoss,
-        result.takeProfit1,
-        result.takeProfit2,
-        gann,
-        fractal,
-        struct15,
-        struct1h,
-        struct4h,
-        struct1d,
-        price,
-      );
+  // 7. 挂单价 / 止损 / 止盈（仅挂单中落库；口径=回测：限价进场、分型止损、2R 止盈、1R 参考位）
+  const num = (v: number): number => Number(v.toFixed(v >= 100 ? 2 : 4));
+  const entryPrice = isPending && strategy.order ? num(strategy.order.entry) : null;
+  const stopLoss = isPending && strategy.order ? num(strategy.order.stop) : null;
+  const takeProfit1 = isPending && strategy.order ? num(strategy.order.tp1) : null;
+  const takeProfit2 = isPending && strategy.order ? num(strategy.order.tp) : null;
+
+  // 8. 摘要（固定模板 — 每次分析格式恒定，面板不乱）
+  const o = strategy.order;
+  const fp = (v: number): string => v.toLocaleString('en-US', { maximumFractionDigits: v >= 100 ? 2 : 4 });
+  let summary: string;
+  if (strategy.status === 'pending' && o) {
+    const exp = new Date(o.expiresAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    summary =
+      strategy.direction === 'long'
+        ? `挂单做多：${fp(o.entry)}（回踩0.2%）· 损 ${fp(o.stop)}（-${(o.riskPct * 100).toFixed(2)}%）· 目标 ${fp(o.tp)}（+2R）· ${exp}前有效`
+        : `挂单做空：${fp(o.entry)}（反弹0.2%）· 损 ${fp(o.stop)}（-${(o.riskPct * 100).toFixed(2)}%）· 目标 ${fp(o.tp)}（+2R）· ${exp}前有效`;
+  } else if (strategy.status === 'filled' && o) {
+    summary = `持仓${strategy.direction === 'long' ? '多' : '空'} @${fp(o.entry)} · 损 ${fp(o.stop)} · 目标 ${fp(o.tp)}（+2R）· 等待离场`;
+  } else if (strategy.status === 'closed') {
+    summary =
+      strategy.outcome === 'tp'
+        ? '近信号已止盈 +2R · 等待下一次回调'
+        : '近信号已止损 · 冷却等待新信号（勿追价报复性进场）';
+  } else {
+    summary = `观望：${strategy.waitingReason}`;
+  }
+
+  // 9. 推理链（规则逐条可复核）
+  const reasoning = [
+    ...strategy.chain,
+    `口径：${STRATEGY_ID} · EMA${DEFAULT_TP_PARAMS.emaPeriod}环境 / 连续${DEFAULT_TP_PARAMS.pullbackMinBars}根逆向回调 / 1h分型+突破确认 / 限价±${(DEFAULT_TP_PARAMS.limitEntryPct * 100).toFixed(1)}% / 止损=分型±${(DEFAULT_TP_PARAMS.stopBufferPct * 100).toFixed(1)}% / 止盈+${DEFAULT_TP_PARAMS.tpR}R`,
+    '回测（2年1h·maker费0.02%）：BTC +0.212R/单·PF1.35 · ETH +0.116R/单·PF1.18 · 月均1-2单为策略正常节奏',
+  ].join('\n');
+
+  // 10. 关键位（挂单相关 + EMA 锚）
+  const keyLevels = [
+    ...(o && (isPending || strategy.status === 'filled')
+      ? [
+          { price: num(o.entry), type: '进场（限价）', note: '回踩0.2%挂单' },
+          { price: num(o.stop), type: '止损', note: '分型极值±0.3%' },
+          { price: num(o.tp), type: '止盈（2R）', note: '主目标' },
+          { price: num(o.tp1), type: '止盈（1R）', note: '可选减仓位' },
+        ]
+      : []),
+    ...(strategy.ema
+      ? [{ price: num(strategy.ema.value), type: `EMA${DEFAULT_TP_PARAMS.emaPeriod}`, note: '趋势环境锚' }]
+      : []),
+  ];
+
+  // 11. 引擎闸门 meta（regime + A+ 清单，全部确定性计算）
+  const regime: 'trending' | 'chop' = strategy.trend !== 0 ? 'trending' : 'chop';
+  const wantTrend = isPending ? (strategy.direction === 'long' ? 'up' : 'down') : null;
+  const confirmTime = strategy.trigger?.confirmTime;
+  const confirmIdx = confirmTime != null ? k1h.findIndex((k) => k.time === confirmTime) : -1;
+  const aPlusChecklist = {
+    regimeClear: strategy.trend !== 0,
+    timeframeAligned: wantTrend
+      ? struct1h.trend === wantTrend || struct4h.trend === wantTrend
+      : strategy.trend !== 0,
+    fundingNotExtreme: true, // 资金费率未接入本引擎，默认放行
+    volumeConfirmed: (() => {
+      // 确认K线放量（≥ 近20根均量）；无触发时按环境就绪计
+      if (confirmIdx < 0) return strategy.trend !== 0;
+      const window = k1h.slice(Math.max(0, confirmIdx - 20), confirmIdx);
+      const avg = window.reduce((s, k) => s + k.volume, 0) / Math.max(1, window.length);
+      return k1h[confirmIdx].volume >= avg;
+    })(),
+    nearInvalidation: !o || o.riskPct <= DEFAULT_TP_PARAMS.maxRiskPct,
+  };
+
+  const result: AiAnalysisResult = {
+    direction,
+    confidence,
+    summary,
+    entryPrice,
+    stopLoss,
+    takeProfit1,
+    takeProfit2,
+    reasoning,
+    keyLevels,
+    riskWarning: '单笔风险≤账户1% · 挂单不成交即等下一次（不追价）· 月均1-2单为策略特性，勿为频率降低过滤',
+    provider: 'rule-engine',
+    model: STRATEGY_ID,
+    rawResponse: '',
+    meta: {
+      regime,
+      aPlusChecklist,
+      gann,
+      fractal,
+      structure: { m15: struct15.trend, h1: struct1h.trend, h4: struct4h.trend, d1: struct1d.trend },
+      strategy: { ...strategy, symbol },
+    },
+  };
 
   return result;
 }
