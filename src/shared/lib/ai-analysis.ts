@@ -13,17 +13,11 @@
 
 import { fetchKlines, fetchPrice, type KlineData } from './market-data';
 import {
-  analyzeTrendPullback,
-  DEFAULT_TP_PARAMS,
-  STRATEGY_ID,
-  type TrendPullbackState,
-} from './trend-pullback';
-import {
-  analyzeEmaReclaim,
-  DEFAULT_ER_PARAMS,
-  STRATEGY_ID_FAST,
-  type EmaReclaimState,
-} from './ema-reclaim';
+  analyzeGannOctave,
+  DEFAULT_GO_PARAMS,
+  STRATEGY_ID as GANN_STRATEGY_ID,
+  type GannOctaveState,
+} from './gann-octave';
 
 // ==================== 供应商定义 ====================
 
@@ -157,10 +151,8 @@ export interface AiAnalysisResult {
       volumeConfirmed: boolean;
       nearInvalidation: boolean;
     };
-    /** 趋势回调策略完整状态（复盘/前端展示用） */
-    strategy?: TrendPullbackState & { symbol: string };
-    /** 快引擎（EMA 价值区回踩收复）完整状态 */
-    fastStrategy?: EmaReclaimState & { symbol: string };
+    /** 江恩八分法策略完整状态（唯一引擎 — 4h 主框架） */
+    gannOctave?: GannOctaveState & { symbol: string };
     /** 江恩八分位阶梯（服务端客观计算回填 — 价位框架，前端阶梯展示用） */
     gann?: {
       swingHigh: number; swingLow: number; rangePct: number;
@@ -791,7 +783,7 @@ export async function analyzeMarketWithAI(
   label: string,
   currentPrice?: number,
 ): Promise<AiAnalysisResult> {
-  // 1. 校验启用（LLM 已下线：信号由「趋势回调」规则引擎确定性生成 — 与回测同参数、可复现、零外部 AI 调用）
+  // 1. 校验启用（信号由「江恩八分法」规则引擎确定性生成 — 随机森林内嵌推理，零外部 AI 调用）
   if (!config.enabled) {
     throw new Error('AI 分析功能未启用');
   }
@@ -805,189 +797,141 @@ export async function analyzeMarketWithAI(
     throw new Error('无法获取当前价格');
   }
 
-  // 3. 获取 K 线：1h 300 根（主引擎）+ 15m 320 根（快引擎 EMA200 预热）+ 4h/1d（结构趋势判定）
-  const [k1h, k15m, k4h, k1d] = await Promise.all([
-    fetchKlines(symbol, okxId, '1h', 300).catch(() => [] as KlineData[]),
-    fetchKlines(symbol, okxId, '15m', 320).catch(() => [] as KlineData[]),
-    fetchKlines(symbol, okxId, '4h', 60).catch(() => [] as KlineData[]),
+  // 3. 获取 K 线：4h 300 根（主框架：枢轴+八分位+ATR30天窗口+信号回看）
+  //    + 1d 60 根（日线趋势 MA30 定方向）+ 1h/15m/4h/1d（结构徽章展示沿用）
+  const [k4h, k1d, k1h, k15m] = await Promise.all([
+    fetchKlines(symbol, okxId, '4h', 300).catch(() => [] as KlineData[]),
     fetchKlines(symbol, okxId, '1d', 60).catch(() => [] as KlineData[]),
+    fetchKlines(symbol, okxId, '1h', 120).catch(() => [] as KlineData[]),
+    fetchKlines(symbol, okxId, '15m', 160).catch(() => [] as KlineData[]),
   ]);
 
-  if (k1h.length === 0) {
+  if (k4h.length === 0) {
     throw new Error('无法获取 K 线数据');
   }
 
-  // 4. 双引擎并行（互不干扰）：
-  //    主引擎「趋势回调」：1h EMA150 环境 + 回调 + 分型突破（月均 1-2 单，单笔期望高）
-  //    快引擎「EMA价值区回踩收复」：15m EMA40/200（日均 1 单，快进快出）
-  //    只有「挂单中/成交中」的引擎给方向 — 与各自回测的进场条件完全一致
-  const strategy = analyzeTrendPullback(k1h);
-  const fast = analyzeEmaReclaim(k15m);
+  // 4. 唯一引擎：江恩八分法动态支撑阻力（ETH 4h）
+  //    枢轴(左右5根) → 波段高低点 → 9档八分位 → AI(随机森林)信号过滤 → 五条件开仓
+  const gann = analyzeGannOctave(k4h, k1d, price);
 
-  // 5. 展示层客观计算（面板阶梯 / 分型徽章 / 结构徽章沿用）
-  const gann = computeGannEighths(k1h, price);
-  const fractal = computeFractalSignal(k1h, gann);
+  // 5. 展示层客观计算（面板阶梯 / 结构徽章沿用；结构趋势仅供展示参考，不参与开仓判定）
   const struct15 = computeStructureTrend(k15m, '15分钟');
   const struct1h = computeStructureTrend(k1h, '1小时');
   const struct4h = computeStructureTrend(k4h, '4小时');
   const struct1d = computeStructureTrend(k1d, '1天');
 
-  // 6. 方向与置信度（确定性，双引擎）：
-  //    主引擎挂单中 → 主引擎方向（单笔期望高，优先）；
-  //    否则快引擎成交中 → 快引擎方向（快进快出）；
-  //    其余（已成交/已了结/观望）一律 neutral，防止引擎对同一信号重复开仓。
-  const activeEngine: 'trend' | 'fast' | null =
-    strategy.status === 'pending' ? 'trend' : fast.status === 'pending' ? 'fast' : null;
-  const direction: 'long' | 'short' | 'neutral' = activeEngine
-    ? activeEngine === 'trend' ? strategy.direction : fast.direction
-    : 'neutral';
-  const isPending = activeEngine !== null;
-  let confidence = 50;
-  if (activeEngine === 'trend') {
-    // 基础 75 = 回测正期望信号；4h/1d 结构双同向 +5、双反向 -10（不破 60 开仓门槛，只影响排序）
-    const want = strategy.direction === 'long' ? 'up' : 'down';
-    const big = [struct4h.trend, struct1d.trend];
-    const aligned = big.filter((t) => t === want).length;
-    const directional = big.filter((t) => t === 'up' || t === 'down').length;
-    confidence = Math.max(60, Math.min(80, 75 + (aligned === 2 ? 5 : 0) - (directional - aligned === 2 ? 10 : 0)));
-  } else if (activeEngine === 'fast') {
-    // 快引擎：回测期望 +0.052R/单（薄优势），基础 65（过 60 开仓门槛）
-    // 15m/1h 结构同向 +5；反向 -5（不低于 60）
-    const want = fast.direction === 'long' ? 'up' : 'down';
-    const near = [struct15.trend, struct1h.trend];
-    const aligned = near.filter((t) => t === want).length;
-    const directional = near.filter((t) => t === 'up' || t === 'down').length;
-    confidence = Math.max(60, Math.min(75, 65 + (aligned === 2 ? 5 : 0) - (directional - aligned === 2 ? 5 : 0)));
-  }
+  // 6. 方向与置信度（确定性）：
+  //    仅「信号触发(待进场)」给方向 — 与策略五条件完全一致；
+  //    持仓中/已了结/观望一律 neutral，防止对同一信号重复开仓。
+  const isPending = gann.status === 'pending';
+  const direction: 'long' | 'short' | 'neutral' = isPending ? gann.direction : 'neutral';
+  // 置信度：AI 模型输出（0~1 → 0~100），信号触发时按方向取对应置信度
+  const aiConf = gann.ai
+    ? gann.ai.action === 'buy' ? gann.ai.buy : gann.ai.action === 'sell' ? gann.ai.sell : gann.ai.hold
+    : 0;
+  const confidence = isPending
+    ? Math.round(Math.max(60, Math.min(95, aiConf * 100)))
+    : Math.round(Math.min(59, aiConf * 100));
 
-  // 7. 挂单价 / 止损 / 止盈（仅挂单中落库，取自当前活跃引擎）
-  //    快引擎止盈 1.5R 全出：tp1/tp2 同价（引擎按 tp2 优先全平，不触发部分止盈）
+  // 7. 挂单价 / 止损 / 止盈（仅信号触发时落库）
+  //    止损=触发分位的下一档八分位（距离≥1.5×ATR）；分批止盈 TP1=最近一档 TP2=再下一档
   const num = (v: number): number => Number(v.toFixed(v >= 100 ? 2 : 4));
-  const entryPrice = isPending
-    ? num(activeEngine === 'trend' ? strategy.order!.entry : fast.order!.entry)
-    : null;
-  const stopLoss = isPending
-    ? num(activeEngine === 'trend' ? strategy.order!.stop : fast.order!.stop)
-    : null;
-  const takeProfit1 = isPending
-    ? num(activeEngine === 'trend' ? strategy.order!.tp1 : fast.order!.tp)
-    : null;
-  const takeProfit2 = isPending
-    ? num(activeEngine === 'trend' ? strategy.order!.tp : fast.order!.tp)
-    : null;
+  const o = gann.order;
+  const entryPrice = isPending && o ? num(o.entry) : null;
+  const stopLoss = isPending && o ? num(o.stop) : null;
+  const takeProfit1 = isPending && o ? num(o.tp1) : null;
+  const takeProfit2 = isPending && o ? num(o.tp2) : null;
 
-  // 8. 摘要（固定模板 — 每次分析格式恒定；主摘要=活跃引擎，两引擎状态都在 meta）
-  const o = strategy.order;
-  const fo = fast.order;
+  // 8. 摘要（固定模板 — 每次分析格式恒定）
   const fp = (v: number): string => v.toLocaleString('en-US', { maximumFractionDigits: v >= 100 ? 2 : 4 });
+  const dirCn = gann.direction === 'long' ? '多' : '空';
   let summary: string;
-  if (activeEngine === 'trend' && o) {
-    const exp = new Date(o.expiresAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  if (isPending && o) {
+    const sigLabel = gann.signalType === 'breakout' ? '突破追单' : '回踩分位';
     summary =
-      strategy.direction === 'long'
-        ? `【主】挂单做多：${fp(o.entry)}（回踩0.2%）· 损 ${fp(o.stop)}（-${(o.riskPct * 100).toFixed(2)}%）· 目标 ${fp(o.tp)}（+2R）· ${exp}前有效`
-        : `【主】挂单做空：${fp(o.entry)}（反弹0.2%）· 损 ${fp(o.stop)}（-${(o.riskPct * 100).toFixed(2)}%）· 目标 ${fp(o.tp)}（+2R）· ${exp}前有效`;
-  } else if (activeEngine === 'fast' && fo) {
-    const mins = Math.max(0, Math.round((fo.timeStopAt - Date.now()) / 60000));
+      `【江恩八分法】${dirCn}头信号：${fp(o.entry)}（${sigLabel}）· 损 ${fp(o.stop)}（-${(o.riskPct * 100).toFixed(2)}%）· TP1 ${fp(o.tp1)} / TP2 ${fp(o.tp2)} · AI置信 ${(aiConf * 100).toFixed(0)}%`;
+  } else if (gann.status === 'filled' && o) {
+    summary = `【江恩八分法】持仓${dirCn} @${fp(o.entry)} · 损 ${fp(o.stop)} · TP1 ${fp(o.tp1)} / TP2 ${fp(o.tp2)} · 等待离场`;
+  } else if (gann.status === 'closed') {
     summary =
-      fast.direction === 'long'
-        ? `【快】做多：${fp(fo.entry)}（回踩0.05%）· 损 ${fp(fo.stop)}（-0.8%）· 目标 ${fp(fo.tp)}（+1.5R）· ${mins}分钟未到即离场`
-        : `【快】做空：${fp(fo.entry)}（反弹0.05%）· 损 ${fp(fo.stop)}（-0.8%）· 目标 ${fp(fo.tp)}（+1.5R）· ${mins}分钟未到即离场`;
-  } else if (strategy.status === 'filled' && o) {
-    summary = `【主】持仓${strategy.direction === 'long' ? '多' : '空'} @${fp(o.entry)} · 损 ${fp(o.stop)} · 目标 ${fp(o.tp)}（+2R）· 等待离场`;
-  } else if (fast.status === 'filled' && fo) {
-    const mins = Math.max(0, Math.round((fo.timeStopAt - Date.now()) / 60000));
-    summary = `【快】持仓${fast.direction === 'long' ? '多' : '空'} @${fp(fo.entry)} · 损 ${fp(fo.stop)} · 目标 ${fp(fo.tp)}（+1.5R）· ${mins}分钟内未到即离场`;
-  } else if (strategy.status === 'closed') {
-    summary =
-      strategy.outcome === 'tp'
-        ? '【主】近信号已止盈 +2R · 等待下一次回调'
-        : '【主】近信号已止损 · 冷却等待新信号（勿追价报复性进场）';
-  } else if (fast.status === 'closed') {
-    summary =
-      fast.outcome === 'tp'
-        ? `【快】近信号已止盈 +${DEFAULT_ER_PARAMS.tpR}R`
-        : fast.outcome === 'time'
-          ? '【快】近信号时间止损离场（快进快出）'
-          : '【快】近信号已止损（连亏为正常现象，勿停用）';
+      gann.outcome === 'tp'
+        ? '【江恩八分法】近信号已止盈（分位目标）· 等待波段新高/新低重算八分位'
+        : '【江恩八分法】近信号已止损 · 冷却等待新信号（勿追价报复性进场）';
   } else {
-    summary = `观望：${strategy.waitingReason}`;
+    summary = `观望：${gann.waitingReason}${gann.ai ? ` · AI:${gann.ai.action === 'buy' ? '买入' : gann.ai.action === 'sell' ? '卖出' : '观望'}${(Math.max(gann.ai.buy, gann.ai.sell, gann.ai.hold) * 100).toFixed(0)}%` : ''}`;
   }
 
-  // 9. 推理链（规则逐条可复核，双引擎分列）
+  // 9. 推理链（规则逐条可复核）
   const reasoning = [
-    '━━━ 主引擎 · 趋势回调（1h）━━━',
-    ...strategy.chain,
-    `口径：${STRATEGY_ID} · EMA${DEFAULT_TP_PARAMS.emaPeriod}环境 / 连续${DEFAULT_TP_PARAMS.pullbackMinBars}根逆向回调 / 1h分型+突破确认 / 限价±${(DEFAULT_TP_PARAMS.limitEntryPct * 100).toFixed(1)}% / 止损=分型±${(DEFAULT_TP_PARAMS.stopBufferPct * 100).toFixed(1)}% / 止盈+${DEFAULT_TP_PARAMS.tpR}R`,
-    '回测（2年1h·maker费0.02%）：BTC +0.212R/单·PF1.35 · ETH +0.116R/单·PF1.18 · 月均1-2单为策略正常节奏',
-    '━━━ 快引擎 · EMA价值区回踩收复（15m）━━━',
-    ...fast.chain,
-    `口径：${STRATEGY_ID_FAST} · EMA${DEFAULT_ER_PARAMS.emaFast}/${DEFAULT_ER_PARAMS.emaVal}环境 / 踩线±${(DEFAULT_ER_PARAMS.touchPct * 100).toFixed(1)}% / 收复K线确认 / 限价${(DEFAULT_ER_PARAMS.limitPct * 100).toFixed(2)}% / 止损${(DEFAULT_ER_PARAMS.stopPct * 100).toFixed(1)}% / 止盈+${DEFAULT_ER_PARAMS.tpR}R / ${DEFAULT_ER_PARAMS.timeStopBars * 0.25}h时间止损`,
-    '回测（2年15m·BTC+ETH·798单）：日均1.1单 · 期望+0.052R/单 · 月均+1.73R · 胜率46.5%（连亏11单为正常现象）',
+    '━━━ 江恩八分法动态支撑阻力（4h）━━━',
+    ...gann.chain,
+    `口径：${GANN_STRATEGY_ID} · 枢轴左右${DEFAULT_GO_PARAMS.pivotStrength}根 · 触及偏差${(DEFAULT_GO_PARAMS.deviationPct * 100).toFixed(1)}% · AI置信门槛${DEFAULT_GO_PARAMS.aiConfThreshold} · 止损≥${DEFAULT_GO_PARAMS.atrStopFloorMult}×ATR · 单笔风险≤权益2% · ATR>${DEFAULT_GO_PARAMS.atrVolFilterMult}×30天均值暂停开仓`,
   ].join('\n');
 
-  // 10. 关键位（活跃引擎挂单 + 各自 EMA 锚）
+  // 10. 关键位（八分位阶梯 + 信号单）
+  const OCTAVE_LABELS = ['0%', '12.5%', '25%', '37.5%', '50%', '62.5%', '75%', '87.5%', '100%'];
   const keyLevels = [
-    ...(o && (activeEngine === 'trend' || strategy.status === 'filled')
+    ...(isPending && o
       ? [
-          { price: num(o.entry), type: '主引擎进场（限价）', note: '回踩0.2%挂单' },
-          { price: num(o.stop), type: '主引擎止损', note: '分型极值±0.3%' },
-          { price: num(o.tp), type: '主引擎止盈（2R）', note: '主目标' },
+          { price: num(o.entry), type: '信号进场', note: `触发分位 ${OCTAVE_LABELS[o.levelIdx] ?? '-'}` },
+          { price: num(o.stop), type: '止损', note: o.stopSource === 'atr' ? '1.5×ATR下限垫高' : '下一档八分位' },
+          { price: num(o.tp1), type: '止盈TP1', note: '最近一档八分位' },
+          { price: num(o.tp2), type: '止盈TP2', note: '再下一档八分位' },
         ]
       : []),
-    ...(fo && (activeEngine === 'fast' || fast.status === 'filled')
-      ? [
-          { price: num(fo.entry), type: '快引擎进场（限价）', note: '回踩0.05%' },
-          { price: num(fo.stop), type: '快引擎止损', note: '0.8%' },
-          { price: num(fo.tp), type: `快引擎止盈（${DEFAULT_ER_PARAMS.tpR}R）`, note: '4h未到即离场' },
-        ]
-      : []),
-    ...(strategy.ema
-      ? [{ price: num(strategy.ema.value), type: `主引擎EMA${DEFAULT_TP_PARAMS.emaPeriod}(1h)`, note: '趋势环境锚' }]
-      : []),
-    ...(fast.ema
-      ? [{ price: num(fast.ema.val), type: `快引擎EMA${DEFAULT_ER_PARAMS.emaVal}(15m)`, note: '价值区锚' }]
-      : []),
+    ...gann.octaves
+      .filter((lv) => [2, 3, 4, 5, 6, 7].includes(lv.index))
+      .map((lv) => ({
+        price: num(lv.price),
+        type: `八分位 ${lv.label}`,
+        note: lv.index === 4 ? '最强支撑/阻力' : [2, 6].includes(lv.index) ? '次强' : '辅助',
+      })),
+    ...(gann.dailyMa30 != null ? [{ price: num(gann.dailyMa30), type: '日线MA30', note: '趋势方向锚' }] : []),
   ];
 
-  // 11. 引擎闸门 meta（regime + A+ 清单，按活跃引擎口径确定性计算）
-  const regime: 'trending' | 'chop' =
-    activeEngine === 'fast' ? (fast.env !== 0 ? 'trending' : 'chop') : strategy.trend !== 0 ? 'trending' : 'chop';
-  const wantTrend = isPending
-    ? (direction === 'long' ? 'up' : 'down')
-    : null;
+  // 11. 引擎闸门 meta（五条件清单 + 波动率状态，按策略口径确定性计算）
+  const regime: 'trending' | 'range' | 'chop' =
+    gann.volatilityPaused ? 'chop'
+    : gann.dailyTrend === 'up' || gann.dailyTrend === 'down' ? 'trending'
+    : 'range';
   const aPlusChecklist = {
-    regimeClear: activeEngine === 'fast' ? fast.env !== 0 : strategy.trend !== 0,
-    timeframeAligned: wantTrend
-      ? (activeEngine === 'fast'
-          ? struct15.trend === wantTrend || struct1h.trend === wantTrend
-          : struct1h.trend === wantTrend || struct4h.trend === wantTrend)
-      : regime === 'trending',
+    regimeClear: !gann.volatilityPaused && gann.dailyTrend !== 'unknown',
+    timeframeAligned: gann.checks.dailyOk,
     fundingNotExtreme: true, // 资金费率未接入，默认放行
-    volumeConfirmed: (() => {
-      // 确认K线放量（≥ 近20根均量）；无触发时按环境就绪计
-      if (activeEngine === 'trend') {
-        const confirmTime = strategy.trigger?.confirmTime;
-        const confirmIdx = confirmTime != null ? k1h.findIndex((k) => k.time === confirmTime) : -1;
-        if (confirmIdx < 0) return strategy.trend !== 0;
-        const window = k1h.slice(Math.max(0, confirmIdx - 20), confirmIdx);
-        const avg = window.reduce((s, k) => s + k.volume, 0) / Math.max(1, window.length);
-        return k1h[confirmIdx].volume >= avg;
-      }
-      if (activeEngine === 'fast' && fast.signal) {
-        const sigIdx = k15m.findIndex((k) => k.time === fast.signal!.time);
-        if (sigIdx < 0) return fast.env !== 0;
-        const window = k15m.slice(Math.max(0, sigIdx - 20), sigIdx);
-        const avg = window.reduce((s, k) => s + k.volume, 0) / Math.max(1, window.length);
-        return k15m[sigIdx].volume >= avg;
-      }
-      return regime === 'trending';
-    })(),
-    nearInvalidation:
-      activeEngine === 'fast'
-        ? !fo || fo.riskPct <= 0.03
-        : !o || o.riskPct <= DEFAULT_TP_PARAMS.maxRiskPct,
+    volumeConfirmed: gann.checks.patternOk,
+    nearInvalidation: !!o && o.riskPct <= 0.08,
   };
+
+  // 江恩八分位阶梯（兼容前端 ladder 展示：波段高低点与九档价位，4h 口径）
+  const rangePct = gann.swingHigh != null && gann.swingLow != null
+    ? ((gann.swingHigh - gann.swingLow) / gann.swingLow) * 100
+    : 0;
+  const gannLadder = gann.swingHigh != null && gann.swingLow != null && rangePct > 0
+    ? {
+        swingHigh: gann.swingHigh,
+        swingLow: gann.swingLow,
+        rangePct,
+        positionPct: gann.positionPct ?? 0,
+        zoneLabel: (() => {
+          const pos = gann.positionPct ?? 0;
+          if (pos >= 87.5) return '87.5%~100%（顶部区）';
+          if (pos >= 75) return '75%~87.5%（强势区）';
+          if (pos >= 62.5) return '62.5%~75%（中上区）';
+          if (pos >= 50) return '50%~62.5%（中位区）';
+          if (pos >= 37.5) return '37.5%~50%（中下区）';
+          if (pos >= 25) return '25%~37.5%（弱势区）';
+          if (pos >= 12.5) return '12.5%~25%（底部区）';
+          return '0%~12.5%（极底区）';
+        })(),
+        levels: gann.octaves.map((lv) => ({
+          division: lv.label,
+          index: lv.index,
+          price: lv.price,
+          distPct: ((lv.price - price) / price) * 100,
+          meaning: lv.index === 4 ? '最强' : [2, 6].includes(lv.index) ? '次强' : lv.index === 0 || lv.index === 8 ? '波段边界' : '辅助',
+        })),
+      }
+    : null;
 
   const result: AiAnalysisResult = {
     direction,
@@ -1000,20 +944,19 @@ export async function analyzeMarketWithAI(
     reasoning,
     keyLevels,
     riskWarning:
-      activeEngine === 'fast'
-        ? '快引擎单笔风险≤账户0.3% · 只能挂限价单执行（taker费率会吃掉全部优势）· 胜率46%连亏是常态，勿因连亏停用'
-        : '单笔风险≤账户1% · 挂单不成交即等下一次（不追价）· 月均1-2单为主引擎特性，勿为频率降低过滤',
+      gann.volatilityPaused
+        ? '极端波动暂停：当前ATR超过30天均值2倍，暂停开仓回避极端行情'
+        : '单笔风险≤账户权益2% · 止损设下一档八分位（距离≥1.5×ATR）· 分批止盈（TP1最近一档/TP2再下一档）· 突破追单需AI二次确认',
     provider: 'rule-engine',
-    model: activeEngine === 'fast' ? STRATEGY_ID_FAST : STRATEGY_ID,
+    model: GANN_STRATEGY_ID,
     rawResponse: '',
     meta: {
       regime,
       aPlusChecklist,
-      gann,
-      fractal,
+      gann: gannLadder,
+      fractal: null,
       structure: { m15: struct15.trend, h1: struct1h.trend, h4: struct4h.trend, d1: struct1d.trend },
-      strategy: { ...strategy, symbol },
-      fastStrategy: { ...fast, symbol },
+      gannOctave: { ...gann, symbol },
     },
   };
 

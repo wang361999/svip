@@ -42,22 +42,32 @@ interface AiAnalysis {
       h4: StructureTrend;
       d1?: StructureTrend;
     } | null;
-    /** 主引擎（趋势回调 1h）状态 */
-    strategy?: {
+    /** 江恩八分法策略（唯一引擎 — 4h 主框架）状态 */
+    gannOctave?: {
       status: 'pending' | 'filled' | 'closed' | 'waiting';
       direction: 'long' | 'short';
-      trendLabel: string;
-      order: { entry: number; stop: number; tp: number; riskPct: number; expiresAt: number } | null;
-      outcome: 'stop' | 'tp' | null;
-      waitingReason: string;
-    } | null;
-    /** 快引擎（EMA 价值区回踩 15m）状态 */
-    fastStrategy?: {
-      status: 'pending' | 'filled' | 'closed' | 'waiting';
-      direction: 'long' | 'short';
-      envLabel: string;
-      order: { entry: number; stop: number; tp: number; riskPct: number; timeStopAt: number } | null;
-      outcome: 'stop' | 'tp' | 'time' | null;
+      signalType: 'pullback' | 'breakout' | null;
+      swingHigh: number | null;
+      swingLow: number | null;
+      positionPct: number | null;
+      dailyTrend: 'up' | 'down' | 'unknown';
+      dailyMa30: number | null;
+      rsi: number | null;
+      atr: number | null;
+      atrRatio: number | null;
+      volatilityPaused: boolean;
+      ai: { hold: number; buy: number; sell: number; action: 'buy' | 'sell' | 'hold'; confidence: number } | null;
+      pattern: string | null;
+      checks: {
+        levelTouched: boolean;
+        levelIdx: number;
+        patternOk: boolean;
+        aiOk: 'buy' | 'sell' | 'none';
+        rsiOk: boolean;
+        dailyOk: boolean;
+      };
+      order: { entry: number; stop: number; tp1: number; tp2: number; riskPct: number; stopSource: 'octave' | 'atr'; levelIdx: number } | null;
+      outcome: 'tp' | 'sl' | null;
       waitingReason: string;
     } | null;
   } | null;
@@ -486,64 +496,102 @@ export default function AiAnalysisPanel() {
             );
           })()}
 
-          {/* 双引擎状态卡（主引擎 1h 趋势回调 · 快引擎 15m 价值区回踩 — 独立生命周期） */}
-          {(analysis.meta?.strategy || analysis.meta?.fastStrategy) && (() => {
-            const st = analysis.meta?.strategy ?? null;
-            const fs = analysis.meta?.fastStrategy ?? null;
-            /** 引擎状态徽章 */
-            const badge = (status: string, outcome?: string | null) => {
-              const cfg: Record<string, { label: string; cls: string }> = {
-                pending: { label: '挂单中', cls: 'text-blue-400 bg-blue-500/10 border-blue-500/30' },
-                filled: { label: '持仓中', cls: 'text-amber-400 bg-amber-500/10 border-amber-500/30' },
-                closed: { label: outcome === 'tp' ? '已止盈' : outcome === 'time' ? '时间离场' : '已止损', cls: outcome === 'tp' ? 'text-green-400 bg-green-500/10 border-green-500/30' : 'text-dark-400 bg-dark-800/60 border-dark-700/40' },
-                waiting: { label: '观望', cls: 'text-dark-400 bg-dark-800/60 border-dark-700/40' },
-              };
-              const c = cfg[status] || cfg.waiting;
-              return <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${c.cls}`}>{c.label}</span>;
+          {/* 江恩八分法策略卡（唯一引擎 — 4h 主框架，五条件开仓） */}
+          {analysis.meta?.gannOctave && (() => {
+            const g = analysis.meta.gannOctave!;
+            const OCTAVE_LABELS = ['0%', '12.5%', '25%', '37.5%', '50%', '62.5%', '75%', '87.5%', '100%'];
+            const statusCfg: Record<string, { label: string; cls: string }> = {
+              pending: { label: '信号触发', cls: 'text-blue-400 bg-blue-500/10 border-blue-500/30' },
+              filled: { label: '持仓中', cls: 'text-amber-400 bg-amber-500/10 border-amber-500/30' },
+              closed: { label: g.outcome === 'tp' ? '已止盈' : '已止损', cls: g.outcome === 'tp' ? 'text-green-400 bg-green-500/10 border-green-500/30' : 'text-dark-400 bg-dark-800/60 border-dark-700/40' },
+              waiting: { label: '观望', cls: 'text-dark-400 bg-dark-800/60 border-dark-700/40' },
             };
-            /** 单行价位摘要 */
-            const line = (o: { entry: number; stop: number; tp: number; riskPct: number } | null, dir: 'long' | 'short', engine: string) =>
-              o ? (
-                <div className="text-[11px] text-dark-400 leading-relaxed">
-                  <span className={dir === 'long' ? 'text-green-400 font-semibold' : 'text-red-400 font-semibold'}>{dir === 'long' ? '多' : '空'}</span>
-                  <span className="mx-1">挂 {formatPrice(o.entry)}</span>
-                  <span className="mx-1">损 {formatPrice(o.stop)}</span>
-                  <span className="mx-1">盈 {formatPrice(o.tp)}</span>
-                  <span className="text-dark-600">{engine === 'fast' ? `·4h限时` : `·-${(o.riskPct * 100).toFixed(1)}%`}</span>
-                </div>
-              ) : null;
+            const sc = statusCfg[g.status] || statusCfg.waiting;
+            /** 开仓五条件清单（做多/做空规则逐条可复核） */
+            const checkRows = [
+              { ok: g.checks.levelTouched, label: `触及分位 ${g.checks.levelIdx >= 0 ? OCTAVE_LABELS[g.checks.levelIdx] : '-'}`, sub: '偏差<0.5%' },
+              { ok: g.checks.patternOk, label: g.pattern ? `K线形态：${g.pattern}` : 'K线形态', sub: g.checks.patternOk ? '已确认' : '未出现' },
+              { ok: g.checks.aiOk !== 'none', label: g.checks.aiOk === 'buy' ? 'AI：买入确认' : g.checks.aiOk === 'sell' ? 'AI：卖出确认' : 'AI 确认', sub: `置信≥0.65` },
+              { ok: g.checks.rsiOk, label: `RSI(14) ${g.rsi != null ? g.rsi.toFixed(1) : '-'}`, sub: g.direction === 'long' ? '>30' : '<70' },
+              { ok: g.checks.dailyOk, label: `日线趋势 ${g.dailyTrend === 'up' ? '↑升' : g.dailyTrend === 'down' ? '↓降' : '未知'}`, sub: g.dailyMa30 != null ? `MA30 ${formatPrice(g.dailyMa30)}` : '' },
+            ];
             return (
-              <div className="grid grid-cols-2 gap-2">
-                {/* 主引擎 */}
-                <div className="rounded-lg border border-dark-700/60 bg-dark-800/40 p-2.5">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-dark-400 text-[11px] font-medium">主引擎 · 趋势回调</span>
-                    {st && badge(st.status, st.outcome)}
+              <div className="rounded-lg border border-dark-700/60 bg-dark-800/40 p-2.5 space-y-2">
+                {/* 头部：状态徽章 + 方向 */}
+                <div className="flex items-center justify-between">
+                  <span className="text-dark-400 text-[11px] font-medium">江恩八分法 · ETH 4h</span>
+                  <div className="flex items-center gap-1.5">
+                    {g.volatilityPaused && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded font-medium text-amber-400 bg-amber-500/10 border border-amber-500/30">极端波动暂停</span>
+                    )}
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${sc.cls}`}>{sc.label}</span>
                   </div>
-                  {st ? (
-                    st.order && st.status !== 'waiting' ? line(st.order, st.direction, 'trend') : (
-                      <div className="text-[11px] text-dark-500 leading-relaxed">{st.trendLabel} · {st.waitingReason || '等待信号'}</div>
-                    )
-                  ) : <div className="text-[11px] text-dark-500">无数据</div>}
                 </div>
-                {/* 快引擎 */}
-                <div className="rounded-lg border border-dark-700/60 bg-dark-800/40 p-2.5">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-dark-400 text-[11px] font-medium">快引擎 · 价值区回踩</span>
-                    {fs && badge(fs.status, fs.outcome)}
+
+                {/* 波段区间与位置 */}
+                {g.swingHigh != null && g.swingLow != null && (
+                  <div className="text-[11px] text-dark-400 leading-relaxed">
+                    波段 {formatPrice(g.swingLow)} ~ {formatPrice(g.swingHigh)}
+                    {g.positionPct != null && <span className="ml-1 text-dark-500">· 现价位置 {g.positionPct.toFixed(1)}%</span>}
                   </div>
-                  {fs ? (
-                    fs.order && fs.status !== 'waiting' ? (
-                      <>
-                        {line(fs.order, fs.direction, 'fast')}
-                        {fs.status === 'filled' && (
-                          <div className="text-[10px] text-dark-600">限时剩 {Math.max(0, Math.round((fs.order.timeStopAt - Date.now()) / 60000))} 分钟</div>
-                        )}
-                      </>
-                    ) : (
-                      <div className="text-[11px] text-dark-500 leading-relaxed">{fs.waitingReason || '等待信号'}</div>
-                    )
-                  ) : <div className="text-[11px] text-dark-500">无数据</div>}
+                )}
+
+                {/* 信号单（触发/持仓时显示） */}
+                {g.order && (g.status === 'pending' || g.status === 'filled') && (
+                  <div className="text-[11px] text-dark-400 leading-relaxed">
+                    <span className={g.direction === 'long' ? 'text-green-400 font-semibold' : 'text-red-400 font-semibold'}>
+                      {g.direction === 'long' ? '多' : '空'}{g.signalType === 'breakout' ? '·突破' : '·回踩'}
+                    </span>
+                    <span className="mx-1">进 {formatPrice(g.order.entry)}</span>
+                    <span className="mx-1">损 {formatPrice(g.order.stop)}</span>
+                    <span className="mx-1">TP1 {formatPrice(g.order.tp1)}</span>
+                    <span className="mx-1">TP2 {formatPrice(g.order.tp2)}</span>
+                    <span className="text-dark-600">·-{(g.order.riskPct * 100).toFixed(1)}%</span>
+                  </div>
+                )}
+
+                {/* AI 置信度条（随机森林 · 温度校准） */}
+                {g.ai && (
+                  <div className="space-y-1">
+                    {([
+                      { key: 'buy', label: '买入', val: g.ai.buy, cls: 'bg-green-500' },
+                      { key: 'hold', label: '观望', val: g.ai.hold, cls: 'bg-dark-500' },
+                      { key: 'sell', label: '卖出', val: g.ai.sell, cls: 'bg-red-500' },
+                    ] as const).map((r) => (
+                      <div key={r.key} className="flex items-center gap-1.5">
+                        <span className="text-dark-500 text-[10px] w-6">{r.label}</span>
+                        <div className="flex-1 h-1.5 rounded bg-dark-700/60 overflow-hidden">
+                          <div className={`h-full ${r.cls} rounded transition-all`} style={{ width: `${Math.min(100, r.val * 100)}%` }} />
+                        </div>
+                        <span className={`text-[10px] w-8 text-right ${g.ai!.action === r.key ? 'text-dark-200 font-semibold' : 'text-dark-600'}`}>
+                          {(r.val * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* 开仓五条件清单 */}
+                <div className="grid grid-cols-1 gap-0.5">
+                  {checkRows.map((r, i) => (
+                    <div key={i} className="flex items-center justify-between text-[10px]">
+                      <span className={r.ok ? 'text-dark-300' : 'text-dark-600'}>
+                        {r.ok ? '✓' : '○'} {r.label}
+                      </span>
+                      <span className="text-dark-600">{r.sub}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* 观望原因 / 指标脚注 */}
+                <div className="text-[10px] text-dark-600 leading-relaxed">
+                  {g.status === 'waiting' && (g.waitingReason || '等待信号')}
+                  {(g.atr != null || g.atrRatio != null) && (
+                    <span>
+                      {g.status === 'waiting' && ' · '}
+                      ATR {g.atr != null ? g.atr.toFixed(0) : '-'}{g.atrRatio != null ? `（${g.atrRatio.toFixed(2)}×30天均值）` : ''}
+                    </span>
+                  )}
                 </div>
               </div>
             );

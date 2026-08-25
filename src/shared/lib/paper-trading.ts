@@ -917,13 +917,18 @@ export async function runEngine(userId: string): Promise<{
           }
 
           try {
-          // ===== 置信度联动仓位：高把握重仓，低把握轻仓 =====
-          // 置信度 >= 80：用满 positionPct；60-79：只用 65%（凯利公式简化版）
-          // 快引擎再乘 0.4（单笔优势薄 +0.052R，仓位必须显著小于主引擎 — 双引擎独立风控）
-          const confScale = latestAi.confidence >= 80 ? 1 : 0.65;
-          const isFastEngine = latestAi.model === 'ema-reclaim-15m-v1';
-          const engineScale = isFastEngine ? 0.4 : 1;
-          const aiMargin = account.available * (account.positionPct / 100) * confScale * engineScale;
+          // ===== 仓位：单笔风险 ≤ 账户权益2%（江恩八分法策略规格） =====
+          // qty = 风险额 / 止损距离 → 打到止损恰好亏 2% 权益；
+          // 保证金 = 名义 / 杠杆，且不超过 available × positionPct%（账户上限双保险）；
+          // 置信度联动微调：60-79 分（刚过门槛）风险减半至 1%，≥80 分用满 2%
+          const riskPct = latestAi.confidence >= 80 ? 0.02 : 0.01;
+          const riskAmount = account.balance * riskPct;
+          const slDist2 = Math.abs(execPrice - stopLoss);
+          const qty = slDist2 > 0 ? riskAmount / slDist2 : 0;
+          const notional = qty * execPrice;
+          const lev = account.leverage > 0 ? account.leverage : 1;
+          const marginCap = account.available * (account.positionPct / 100);
+          const aiMargin = Math.max(0, Math.min(notional / lev, marginCap));
 
           await openPosition(userId, {
             symbol: sym.symbol,
@@ -933,13 +938,13 @@ export async function runEngine(userId: string): Promise<{
             stopLoss,
             takeProfit1,
             takeProfit2,
-            strategyId: isFastEngine ? 'fast-ema-reclaim' : `ai_${latestAi.provider}`,
-            signalPrice: latestAi.entryPrice || execPrice, // 保留引擎建议的限价挂单价作参考
+            strategyId: 'gann-octave-4h',
+            signalPrice: latestAi.entryPrice || execPrice, // 保留引擎建议的分位挂单价作参考
             // 记录开仓时的模型信息 + 分析ID + 引擎标识，平仓后用于准确率统计；analysisId 供防护3防重放
             aiMeta: JSON.stringify({
               provider: latestAi.provider,
               model: latestAi.model,
-              engine: isFastEngine ? 'fast' : 'trend',
+              engine: 'gann-octave',
               confidence: latestAi.confidence,
               entryType: 'market', // 正常模式：市价进场
               analysisId: latestAi.id,
