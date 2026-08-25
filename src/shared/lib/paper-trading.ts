@@ -630,6 +630,13 @@ export async function runEngine(userId: string): Promise<{
     });
     result.checked = positions.length;
 
+    // 持仓方向索引：symbol:side → 是否已持仓
+    // 开仓成功后同步写入，防止同一次引擎运行内重复开同方向仓位
+    // （原 bug：sameDir 只查循环前的快照，4 秒内连开 4 笔同方向 BTC 多单）
+    const openDirKeys = new Set(
+      positions.filter((p) => p.status === 'open').map((p) => `${p.symbol}:${p.side}`),
+    );
+
     for (const pos of positions) {
       try {
         const price = priceMap[pos.symbol];
@@ -681,11 +688,8 @@ export async function runEngine(userId: string): Promise<{
               });
               if (openCount >= 5) break;
 
-              // 检查该币种同方向是否已有持仓
-              const sameDir = positions.some(
-                (p) => p.side === sig.direction && p.symbol === sym.symbol && p.status === 'open',
-              );
-              if (sameDir) continue;
+              // 检查该币种同方向是否已有持仓（含本次运行内新开的）
+              if (openDirKeys.has(`${sym.symbol}:${sig.direction}`)) continue;
 
               try {
                 await openPosition(userId, {
@@ -698,6 +702,7 @@ export async function runEngine(userId: string): Promise<{
                   strategyId: sig.strategyId,
                   signalPrice: sig.entryPrice,
                 });
+                openDirKeys.add(`${sym.symbol}:${sig.direction}`);
                 result.opened++;
               } catch (err) {
                 result.errors.push(`${sym.symbol} 自动开仓失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -739,11 +744,8 @@ export async function runEngine(userId: string): Promise<{
           // 只在方向明确且置信度 >= 60 时开仓
           if (latestAi.direction === 'neutral' || latestAi.confidence < 60) continue;
 
-          // 检查该币种同方向是否已有持仓
-          const sameDir = positions.some(
-            (p) => p.side === latestAi.direction && p.symbol === sym.symbol && p.status === 'open',
-          );
-          if (sameDir) continue;
+          // 检查该币种同方向是否已有持仓（含本次运行内新开的）
+          if (openDirKeys.has(`${sym.symbol}:${latestAi.direction}`)) continue;
 
           const price = priceMap[sym.symbol];
           if (!price || price <= 0) continue;
@@ -787,6 +789,7 @@ export async function runEngine(userId: string): Promise<{
               strategyId: `ai_${latestAi.provider}`,
               signalPrice: latestAi.entryPrice || price,
             });
+            openDirKeys.add(`${sym.symbol}:${latestAi.direction}`);
             result.opened++;
           } catch (err) {
             result.errors.push(`${sym.symbol} AI 自动开仓失败: ${err instanceof Error ? err.message : String(err)}`);
