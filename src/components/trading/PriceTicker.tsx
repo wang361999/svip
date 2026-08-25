@@ -7,10 +7,12 @@ import { createMarketWS, fetch24hStats } from '@/shared/lib/market-data';
 
 export default function PriceTicker() {
   const { currentPrice, priceDirection, changePercent24h, setPrice, updatePrice } = usePriceStore();
-  const { symbol, okxId, label } = useSymbolStore();
+  const { symbol, okxId, label, pricePrecision } = useSymbolStore();
   const priceRef = useRef<HTMLSpanElement>(null);
   const [source, setSource] = useState<string>('none');
   const [lastUpdate, setLastUpdate] = useState<number>(Date.now());
+  /** 价格按币种精度显示（DOGE 5位/SHIB 8位 — 写死2位会显示成 0.00） */
+  const digits = Math.max(0, Math.min(8, pricePrecision));
 
   useEffect(() => {
     // 初始化拉取24h统计
@@ -101,7 +103,7 @@ export default function PriceTicker() {
         </div>
         <span ref={priceRef} className="text-2xl sm:text-3xl font-bold font-mono text-white truncate">
           ${currentPrice > 0
-            ? currentPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+            ? currentPrice.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })
             : '--'}
         </span>
       </div>

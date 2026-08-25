@@ -157,6 +157,23 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const setSymbol = useSymbolStore((s) => s.setSymbol);
   const symbolList = useSymbolStore((s) => s.symbols);
   const fetchSymbols = useSymbolStore((s) => s.fetchSymbols);
+  /** 当前币种价格精度（K线价格轴/十字线按此格式化 — 低价币不再显示成 0.00） */
+  const pricePrecision = useSymbolStore((s) => s.pricePrecision);
+
+  // 切换币种时更新价格轴精度（K线主图 + MACD 快慢线，值随币价量级变化）
+  useEffect(() => {
+    const precision = Math.max(0, Math.min(8, pricePrecision));
+    const minMove = Math.pow(10, -precision);
+    candleSeries.current?.applyOptions({
+      priceFormat: { type: 'price', precision, minMove },
+    });
+    macdDif.current?.applyOptions({
+      priceFormat: { type: 'price', precision, minMove },
+    });
+    macdDea.current?.applyOptions({
+      priceFormat: { type: 'price', precision, minMove },
+    });
+  }, [pricePrecision]);
 
   // AB9线颜色配置（从后台加载）
   const [ab9Colors, setAb9Colors] = useState<Record<number, string>>({

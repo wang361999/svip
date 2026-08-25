@@ -13,6 +13,10 @@ export interface SymbolState {
   symbol: string;
   okxId: string;
   label: string;
+  /** 当前币种价格精度（价格显示/K线轴共用，来自 TradingSymbol 表） */
+  pricePrecision: number;
+  /** 当前币种数量精度（下单数量步进用） */
+  qtyPrecision: number;
   symbols: SymbolOption[];
   loading: boolean;
   error: string | null;
@@ -29,6 +33,8 @@ const useSymbolStore = create<SymbolState>((set, get) => ({
   symbol: 'ETHUSDT',
   okxId: 'ETH-USDT',
   label: 'ETH/USDT',
+  pricePrecision: 2,
+  qtyPrecision: 4,
   symbols: [
     { label: 'BTC/USDT', value: 'BTCUSDT', okxId: 'BTC-USDT' },
     { label: 'ETH/USDT', value: 'ETHUSDT', okxId: 'ETH-USDT' },
@@ -42,7 +48,13 @@ const useSymbolStore = create<SymbolState>((set, get) => ({
   setSymbol: (symbol) => {
     const found = findSymbol(symbol, get().symbols);
     if (found) {
-      set({ symbol: found.value, okxId: found.okxId, label: found.label });
+      set({
+        symbol: found.value,
+        okxId: found.okxId,
+        label: found.label,
+        pricePrecision: found.pricePrecision ?? 2,
+        qtyPrecision: found.qtyPrecision ?? 4,
+      });
     }
   },
 
@@ -52,9 +64,21 @@ const useSymbolStore = create<SymbolState>((set, get) => ({
     const current = get().symbol;
     const found = findSymbol(current, symbols);
     if (found) {
-      set({ symbol: found.value, okxId: found.okxId, label: found.label });
+      set({
+        symbol: found.value,
+        okxId: found.okxId,
+        label: found.label,
+        pricePrecision: found.pricePrecision ?? 2,
+        qtyPrecision: found.qtyPrecision ?? 4,
+      });
     } else if (symbols.length > 0) {
-      set({ symbol: symbols[0].value, okxId: symbols[0].okxId, label: symbols[0].label });
+      set({
+        symbol: symbols[0].value,
+        okxId: symbols[0].okxId,
+        label: symbols[0].label,
+        pricePrecision: symbols[0].pricePrecision ?? 2,
+        qtyPrecision: symbols[0].qtyPrecision ?? 4,
+      });
     }
   },
 
@@ -79,7 +103,13 @@ const useSymbolStore = create<SymbolState>((set, get) => ({
           const current = get().symbol;
           const found = findSymbol(current, mapped);
           if (found) {
-            set({ symbol: found.value, okxId: found.okxId, label: found.label });
+            set({
+              symbol: found.value,
+              okxId: found.okxId,
+              label: found.label,
+              pricePrecision: found.pricePrecision ?? 2,
+              qtyPrecision: found.qtyPrecision ?? 4,
+            });
           }
         } else {
           set({ loading: false });

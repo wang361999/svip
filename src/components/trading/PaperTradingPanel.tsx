@@ -139,6 +139,15 @@ function fp(n?: number | null, digits = 2): string {
   return n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
+/** 价格格式化 hook：按当前币种精度显示（低价币 0.12345 不再截成 0.12/0.00） */
+function useFpPrice() {
+  const precision = useSymbolStore((s) => s.pricePrecision);
+  return useCallback(
+    (n?: number | null) => fp(n, Math.max(0, Math.min(8, precision))),
+    [precision],
+  );
+}
+
 function fmtUsd(n: number): string {
   const sign = n >= 0 ? '' : '-';
   return `${sign}$${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -170,6 +179,7 @@ const CLOSE_REASON_MAP: Record<string, string> = {
 export default function PaperTradingPanel() {
   const currentPrice = usePriceStore((s) => s.currentPrice);
   const { symbol, okxId } = useSymbolStore();
+  const fpPrice = useFpPrice();
 
   const [account, setAccount] = useState<PaperAccount | null>(null);
   const [positions, setPositions] = useState<PaperPosition[]>([]);
@@ -504,7 +514,7 @@ export default function PaperTradingPanel() {
           <span className="text-dark-400">亏 <span className="text-red-400">{stats.lossTrades}</span></span>
           <span className="text-dark-400">盈亏比 <span className="text-amber-400 font-bold">{stats.profitFactor.toFixed(2)}</span></span>
           <span className="text-dark-400">总手续费 <span className="text-dark-300">{fmtUsd(stats.totalFees)}</span></span>
-          <span className="text-dark-400 ml-auto">当前价 <span className="text-white font-mono">{fp(currentPrice)}</span></span>
+          <span className="text-dark-400 ml-auto">当前价 <span className="text-white font-mono">{fpPrice(currentPrice)}</span></span>
         </div>
       )}
 
@@ -621,13 +631,14 @@ function PositionsTab({
   onOpen: () => void;
   configForm: any;
 }) {
+  const fpPrice = useFpPrice();
   return (
     <div className="space-y-3">
       {/* 快速开仓 */}
       <div className="rounded-xl border border-dark-600/40 bg-dark-800/30 p-3 space-y-2">
         <div className="flex items-center gap-2 mb-1">
           <span className="text-[10px] text-dark-400 font-medium">手动开仓</span>
-          <span className="text-[9px] text-dark-600">当前价 {fp(currentPrice)}</span>
+          <span className="text-[9px] text-dark-600">当前价 {fpPrice(currentPrice)}</span>
         </div>
         <div className="grid grid-cols-2 gap-2">
           {/* 方向 */}
@@ -726,6 +737,7 @@ function PositionCard({
   onClose: (id: string, ratio?: number, exitPrice?: number) => void;
   actionLoading: boolean;
 }) {
+  const fpPrice = useFpPrice();
   const isLong = position.side === 'long';
   const markPrice = position.currentPrice > 0 ? position.currentPrice : position.entryPrice;
   const livePnl = markPrice > 0
@@ -760,23 +772,23 @@ function PositionCard({
       <div className="grid grid-cols-5 gap-px bg-dark-700/20">
         <div className="bg-dark-800/60 p-2 text-center">
           <span className="text-[8px] text-dark-500 block">入场价</span>
-          <span className="text-[11px] text-white font-mono font-bold">{fp(position.entryPrice)}</span>
+          <span className="text-[11px] text-white font-mono font-bold">{fpPrice(position.entryPrice)}</span>
         </div>
         <div className="bg-dark-800/60 p-2 text-center">
           <span className="text-[8px] text-dark-500 block">标记价</span>
-          <span className="text-[11px] text-blue-400 font-mono font-bold">{fp(markPrice)}</span>
+          <span className="text-[11px] text-blue-400 font-mono font-bold">{fpPrice(markPrice)}</span>
         </div>
         <div className="bg-dark-800/60 p-2 text-center">
           <span className="text-[8px] text-dark-500 block">止损</span>
-          <span className="text-[11px] text-red-400 font-mono">{fp(position.stopLoss)}</span>
+          <span className="text-[11px] text-red-400 font-mono">{fpPrice(position.stopLoss)}</span>
         </div>
         <div className="bg-dark-800/60 p-2 text-center">
           <span className="text-[8px] text-dark-500 block">止盈1</span>
-          <span className="text-[11px] text-green-400 font-mono">{fp(position.takeProfit1)}</span>
+          <span className="text-[11px] text-green-400 font-mono">{fpPrice(position.takeProfit1)}</span>
         </div>
         <div className="bg-dark-800/60 p-2 text-center">
           <span className="text-[8px] text-dark-500 block">止盈2</span>
-          <span className="text-[11px] text-emerald-400 font-mono">{fp(position.takeProfit2)}</span>
+          <span className="text-[11px] text-emerald-400 font-mono">{fpPrice(position.takeProfit2)}</span>
         </div>
       </div>
 
@@ -803,7 +815,7 @@ function PositionCard({
         </div>
         <div className="bg-dark-800/60 p-2 text-center">
           <span className="text-[8px] text-dark-500 block">预估强平</span>
-          <span className="text-[11px] text-amber-400/80 font-mono">{fp(liqPrice)}</span>
+          <span className="text-[11px] text-amber-400/80 font-mono">{fpPrice(liqPrice)}</span>
         </div>
       </div>
 
@@ -838,6 +850,7 @@ function PositionCard({
 // ==================== 交易记录 Tab ====================
 
 function HistoryTab({ trades }: { trades: PaperTrade[] }) {
+  const fpPrice = useFpPrice();
   if (trades.length === 0) {
     return (
       <div className="text-center text-dark-500 text-xs py-6">
@@ -890,11 +903,11 @@ function HistoryTab({ trades }: { trades: PaperTrade[] }) {
             <div className="grid grid-cols-4 gap-2 text-[10px]">
               <div>
                 <span className="text-dark-500">入场 </span>
-                <span className="text-white font-mono">{fp(trade.entryPrice)}</span>
+                <span className="text-white font-mono">{fpPrice(trade.entryPrice)}</span>
               </div>
               <div>
                 <span className="text-dark-500">出场 </span>
-                <span className="text-white font-mono">{fp(trade.exitPrice)}</span>
+                <span className="text-white font-mono">{fpPrice(trade.exitPrice)}</span>
               </div>
               <div>
                 <span className="text-dark-500">数量 </span>

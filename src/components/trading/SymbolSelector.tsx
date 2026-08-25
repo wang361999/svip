@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { SymbolOption } from '@/store/symbolStore';
+import useSymbolStore, { SymbolOption } from '@/store/symbolStore';
 import usePriceStore from '@/store/priceStore';
 
 // ============ 币种图标颜色映射 ============
@@ -155,6 +155,8 @@ export default function SymbolSelector({
   const currentPrice = usePriceStore((s) => s.currentPrice);
   const changePercent24h = usePriceStore((s) => s.changePercent24h);
   const priceDirection = usePriceStore((s) => s.priceDirection);
+  /** 当前币种价格精度（下拉当前价按此显示） */
+  const priceDigits = Math.max(0, Math.min(8, useSymbolStore((s) => s.pricePrecision)));
 
   // 热门币种（按市值/交易量排序的常用币种）
   const HOT_SYMBOLS = useMemo(() => new Set([
@@ -254,8 +256,8 @@ export default function SymbolSelector({
             <div className="flex items-center gap-1 mt-0.5">
               <span className="text-[10px] text-dark-300 font-mono">
                 {currentPrice.toLocaleString('en-US', {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: currentPrice > 1000 ? 2 : 4,
+                  minimumFractionDigits: priceDigits,
+                  maximumFractionDigits: priceDigits,
                 })}
               </span>
               <span

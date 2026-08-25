@@ -118,7 +118,7 @@ const structureConfig: Record<StructureTrend, { label: string; sub: string; icon
 };
 
 export default function AiAnalysisPanel() {
-  const { symbol, okxId, label } = useSymbolStore();
+  const { symbol, okxId, label, pricePrecision } = useSymbolStore();
   const { currentPrice } = usePriceStore();
   const [analysis, setAnalysis] = useState<AiAnalysis | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
@@ -231,7 +231,9 @@ export default function AiAnalysisPanel() {
 
   const formatPrice = (p: number | null) => {
     if (p == null) return '-';
-    return p.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    // 按币种精度显示（低价币 0.12345 不能截成 0.12）
+    const digits = Math.max(0, Math.min(8, pricePrecision));
+    return p.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
   };
 
   /** 价位距现价百分比（带色） */

@@ -9,6 +9,7 @@ import { createHandler } from '@/shared/api/handler';
 import { apiSuccess } from '@/shared/api/response';
 import { apiError } from '@/shared/api/response';
 import { prisma } from '@/shared/lib/prisma';
+import { fetchPrice } from '@/shared/lib/market-data';
 import { z } from 'zod';
 import { withZod } from '@/shared/api/validate';
 
@@ -47,7 +48,16 @@ const createSymbolSchema = z.object({
   sortOrder: z.number().int().default(0),
 });
 
-function buildSymbolMeta(symbol: string, index: number) {
+/** 按价格量级推断显示精度（无 exchangeInfo 时的兜底 — 低价币不至于全显示成 0.00） */
+function inferPricePrecision(price: number): number {
+  if (!Number.isFinite(price) || price <= 0) return 2;
+  if (price >= 100) return 2;
+  if (price >= 1) return 4;
+  if (price >= 0.01) return 6;
+  return 8;
+}
+
+function buildSymbolMeta(symbol: string, index: number, price?: number) {
   const baseAsset = symbol.replace('USDT', '');
   return {
     symbol,
@@ -55,7 +65,7 @@ function buildSymbolMeta(symbol: string, index: number) {
     label: `${baseAsset}/USDT`,
     baseAsset,
     quoteAsset: 'USDT',
-    pricePrecision: 2,
+    pricePrecision: inferPricePrecision(price ?? 0),
     qtyPrecision: 4,
     minQty: 0,
     minNotional: 5,
@@ -88,8 +98,11 @@ async function syncExistingTradeSymbols() {
     const symbol = symbols[index];
     const existing = await prisma.tradingSymbol.findUnique({ where: { symbol } });
     if (existing) continue;
+    // 拉现价推断显示精度（低价币不会全建成精度2 — 建好后前端展示不截断）
+    const baseAsset = symbol.replace('USDT', '');
+    const price = (await fetchPrice(symbol, `${baseAsset}-USDT`).catch(() => null)) ?? 0;
     await prisma.tradingSymbol.create({
-      data: buildSymbolMeta(symbol, 1000 + index),
+      data: buildSymbolMeta(symbol, 1000 + index, price),
     });
     created++;
   }
