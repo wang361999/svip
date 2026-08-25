@@ -17,6 +17,11 @@ interface AiAnalysis {
   takeProfit2: number | null;
   reasoning: string;
   keyLevels: { price: number; type: string; note: string }[] | null;
+  meta?: {
+    regime: string;
+    aPlusChecklist?: Record<string, boolean>;
+    atr15m?: number | null;
+  } | null;
   riskWarning: string | null;
   provider: string;
   model: string;
@@ -308,6 +313,52 @@ export default function AiAnalysisPanel() {
           <div>
             <p className="text-dark-300 text-sm leading-relaxed">{analysis.summary}</p>
           </div>
+
+          {/* 市场状态 + A+ 清单（大神思维核心） */}
+          {analysis.meta && analysis.meta.regime && (
+            <div className="flex flex-wrap items-center gap-2">
+              {(() => {
+                const rc: Record<string, { label: string; cls: string }> = {
+                  trending: { label: '⚡ 趋势日', cls: 'text-blue-400 bg-blue-500/10 border-blue-500/30' },
+                  range: { label: '⇄ 区间日', cls: 'text-purple-400 bg-purple-500/10 border-purple-500/30' },
+                  chop: { label: '✕ 碎波日（禁开仓）', cls: 'text-dark-300 bg-dark-700/40 border-dark-600/40' },
+                  event: { label: '⚡ 事件日', cls: 'text-amber-400 bg-amber-500/10 border-amber-500/30' },
+                };
+                const cfg = rc[analysis.meta.regime] || rc.chop;
+                return <span className={`text-xs px-2 py-1 rounded border ${cfg.cls}`}>{cfg.label}</span>;
+              })()}
+              {analysis.meta.aPlusChecklist && (
+                <>
+                  {[
+                    ['regimeClear', '状态明确'],
+                    ['timeframeAligned', '多周期共振'],
+                    ['fundingNotExtreme', '费率不极端'],
+                    ['volumeConfirmed', '量能配合'],
+                    ['nearInvalidation', '贴近无效点'],
+                  ].map(([key, name]) => {
+                    const ok = Boolean((analysis.meta!.aPlusChecklist as Record<string, boolean>)[key]);
+                    return (
+                      <span
+                        key={key}
+                        className={`text-[11px] px-1.5 py-0.5 rounded border ${
+                          ok
+                            ? 'text-green-400 bg-green-500/10 border-green-500/25'
+                            : 'text-dark-500 bg-dark-800/40 border-dark-700/30 line-through'
+                        }`}
+                      >
+                        {ok ? '✓' : '✕'} {name}
+                      </span>
+                    );
+                  })}
+                </>
+              )}
+              {analysis.meta.atr15m != null && analysis.meta.atr15m > 0 && (
+                <span className="text-[11px] text-dark-500 px-1.5 py-0.5">
+                  15m ATR: {analysis.meta.atr15m.toFixed(2)}
+                </span>
+              )}
+            </div>
+          )}
 
           {/* 关键价位 */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

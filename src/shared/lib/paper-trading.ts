@@ -692,12 +692,63 @@ export async function runEngine(userId: string): Promise<{
           result.closed++;
         } else if (shouldTakeProfit1) {
           await closePosition(pos.id, price, 'take_profit_1', 0.5);
+
+          // ===== 职业标配：TP1 成交后止损移到入场价（保本单）=====
+          // 剩余半仓已锁定利润，此后最差结果是保本离场，直接消灭「浮盈变亏损」的交易
+          // （long: 入场价必然低于 TP1 及现价；short: 入场价必然高于 TP1 及现价，方向恒成立）
+          try {
+            await prisma.paperPosition.update({
+              where: { id: pos.id },
+              data: { stopLoss: pos.entryPrice },
+            });
+            await prisma.paperTradeLog.create({
+              data: {
+                accountId: account.id,
+                userId,
+                action: 'breakeven',
+                symbol: pos.symbol,
+                detail: JSON.stringify({
+                  positionId: pos.id,
+                  stopLoss: pos.stopLoss,
+                  newStopLoss: pos.entryPrice,
+                  note: 'TP1成交后止损移至入场价（保本单）',
+                }),
+                price,
+              },
+            });
+          } catch {
+            // 保本单更新失败不影响已完成的 TP1 平仓
+          }
           result.closed++;
         }
       } catch (err) {
         result.errors.push(`持仓 ${pos.symbol} 处理失败: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+
+    // 3.5 读取当前币种最新 AI 分析的市场状态（regime + ATR + A+清单），统一闸门用
+    //     - chop（碎波）状态下禁止一切自动开仓：碎波日反复扫损是短线最大的亏损来源
+    //     - atr15m 用于止损无效点校验
+    const aiMeta: { regime: string; atr15m: number | null; checklist: Record<string, boolean> | null } = {
+      regime: '', atr15m: null, checklist: null,
+    };
+    try {
+      const latest = autoTargets.length > 0
+        ? await prisma.aiAnalysis.findFirst({
+            where: { symbol: autoTargets[0].symbol },
+            orderBy: { createdAt: 'desc' },
+          })
+        : null;
+      if (latest?.meta && Date.now() - latest.createdAt.getTime() <= 15 * 60 * 1000) {
+        const m = JSON.parse(latest.meta);
+        aiMeta.regime = typeof m.regime === 'string' ? m.regime : '';
+        aiMeta.atr15m = typeof m.atr15m === 'number' && Number.isFinite(m.atr15m) ? m.atr15m : null;
+        aiMeta.checklist = m.aPlusChecklist && typeof m.aPlusChecklist === 'object' ? m.aPlusChecklist : null;
+      }
+    } catch {
+      // meta 解析失败按无状态处理（不阻塞开仓）
+    }
+    const regimeIsChop = aiMeta.regime === 'chop';
 
     // 4. 自动开仓（如果开启）- 只对当前选中币种计算信号
     // （修复：原来遍历所有 autoTrade 币种，会开出用户没在看的币种的仓位）
@@ -710,7 +761,11 @@ export async function runEngine(userId: string): Promise<{
     }
     // 策略信号方向共识（触发信号中多空票数），供 4b 段 AI 信号冲突判断
     let strategyConsensus: 'long' | 'short' | null = null;
-    if (account.autoTrade) {
+    // 碎波市拦截：AI 判定 chop 时暂停策略自动开仓（反复扫损是短线最大亏损来源）
+    if (account.autoTrade && regimeIsChop) {
+      result.errors.push('AI 判定市场状态为碎波(chop)，本轮暂停策略自动开仓（短线风控）');
+    }
+    if (account.autoTrade && !regimeIsChop) {
       for (const sym of autoTargets) {
         const price = priceMap[sym.symbol];
         if (!price || price <= 0) continue;
@@ -807,6 +862,23 @@ export async function runEngine(userId: string): Promise<{
           // 策略无共识（未触发/平票/未启用策略）时 AI 独立判断
           if (strategyConsensus && strategyConsensus !== latestAi.direction) continue;
 
+          // ===== 市场状态闸门：不同行情用不同开仓门槛 =====
+          // chop 碎波：禁止开仓（AI 侧同样拦截，与策略侧双保险）
+          if (aiMeta.regime === 'chop') continue;
+          // range 区间：只有区间边缘的高把握交易才值得做 → 置信度 ≥ 70
+          // event 事件：等事件消化，方向明确才进场 → 置信度 ≥ 75
+          const confGate = aiMeta.regime === 'range' ? 70 : aiMeta.regime === 'event' ? 75 : 60;
+          if (latestAi.confidence < confGate) continue;
+
+          // ===== A+ 清单闸门：五项核心检查至少 4 项通过，且市场状态必须明确 =====
+          // （清单缺失时放行 — 兼容旧记录/模型未按格式返回，避免开仓死锁）
+          if (aiMeta.checklist) {
+            const cl = aiMeta.checklist;
+            const passed = [cl.regimeClear, cl.timeframeAligned, cl.fundingNotExtreme, cl.volumeConfirmed, cl.nearInvalidation]
+              .filter(Boolean).length;
+            if (passed < 4 || !cl.regimeClear) continue;
+          }
+
           // 检查该币种同方向是否已有持仓（含本次运行内新开的）
           if (openDirKeys.has(`${sym.symbol}:${latestAi.direction}`)) continue;
 
@@ -820,12 +892,20 @@ export async function runEngine(userId: string): Promise<{
             const distPct = Math.abs(price - stopLoss) / price;
             if (distPct < MIN_SL_PCT || distPct > MAX_SL_PCT) stopLoss = null; // 距离不合理 → 丢弃 AI 的止损
           }
-          // AI 没给有效止损时，按账户默认风险参数生成（不裸奔开仓）
+          // ===== 无效点校验（大神思维的核心）：入场离无效点太远 = 盈亏比差 = 放弃 =====
+          // 止损距离超过 1.5 倍 15m ATR，说明这笔交易要扛过多根 K 线的噪音才能证明自己错了
+          if (stopLoss != null && aiMeta.atr15m && aiMeta.atr15m > 0) {
+            if (Math.abs(price - stopLoss) > aiMeta.atr15m * 1.5) continue;
+          }
+          // AI 没给有效止损时，按 ATR 生成贴近无效点的止损（0.75×ATR），无 ATR 再退回账户默认
           if (stopLoss == null) {
-            const slPct = account.stopLossPct > 0 ? account.stopLossPct / 100 : 0.02;
+            const atrDist = aiMeta.atr15m && aiMeta.atr15m > 0
+              ? Math.max(aiMeta.atr15m * 0.75, price * MIN_SL_PCT)
+              : null;
+            const slDist = atrDist ?? price * (account.stopLossPct > 0 ? account.stopLossPct / 100 : 0.02);
             stopLoss = latestAi.direction === 'long'
-              ? price * (1 - slPct)
-              : price * (1 + slPct);
+              ? price - slDist
+              : price + slDist;
           }
 
           // 止盈同样校验方向；无效则按 1.5R / 3R（基于止损距离）生成

@@ -12,7 +12,7 @@
  */
 
 import { fetchKlines, fetchPrice, type KlineData } from './market-data';
-import { fetchMarketContext, buildMarketContextText } from './market-context';
+import { fetchMarketContext, buildMarketContextText, fetchBtcSnapshot, buildBtcContextText } from './market-context';
 import {
   calcMACD,
   calcRSI,
@@ -143,6 +143,21 @@ export interface AiAnalysisResult {
   provider: string;
   model: string;
   rawResponse: string;
+  /** 结构化元数据：市场状态 / A+清单 / 15m ATR（供引擎闸门与前端展示） */
+  meta: {
+    /** AI 判定的市场状态：trending 趋势 / range 区间 / chop 碎波 / event 事件驱动 */
+    regime: 'trending' | 'range' | 'chop' | 'event';
+    /** A+ 清单：五项全 true 才是最高质量的交易机会 */
+    aPlusChecklist: {
+      regimeClear: boolean;      // 市场状态明确，有可执行的剧本
+      timeframeAligned: boolean; // 多周期方向共振
+      fundingNotExtreme: boolean;// 资金费率不极端（无拥挤反转风险）
+      volumeConfirmed: boolean;  // 有量能配合
+      nearInvalidation: boolean; // 入场贴近无效点（止损近、盈亏比好）
+    };
+    /** 15m ATR（引擎校验止损距离用） */
+    atr15m: number | null;
+  };
 }
 
 // ==================== 配置读取 ====================
@@ -321,32 +336,109 @@ function buildIndicatorText(ind: IndicatorSnapshot, currentPrice: number): strin
 }
 
 /** 构建系统 prompt */
-const SYSTEM_PROMPT = `你是一位专业的加密货币短线合约交易分析师，精通技术分析、市场结构和风险管理，交易风格为短线波段（持仓数十分钟到数小时）。
+const SYSTEM_PROMPT = `你是一位顶级加密货币短线合约交易员，交易风格为短线波段（持仓数十分钟到数小时）。你的盈利哲学：方向预测只是入场券，真正的钱来自「什么时候不做、错了亏多少、对了赚多少」。
 
-你的任务是分析提供的实时行情数据和技术指标，给出结构化的交易建议。
+分析必须按以下顺序进行：
 
-分析原则：
-1. 短线思维：以 5 分钟周期捕捉入场时机，15 分钟周期为主判定，1 小时周期只做大方向过滤；三周期同向时信号最可靠
-2. 止损基于最近的结构位（摆动点/前高低），距离控制在现价的 0.5%-2%；若找不到近端有效止损位，说明行情不适合短线，应给出 neutral
-3. 止盈目标贴近短线节奏：第一目标 1.5R-2R，第二目标 3R；不要给出需要持仓数天的远端目标
-4. 震荡市（ADX 低位、均线纠缠、区间内反复）宁可观望也要给 neutral；短线最怕在无趋势行情中反复扫损
-5. 严格遵守风险控制，单笔风险不超过 2%
-6. 置信度反映你对分析结果的把握程度，0-100
-7. 衍生品数据是短线的关键领先指标：资金费率极端正=多头拥挤（追多谨慎，反抽风险）；突破伴随持仓量增加=可信，缩量突破=疑似陷阱；若近期要闻存在重大利空/利多（黑客、监管、大额清算），其权重高于技术形态，必要时直接给 neutral 或在 riskWarning 中明确提示
+第一步：判定市场状态（regime）— 最重要的判断，先于方向
+- trending 趋势日：ADX >= 20 且均线排列清晰。剧本：只做趋势方向的突破与回踩，绝不逆势抄底摸顶
+- range 区间日：高低点在明确区间内反复，ADX 15-25。剧本：只在区间边缘做反转（近支撑做多/近阻力做空），区间中部不开仓
+- chop 碎波日：均线纠缠、假突破频繁、ADX < 15 或方向反复。剧本：强制观望，必须给 neutral — 短线最大的亏损来源就是在碎波日反复扫损
+- event 事件日：近3小时有重大新闻（黑客/监管/大额清算/宏观数据）且行情剧烈。剧本：等事件影响消化后再进场，方向不明时给 neutral 并在 riskWarning 说明
+
+第二步：BTC 联动校验（分析山寨币时必做）
+- BTC 高波动时段（1小时涨跌绝对值 >= 2%），山寨币自身技术信号可靠性大幅下降，置信度应显著下调或直接 neutral
+- 与 BTC 趋势同向的山寨信号更可靠；BTC 急跌时的山寨做多信号多为假信号
+
+第三步：无效点思维定止损
+- 先回答「价格到哪里，我的逻辑就死了？」止损必须放在该无效点（摆动点/前高低/区间边缘）之外侧
+- 止损距离应贴近 15m ATR 的 0.5-1.5 倍（数据会提供 ATR 值）；离无效点太远 = 盈亏比差 = 放弃
+- 若找不到近端有效止损位，说明行情不适合短线，给 neutral
+
+第四步：时段与结算意识
+- 亚盘流动性差假突破多、美盘波动最剧烈；资金费率结算（UTC 0/8/16 点）前 30 分钟常有异动，追高追低需谨慎
+- 数据会提供当前时段与距下次结算的分钟数
+
+风控铁律：
+1. 单笔风险不超过 2%；止盈第一目标 1.5R-2R，第二目标 3R
+2. 震荡/碎波市宁可观望也要给 neutral；不交易也是一种交易
+3. 置信度 0-100 反映真实把握：五项 A+ 清单全中才能给 80+；缺任何一项都应下调
+4. 衍生品数据是关键领先指标：资金费率极端正=多头拥挤（追多谨慎）；突破伴随持仓量增加=可信，缩量突破=疑似陷阱；重大新闻权重高于技术形态
 
 你必须以严格的 JSON 格式返回，不要包含任何其他文字。JSON 格式如下：
 {
+  "regime": "trending" | "range" | "chop" | "event",
   "direction": "long" | "short" | "neutral",
   "confidence": 数字(0-100),
-  "summary": "一句话总结分析结论",
+  "summary": "一句话总结：市场状态 + 核心逻辑 + 方向",
   "entryPrice": 数字或null,
   "stopLoss": 数字或null,
   "takeProfit1": 数字或null,
   "takeProfit2": 数字或null,
-  "reasoning": "详细分析逻辑，包括趋势判断、指标信号、多周期共振等",
+  "reasoning": "详细分析：regime判定依据 → 多周期结构 → BTC联动 → 衍生品/量能 → 无效点与盈亏比",
   "keyLevels": [{"price": 数字, "type": "支撑/阻力/前高/前低", "note": "说明"}],
-  "riskWarning": "当前市场风险提示"
-}`;
+  "riskWarning": "当前市场风险提示",
+  "checklist": {
+    "regimeClear": 布尔,
+    "timeframeAligned": 布尔,
+    "fundingNotExtreme": 布尔,
+    "volumeConfirmed": 布尔,
+    "nearInvalidation": 布尔
+  }
+}
+
+checklist 各项含义（诚实自评，五项全 true 才配得上 80+ 置信度）：
+- regimeClear: 市场状态明确且符合可执行剧本（chop 时此项必须 false）
+- timeframeAligned: 5m/15m/1h 至少两个周期方向一致
+- fundingNotExtreme: 资金费率不在极端区间（|费率| < 0.05%）
+- volumeConfirmed: 近期量能支持该方向（放量突破/缩量回调等）
+- nearInvalidation: 入场价距止损无效点 <= 1.5 倍 15m ATR（盈亏比好）`;
+
+// ==================== 市场状态客观判定（供 AI 参考 + 引擎闸门） ====================
+
+/**
+ * 从 15m K 线客观计算市场状态参考（ADX + 布林带宽 + 波动率）
+ * 注意：这是给 AI 的参考基准，最终 regime 由 AI 综合判断后输出
+ */
+export function computeRegimeHint(k15m: KlineData[]): { regime: string; adx: number | null; bbWidthPct: number | null } {
+  if (k15m.length < 50) return { regime: 'unknown', adx: null, bbWidthPct: null };
+
+  const adx = calcADX(k15m, 14);
+  const boll = calcBollinger(k15m, 20);
+  const bbWidthPct = boll ? ((boll.upper - boll.lower) / boll.middle) * 100 : null;
+
+  let regime = 'unknown';
+  if (adx != null) {
+    if (adx >= 25) regime = 'trending（趋势明显）';
+    else if (adx >= 15) regime = bbWidthPct != null && bbWidthPct < 1.5 ? 'chop（窄幅碎波）' : 'range（区间震荡）';
+    else regime = 'chop（无趋势碎波）';
+  }
+  return { regime, adx, bbWidthPct };
+}
+
+/** 时段与资金费率结算感知 */
+function buildTimeContext(): string {
+  const now = new Date();
+  const utcH = now.getUTCHours();
+  const utcM = now.getUTCMinutes();
+
+  // 交易时段（UTC）：亚盘 00-08 / 欧盘 07-16 / 美盘 13-22（有重叠，标注主时段）
+  const sessions: string[] = [];
+  if (utcH >= 0 && utcH < 8) sessions.push('亚盘（流动性差，假突破多）');
+  if (utcH >= 7 && utcH < 16) sessions.push('欧盘（流动性回升）');
+  if (utcH >= 13 && utcH < 22) sessions.push('美盘（波动最剧烈）');
+  if (sessions.length === 0) sessions.push('深夜盘（流动性最差）');
+
+  // 距下次资金费率结算（UTC 0/8/16）
+  const nextSettle = [0, 8, 16].map((h) => (h * 60 - (utcH * 60 + utcM) + 1440) % 1440);
+  const minsToSettle = Math.min(...nextSettle);
+  const settleWarn = minsToSettle <= 30 ? '（⚠️ 临近结算，费率异动风险）' : '';
+
+  return `=== 时段与结算 ===
+当前 UTC 时间: ${String(utcH).padStart(2, '0')}:${String(utcM).padStart(2, '0')}
+交易时段: ${sessions.join(' + ')}
+距下次资金费率结算: ${minsToSettle} 分钟${settleWarn}`;
+}
 
 /** 构建用户 prompt（包含行情数据） */
 function buildUserPrompt(
@@ -357,17 +449,26 @@ function buildUserPrompt(
   k15m: KlineData[],
   k1h: KlineData[],
   marketContextText: string,
+  btcContextText: string,
+  atr15m: number | null,
 ): string {
   const ind5m = computeIndicatorSnapshot(k5m);
   const ind15m = computeIndicatorSnapshot(k15m);
   const ind1h = computeIndicatorSnapshot(k1h);
+  const regimeHint = computeRegimeHint(k15m);
 
   return `请分析以下 ${label} (${symbol}) 的实时行情数据：
 
 当前价格: ${currentPrice}
 
-${marketContextText}
+=== 市场状态参考（客观指标计算，供你 regime 判定参考） ===
+15m ADX: ${regimeHint.adx != null ? regimeHint.adx.toFixed(2) : '暂无'} | 布林带宽: ${regimeHint.bbWidthPct != null ? regimeHint.bbWidthPct.toFixed(2) + '%' : '暂无'} | 系统初判: ${regimeHint.regime}
+15m ATR(14): ${atr15m != null ? `${atr15m.toFixed(2)}（现价的 ${(atr15m / currentPrice * 100).toFixed(2)}%）；止损距离应控制在 0.5-1.5 倍 ATR = ${(atr15m * 0.5).toFixed(2)} ~ ${(atr15m * 1.5).toFixed(2)}` : '暂无'}
 
+${buildTimeContext()}
+
+${marketContextText}
+${btcContextText ? `\n${btcContextText}\n` : ''}
 === 5分钟周期（短线入场时机的核心依据） ===
 ${buildKlineSummary(k5m, '5M K线')}
 技术指标:
@@ -530,6 +631,16 @@ function normalizeResult(parsed: any, config: AiConfig, rawResponse: string, cur
     keyLevels = cleaned.length > 0 ? cleaned : null;
   }
 
+  // ===== 结构化元数据：regime + A+ 清单 =====
+  // regime 缺省/非法时按 direction 反推中性偏保守值（neutral 方向无法开仓，regime 值影响不大）
+  const regime: AiAnalysisResult['meta']['regime'] =
+    parsed.regime === 'trending' || parsed.regime === 'range' || parsed.regime === 'chop' || parsed.regime === 'event'
+      ? parsed.regime
+      : 'chop'; // 无法识别时按最保守的碎波处理（引擎会拦截开仓）
+
+  const cl = parsed.checklist && typeof parsed.checklist === 'object' ? parsed.checklist : {};
+  const toBool = (v: unknown): boolean => v === true || v === 'true' || v === 1;
+
   return {
     direction: direction as 'long' | 'short' | 'neutral',
     confidence,
@@ -544,6 +655,17 @@ function normalizeResult(parsed: any, config: AiConfig, rawResponse: string, cur
     provider: config.provider,
     model: config.model,
     rawResponse,
+    meta: {
+      regime,
+      aPlusChecklist: {
+        regimeClear: toBool(cl.regimeClear),
+        timeframeAligned: toBool(cl.timeframeAligned),
+        fundingNotExtreme: toBool(cl.fundingNotExtreme),
+        volumeConfirmed: toBool(cl.volumeConfirmed),
+        nearInvalidation: toBool(cl.nearInvalidation),
+      },
+      atr15m: null, // 由主入口回填（normalizeResult 不重复拉 K 线）
+    },
   };
 }
 
@@ -590,17 +712,23 @@ export async function analyzeMarketWithAI(
   }
 
   // 3. 获取多周期 K 线数据（短线风格：5m 即时动能 / 15m 主判定 / 1h 大方向过滤）
-  //    并行抓取衍生品/情绪/要闻上下文（带缓存，失败优雅降级为"暂无数据"）
-  const [k5m, k15m, k1h, marketCtx] = await Promise.all([
+  //    并行抓取衍生品/情绪/要闻上下文 + BTC 快照（带缓存，失败优雅降级）
+  const isBtc = symbol.toUpperCase().startsWith('BTC');
+  const [k5m, k15m, k1h, marketCtx, btcSnap] = await Promise.all([
     fetchKlines(symbol, okxId, '5m', 200).catch(() => []),
     fetchKlines(symbol, okxId, '15m', 200).catch(() => []),
     fetchKlines(symbol, okxId, '1h', 200).catch(() => []),
     fetchMarketContext(symbol, okxId).catch(() => null),
+    // 分析山寨币时必看 BTC；分析 BTC 自身时跳过（避免冗余）
+    isBtc ? Promise.resolve(null) : fetchBtcSnapshot().catch(() => null),
   ]);
 
   if (k5m.length === 0 && k15m.length === 0 && k1h.length === 0) {
     throw new Error('无法获取 K 线数据');
   }
+
+  // 3.5 计算 15m ATR（无效点/止损距离的客观标尺）
+  const atr15m = k15m.length >= 15 ? calcATR(k15m, 14) : null;
 
   // 4. 构建 prompt
   const userPrompt = buildUserPrompt(
@@ -611,6 +739,8 @@ export async function analyzeMarketWithAI(
     k15m,
     k1h,
     marketCtx ? buildMarketContextText(marketCtx) : '=== 衍生品与市场情绪 === 暂无数据',
+    isBtc ? '' : buildBtcContextText(btcSnap),
+    atr15m,
   );
 
   // 5. 调用 AI API
@@ -619,6 +749,9 @@ export async function analyzeMarketWithAI(
   // 6. 解析结果（传入当前价用于校验止损/止盈方向）
   const parsed = extractJson(rawResponse);
   const result = normalizeResult(parsed, config, rawResponse, price);
+
+  // 回填客观计算的 ATR（引擎闸门校验止损距离用）
+  result.meta.atr15m = atr15m;
 
   return result;
 }

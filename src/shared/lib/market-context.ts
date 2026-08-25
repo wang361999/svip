@@ -248,6 +248,96 @@ export async function fetchMarketContext(symbol: string, okxId: string): Promise
   };
 }
 
+// ==================== BTC 联动快照（山寨币分析必看 BTC） ====================
+
+export interface BtcSnapshot {
+  price: number;
+  /** 近 1 小时涨跌幅 % */
+  change1hPct: number | null;
+  /** 15m 趋势: up / down / flat */
+  trend15m: 'up' | 'down' | 'flat';
+  /** BTC 资金费率 */
+  fundingRate8h: number | null;
+  /** BTC 是否处于高波动状态（1h 涨跌绝对值 >= 2%） */
+  highVolatility: boolean;
+}
+
+const btcCache = { data: null as BtcSnapshot | null, at: 0 };
+const BTC_TTL_MS = 3 * 60_000;
+
+async function fetchBtcKlineTrend(): Promise<{ trend15m: 'up' | 'down' | 'flat'; change1hPct: number | null; price: number | null }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6000);
+  try {
+    const res = await fetch('https://fapi.binance.com/fapi/v1/klines?symbol=BTCUSDT&interval=15m&limit=12', {
+      signal: controller.signal,
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) return { trend15m: 'flat', change1hPct: null, price: null };
+    const rows: any[] = await res.json();
+    if (!Array.isArray(rows) || rows.length < 5) return { trend15m: 'flat', change1hPct: null, price: null };
+
+    const closes = rows.map((r) => parseFloat(r[4]));
+    const price = closes[closes.length - 1];
+
+    // 15m 趋势：最近 6 根 EMA 简化判断（后 3 根均价 vs 前 3 根均价）
+    const recentAvg = closes.slice(-3).reduce((s: number, c: number) => s + c, 0) / 3;
+    const priorAvg = closes.slice(-6, -3).reduce((s: number, c: number) => s + c, 0) / 3;
+    const diffPct = priorAvg > 0 ? ((recentAvg - priorAvg) / priorAvg) * 100 : 0;
+    const trend15m: 'up' | 'down' | 'flat' = diffPct > 0.15 ? 'up' : diffPct < -0.15 ? 'down' : 'flat';
+
+    // 1h 涨跌：当前价 vs 4 根 15m 前（约 1 小时）
+    let change1hPct: number | null = null;
+    if (closes.length >= 5) {
+      const ref = closes[closes.length - 5];
+      if (ref > 0) change1hPct = Number((((price - ref) / ref) * 100).toFixed(2));
+    }
+
+    return { trend15m, change1hPct, price };
+  } catch {
+    return { trend15m: 'flat', change1hPct: null, price: null };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 获取 BTC 快照（3 分钟缓存）；失败返回 null，prompt 侧优雅降级 */
+export async function fetchBtcSnapshot(): Promise<BtcSnapshot | null> {
+  if (btcCache.data && Date.now() - btcCache.at < BTC_TTL_MS) return btcCache.data;
+
+  const [kline, deriv] = await Promise.all([
+    fetchBtcKlineTrend(),
+    getDerivatives('BTCUSDT', 'BTC-USDT'),
+  ]);
+
+  if (kline.price == null) return btcCache.data; // 完全失败时用旧缓存或 null
+
+  const snap: BtcSnapshot = {
+    price: kline.price,
+    change1hPct: kline.change1hPct,
+    trend15m: kline.trend15m,
+    fundingRate8h: deriv.fundingRate8h,
+    highVolatility: kline.change1hPct != null && Math.abs(kline.change1hPct) >= 2,
+  };
+  btcCache.data = snap;
+  btcCache.at = Date.now();
+  return snap;
+}
+
+/** BTC 快照注入 prompt 的文本（null 时返回空字符串） */
+export function buildBtcContextText(btc: BtcSnapshot | null): string {
+  if (!btc) return '';
+  const trendZh = btc.trend15m === 'up' ? '上涨' : btc.trend15m === 'down' ? '下跌' : '横盘';
+  const chg = btc.change1hPct != null ? `${btc.change1hPct > 0 ? '+' : ''}${btc.change1hPct}%` : '暂无数据';
+  const fr = btc.fundingRate8h != null ? `${(btc.fundingRate8h * 100).toFixed(4)}%` : '暂无数据';
+  const volWarn = btc.highVolatility
+    ? `\n⚠️ BTC 1小时波动 ${chg}，处于高波动状态：山寨币信号可靠性大幅下降，除非自身逻辑极强，否则应给 neutral 或大幅降低置信度`
+    : '';
+  return `=== BTC 联动背景（山寨币方向的先行指标） ===
+BTC 价格: ${btc.price} | 15分钟趋势: ${trendZh} | 1小时涨跌: ${chg} | 资金费率: ${fr}${volWarn}
+解读规则: BTC 急跌时山寨做多信号多为假信号；BTC 高波动时段山寨技术形态容易瞬间失效；与 BTC 趋势同向的山寨信号更可靠`;
+}
+
 // ==================== Prompt 文本构建 ====================
 
 /** 恐惧贪婪英文分类 → 中文 */

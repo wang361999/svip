@@ -73,6 +73,7 @@ export const GET = createHandler(async ({ req }) => {
           reasoning: latest.reasoning,
           // 数据库以 TEXT 存储 JSON，必须解析后返回；前端直接 .map() 会崩溃
           keyLevels: parseKeyLevels(latest.keyLevels),
+          meta: parseMeta(latest.meta),
           riskWarning: latest.riskWarning,
           provider: latest.provider,
           model: latest.model,
@@ -98,6 +99,29 @@ function parseKeyLevels(raw: string | null): { price: number; type: string; note
         type: String(lv.type || '未知'),
         note: String(lv.note || ''),
       }));
+  } catch {
+    return null;
+  }
+}
+
+/** 将数据库 TEXT 列安全解析为 meta 对象（regime / checklist / atr15m） */
+function parseMeta(raw: string | null): {
+  regime: string;
+  aPlusChecklist: Record<string, boolean>;
+  atr15m: number | null;
+} | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return {
+      regime: String(parsed.regime || 'unknown'),
+      aPlusChecklist:
+        parsed.aPlusChecklist && typeof parsed.aPlusChecklist === 'object'
+          ? parsed.aPlusChecklist
+          : {},
+      atr15m: typeof parsed.atr15m === 'number' && Number.isFinite(parsed.atr15m) ? parsed.atr15m : null,
+    };
   } catch {
     return null;
   }
@@ -155,6 +179,7 @@ export const POST = createHandler(async ({ req }) => {
       takeProfit2: result.takeProfit2,
       reasoning: result.reasoning,
       keyLevels: result.keyLevels ? JSON.stringify(result.keyLevels) : null,
+      meta: JSON.stringify(result.meta),
       riskWarning: result.riskWarning,
       provider: result.provider,
       model: result.model,
@@ -175,6 +200,7 @@ export const POST = createHandler(async ({ req }) => {
     takeProfit2: saved.takeProfit2,
     reasoning: saved.reasoning,
     keyLevels: result.keyLevels,
+    meta: result.meta,
     riskWarning: saved.riskWarning,
     provider: saved.provider,
     model: saved.model,
