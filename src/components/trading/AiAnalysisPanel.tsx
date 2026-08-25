@@ -42,6 +42,24 @@ interface AiAnalysis {
       h4: StructureTrend;
       d1?: StructureTrend;
     } | null;
+    /** 主引擎（趋势回调 1h）状态 */
+    strategy?: {
+      status: 'pending' | 'filled' | 'closed' | 'waiting';
+      direction: 'long' | 'short';
+      trendLabel: string;
+      order: { entry: number; stop: number; tp: number; riskPct: number; expiresAt: number } | null;
+      outcome: 'stop' | 'tp' | null;
+      waitingReason: string;
+    } | null;
+    /** 快引擎（EMA 价值区回踩 15m）状态 */
+    fastStrategy?: {
+      status: 'pending' | 'filled' | 'closed' | 'waiting';
+      direction: 'long' | 'short';
+      envLabel: string;
+      order: { entry: number; stop: number; tp: number; riskPct: number; timeStopAt: number } | null;
+      outcome: 'stop' | 'tp' | 'time' | null;
+      waitingReason: string;
+    } | null;
   } | null;
   riskWarning: string | null;
   provider: string;
@@ -461,6 +479,69 @@ export default function AiAnalysisPanel() {
                       </div>
                     );
                   })}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* 双引擎状态卡（主引擎 1h 趋势回调 · 快引擎 15m 价值区回踩 — 独立生命周期） */}
+          {(analysis.meta?.strategy || analysis.meta?.fastStrategy) && (() => {
+            const st = analysis.meta?.strategy ?? null;
+            const fs = analysis.meta?.fastStrategy ?? null;
+            /** 引擎状态徽章 */
+            const badge = (status: string, outcome?: string | null) => {
+              const cfg: Record<string, { label: string; cls: string }> = {
+                pending: { label: '挂单中', cls: 'text-blue-400 bg-blue-500/10 border-blue-500/30' },
+                filled: { label: '持仓中', cls: 'text-amber-400 bg-amber-500/10 border-amber-500/30' },
+                closed: { label: outcome === 'tp' ? '已止盈' : outcome === 'time' ? '时间离场' : '已止损', cls: outcome === 'tp' ? 'text-green-400 bg-green-500/10 border-green-500/30' : 'text-dark-400 bg-dark-800/60 border-dark-700/40' },
+                waiting: { label: '观望', cls: 'text-dark-400 bg-dark-800/60 border-dark-700/40' },
+              };
+              const c = cfg[status] || cfg.waiting;
+              return <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${c.cls}`}>{c.label}</span>;
+            };
+            /** 单行价位摘要 */
+            const line = (o: { entry: number; stop: number; tp: number; riskPct: number } | null, dir: 'long' | 'short', engine: string) =>
+              o ? (
+                <div className="text-[11px] text-dark-400 leading-relaxed">
+                  <span className={dir === 'long' ? 'text-green-400 font-semibold' : 'text-red-400 font-semibold'}>{dir === 'long' ? '多' : '空'}</span>
+                  <span className="mx-1">挂 {formatPrice(o.entry)}</span>
+                  <span className="mx-1">损 {formatPrice(o.stop)}</span>
+                  <span className="mx-1">盈 {formatPrice(o.tp)}</span>
+                  <span className="text-dark-600">{engine === 'fast' ? `·4h限时` : `·-${(o.riskPct * 100).toFixed(1)}%`}</span>
+                </div>
+              ) : null;
+            return (
+              <div className="grid grid-cols-2 gap-2">
+                {/* 主引擎 */}
+                <div className="rounded-lg border border-dark-700/60 bg-dark-800/40 p-2.5">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-dark-400 text-[11px] font-medium">主引擎 · 趋势回调</span>
+                    {st && badge(st.status, st.outcome)}
+                  </div>
+                  {st ? (
+                    st.order && st.status !== 'waiting' ? line(st.order, st.direction, 'trend') : (
+                      <div className="text-[11px] text-dark-500 leading-relaxed">{st.trendLabel} · {st.waitingReason || '等待信号'}</div>
+                    )
+                  ) : <div className="text-[11px] text-dark-500">无数据</div>}
+                </div>
+                {/* 快引擎 */}
+                <div className="rounded-lg border border-dark-700/60 bg-dark-800/40 p-2.5">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-dark-400 text-[11px] font-medium">快引擎 · 价值区回踩</span>
+                    {fs && badge(fs.status, fs.outcome)}
+                  </div>
+                  {fs ? (
+                    fs.order && fs.status !== 'waiting' ? (
+                      <>
+                        {line(fs.order, fs.direction, 'fast')}
+                        {fs.status === 'filled' && (
+                          <div className="text-[10px] text-dark-600">限时剩 {Math.max(0, Math.round((fs.order.timeStopAt - Date.now()) / 60000))} 分钟</div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="text-[11px] text-dark-500 leading-relaxed">{fs.waitingReason || '等待信号'}</div>
+                    )
+                  ) : <div className="text-[11px] text-dark-500">无数据</div>}
                 </div>
               </div>
             );

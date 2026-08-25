@@ -673,6 +673,19 @@ export async function runEngine(userId: string): Promise<{
         const price = priceMap[pos.symbol];
         if (!price || price <= 0) continue;
 
+        // ===== 快引擎时间止损（4 小时未到止盈即市价离场 — 快进快出，不恋战） =====
+        // 回测口径：16 根 15m；此处按开仓时间实时判定（引擎每 5-8 秒巡检）
+        try {
+          const m = pos.aiMeta ? JSON.parse(pos.aiMeta) : null;
+          if (m?.engine === 'fast' && Date.now() - pos.createdAt.getTime() >= 4 * 60 * 60 * 1000) {
+            await closePosition(pos.id, price, 'time_stop');
+            result.closed++;
+            continue;
+          }
+        } catch {
+          // aiMeta 解析失败不影响常规止损止盈巡检
+        }
+
         const isLong = pos.side === 'long';
         const shouldStopLoss = pos.stopLoss && (
           (isLong && price <= pos.stopLoss) ||
@@ -904,29 +917,33 @@ export async function runEngine(userId: string): Promise<{
           }
 
           try {
-            // ===== 置信度联动仓位：高把握重仓，低把握轻仓 =====
-            // 置信度 >= 80：用满 positionPct；60-79：只用 65%（凯利公式简化版）
-            const confScale = latestAi.confidence >= 80 ? 1 : 0.65;
-            const aiMargin = account.available * (account.positionPct / 100) * confScale;
+          // ===== 置信度联动仓位：高把握重仓，低把握轻仓 =====
+          // 置信度 >= 80：用满 positionPct；60-79：只用 65%（凯利公式简化版）
+          // 快引擎再乘 0.4（单笔优势薄 +0.052R，仓位必须显著小于主引擎 — 双引擎独立风控）
+          const confScale = latestAi.confidence >= 80 ? 1 : 0.65;
+          const isFastEngine = latestAi.model === 'ema-reclaim-15m-v1';
+          const engineScale = isFastEngine ? 0.4 : 1;
+          const aiMargin = account.available * (account.positionPct / 100) * confScale * engineScale;
 
-            await openPosition(userId, {
-              symbol: sym.symbol,
-              side: latestAi.direction as 'long' | 'short',
-              entryPrice: execPrice, // 正常模式：信号通过闸门即按现价成交
-              margin: aiMargin > 0 ? aiMargin : undefined,
-              stopLoss,
-              takeProfit1,
-              takeProfit2,
-              strategyId: `ai_${latestAi.provider}`,
-              signalPrice: latestAi.entryPrice || execPrice, // 保留 AI 建议的八分位挂单价作参考
-              // 记录开仓时的模型信息 + 分析ID，平仓后用于准确率统计；analysisId 供防护3防重放
-              aiMeta: JSON.stringify({
-                provider: latestAi.provider,
-                model: latestAi.model,
-                confidence: latestAi.confidence,
-                entryType: 'market', // 正常模式：市价进场
-                analysisId: latestAi.id,
-              }),
+          await openPosition(userId, {
+            symbol: sym.symbol,
+            side: latestAi.direction as 'long' | 'short',
+            entryPrice: execPrice, // 正常模式：信号通过闸门即按现价成交
+            margin: aiMargin > 0 ? aiMargin : undefined,
+            stopLoss,
+            takeProfit1,
+            takeProfit2,
+            strategyId: isFastEngine ? 'fast-ema-reclaim' : `ai_${latestAi.provider}`,
+            signalPrice: latestAi.entryPrice || execPrice, // 保留引擎建议的限价挂单价作参考
+            // 记录开仓时的模型信息 + 分析ID + 引擎标识，平仓后用于准确率统计；analysisId 供防护3防重放
+            aiMeta: JSON.stringify({
+              provider: latestAi.provider,
+              model: latestAi.model,
+              engine: isFastEngine ? 'fast' : 'trend',
+              confidence: latestAi.confidence,
+              entryType: 'market', // 正常模式：市价进场
+              analysisId: latestAi.id,
+            }),
             });
             openDirKeys.add(`${sym.symbol}:${latestAi.direction}`);
             result.opened++;

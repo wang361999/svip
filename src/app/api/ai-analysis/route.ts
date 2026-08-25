@@ -282,6 +282,12 @@ function parseMeta(raw: string | null): {
       strategy = parsed.strategy as Record<string, unknown>;
     }
 
+    // 快引擎（EMA价值区回踩收复）状态透传（前端展示快进快出生命周期）
+    let fastStrategy: Record<string, unknown> | null = null;
+    if (parsed.fastStrategy && typeof parsed.fastStrategy === 'object') {
+      fastStrategy = parsed.fastStrategy as Record<string, unknown>;
+    }
+
     return {
       regime: String(parsed.regime || 'unknown'),
       aPlusChecklist:
@@ -297,6 +303,7 @@ function parseMeta(raw: string | null): {
       ...(structure ? { structure } : {}),
       ...(aPlusChecklist ? { aPlusChecklist } : {}),
       ...(strategy ? { strategy } : {}),
+      ...(fastStrategy ? { fastStrategy } : {}),
     };
   } catch {
     return null;
