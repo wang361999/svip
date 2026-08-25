@@ -2,11 +2,13 @@
  * 公众号行情分析文章生成模块
  *
  * 设计原则（与交易系统同源）：
- * 1. 数据与文案分离：点位/结构/分型全部复用服务端客观计算（与交易面板完全一致），
- *    AI 只写叙述文字（标题/导语/正文/观点），杜绝幻觉数字
+ * 1. 数据与文案分离：点位用 AB9 线（分形选段 A→B 波段 9 等分线）、结构/分型复用服务端
+ *    客观计算，AI 只写叙述文字（标题/导语/正文/观点），杜绝幻觉数字
  * 2. 产出内联样式 HTML：公众号编辑器不支持外部 CSS 与 markdown，
  *    直接粘贴富文本可完整保留排版（style 全部内联在标签上）
  * 3. 标题给 3 个候选：html 内埋 TITLE_SLOT 占位符，前端选标题后替换
+ *
+ * 注：本模块只用 AB9 线做文章价位框架；交易系统（AI 挂单信号）仍用江恩八分位，互不影响。
  */
 import {
   fetchKlines,
@@ -14,16 +16,15 @@ import {
   type KlineData,
 } from './market-data';
 import {
-  computeGannEighths,
   computeStructureTrend,
   computeFractalSignal,
   callChatCompletions,
   extractJson,
   type AiConfig,
-  type GannEighths,
   type FractalSignal,
   type StructureInfo,
 } from './ai-analysis';
+import { calcAB9Lines, type AB9Analysis } from './indicators';
 
 // ==================== 类型 ====================
 
@@ -37,7 +38,8 @@ export interface ArticleData {
   /** 24h 最高 / 最低 */
   high24h: number;
   low24h: number;
-  gann: GannEighths | null;
+  /** AB9 线（文章价位框架） */
+  ab9: AB9Analysis | null;
   structure: { m15: StructureInfo; h1: StructureInfo; h4: StructureInfo };
   fractal: FractalSignal | null;
   generatedAt: string;
@@ -70,7 +72,7 @@ export interface ArticleResult {
 
 // ==================== 数据准备 ====================
 
-/** 拉取客观数据：价格 + 多周期 K 线 → 八分位/结构/分型（与交易面板同源同值） */
+/** 拉取客观数据：价格 + 多周期 K 线 → AB9线/结构/分型（服务端客观计算） */
 async function collectArticleData(
   symbol: string,
   okxId: string,
@@ -92,7 +94,8 @@ async function collectArticleData(
   const priceNow = k1h[k1h.length - 1].close;
   const price24hAgo = last24[0].open;
 
-  const gann = computeGannEighths(k1h, price);
+  // AB9 线：分形选段（含当前价的最大波段）→ A→B 9 等分线（波段 <2% 或无有效分形时返回 null）
+  const ab9 = calcAB9Lines(k1h);
 
   return {
     symbol,
@@ -101,13 +104,14 @@ async function collectArticleData(
     change24hPct: price24hAgo > 0 ? ((priceNow - price24hAgo) / price24hAgo) * 100 : 0,
     high24h: Math.max(...last24.map((k) => k.high)),
     low24h: Math.min(...last24.map((k) => k.low)),
-    gann,
+    ab9,
     structure: {
       m15: computeStructureTrend(k15m, '15分钟'),
       h1: computeStructureTrend(k1h, '1小时'),
       h4: computeStructureTrend(k4h, '4小时'),
     },
-    fractal: computeFractalSignal(k1h, gann),
+    // 分型信号：文章场景不带八分位贴近标注（gann 传 null，仅展示分型状态）
+    fractal: computeFractalSignal(k1h, null),
     generatedAt: new Date().toISOString(),
   };
 }
@@ -118,7 +122,7 @@ const ARTICLE_SYSTEM_PROMPT = `你是资深加密货币分析师，为微信公�
 
 写作铁律：
 1. 只叙述、不报数：文章中禁止出现任何具体价格数字（价位表由系统自动插入，与你无关）。表达位置关系用「上方/下方」「上方一档/下方一档」「区间中轴附近」等相对表述
-2. 立场必须有依据：观点必须锚定在数据提供的市场结构（HH/HL/LH/LL）、江恩八分位区间位置、顶底分型状态上，不许凭空判断
+2. 立场必须有依据：观点必须锚定在数据提供的市场结构（HH/HL/LH/LL）、AB9波段位置（A→B 波段的 9 等分线，4线为波段中轴）、顶底分型状态上，不许凭空判断
 3. 语气专业克制：用「偏强/偏弱/观望」「若有效站稳/若失守」等分析师措辞，禁止「暴涨」「梭哈」「必涨」等词
 4. 承认不确定性：给出条件化推演（若A则B），不做单一断言
 5. 全文不出现「投资建议」「必赚」等承诺性表述
@@ -126,7 +130,7 @@ const ARTICLE_SYSTEM_PROMPT = `你是资深加密货币分析师，为微信公�
 结构要求（正文 body 共 3-4 段，全文约 1000-1300 字）：
 - lead 导语：一段话（100-150字），概括当前行情状态与本文要回答的问题
 - keyPoint 核心观点：一句话（30字内），本文最有信息量的判断
-- body：第1段行情回顾与结构解读；第2段关键位置分析（用相对位置表述，围绕数据给的分位区间）；第3段多周期结构与情景推演（上行/下行两种条件）；第4段（可选）风险与变量
+- body：第1段行情回顾与结构解读；第2段关键位置分析（用相对位置表述，围绕数据给的 AB9 线，如「4线中轴」「贴近5线」「上方一档」）；第3段多周期结构与情景推演（上行/下行两种条件）；第4段（可选）风险与变量
 - operation 操作参考：两三句，只讲思路框架（关注哪类位置、什么条件倾向什么方向、风控原则），不给具体点位
 - riskNote 风险提示：一句话点出当前最需要警惕的变量
 
@@ -146,12 +150,15 @@ function buildArticleUserPrompt(d: ArticleData): string {
     s.trend === 'up' ? '上升结构（HH+HL）' : s.trend === 'down' ? '下降结构（LH+LL）' : s.trend === 'range' ? '震荡结构（高低点矛盾）' : '结构不明';
   const fmt = (p: number) => p.toLocaleString('en-US', { maximumFractionDigits: p >= 100 ? 2 : 4 });
 
-  const gannText = d.gann
-    ? `摆动区间（近72小时）：${fmt(d.gann.swingLow)} ~ ${fmt(d.gann.swingHigh)}，振幅 ${d.gann.rangePct}%
-当前价 ${fmt(d.price)} 位于区间 ${d.gann.positionPct}% 处（${d.gann.zoneLabel}）
-八分位阶梯（服务端计算，文章正文不需要复述具体数字，系统会自动插入价位表）：
-${d.gann.levels.map((l) => `- ${l.division} ${fmt(l.price)}（${l.distPct > 0 ? '+' : ''}${l.distPct}%）${l.meaning}`).join('\n')}`
-    : '摆动区间过窄（横盘压缩），八分位无意义 — 文章应侧重观望与等待区间扩张';
+  const ab9Text = d.ab9
+    ? `AB9波段（分形选段 A→B，服务端客观计算）：
+方向：${d.ab9.direction === 'up' ? '上升（A 为低点 → B 为高点）' : '下降（A 为高点 → B 为低点）'}
+A点 ${fmt(d.ab9.pointA)} → B点 ${fmt(d.ab9.pointB)}，波段高度 ${((d.ab9.height / d.ab9.pointA) * 100).toFixed(2)}%
+9条线（等分 AB 段，4线为波段中轴；系统会自动插入价位表，正文禁复述具体数字）：
+${[...d.ab9.lines].sort((a, b) => b.price - a.price).map((l) => `- ${l.label} ${fmt(l.price)}`).join('\n')}
+趋势强度评级：${d.ab9.strength}
+当前位置：${d.ab9.betweenLines}${d.ab9.nearLine ? `，贴近${d.ab9.nearLine}线` : ''}`
+    : '当前无有效 AB9 波段（波段高度不足或分形失效）— 文章应侧重观望与等待方向选择';
 
   const fractalText = d.fractal
     ? `最近顶分型：${d.fractal.lastTop ? `${fmt(d.fractal.lastTop.price)}（${d.fractal.lastTop.barsAgo}根前，${d.fractal.lastTop.strong ? '强分型' : '普通分型'}，${d.fractal.topBroken ? '已被突破失效' : '有效'}）` : '近端无'}
@@ -164,7 +171,7 @@ ${d.gann.levels.map((l) => `- ${l.division} ${fmt(l.price)}（${l.distPct > 0 ? 
 现价：${fmt(d.price)}
 24小时：${d.change24hPct >= 0 ? '+' : ''}${d.change24hPct.toFixed(2)}%，最高 ${fmt(d.high24h)} / 最低 ${fmt(d.low24h)}
 
-${gannText}
+${ab9Text}
 
 多周期市场结构（道氏 HH/HL/LH/LL，服务端客观计算）：
 - 15分钟：${trendLabel(d.structure.m15)}
@@ -255,18 +262,19 @@ export function assembleArticleHtml(d: ArticleData, c: ArticleContent): string {
     return `<span style="${cls}">${label} · ${txt}</span>`;
   };
 
-  // 八分位阶梯（8/8 → 1/8 倒序，现价上方红下方绿）
-  const levelRows = d.gann
-    ? [...d.gann.levels]
+  // AB9 线行（按价格倒序：上方阻力在前，4线为波段中轴）
+  const levelRows = d.ab9
+    ? [...d.ab9.lines]
         .sort((a, b) => b.price - a.price)
         .map((l) => {
-          const isAxis = l.index === 4;
-          const dist = `${l.distPct > 0 ? '+' : ''}${l.distPct}%`;
-          const distColor = l.distPct > 0 ? '#c62828' : '#1a7f37';
+          const isAxis = l.lineNo === 4;
+          const distPct = ((l.price - d.price) / d.price) * 100;
+          const dist = `${distPct > 0 ? '+' : ''}${distPct.toFixed(2)}%`;
+          const distColor = distPct > 0.05 ? '#c62828' : distPct < -0.05 ? '#1a7f37' : '#2f6fed';
           return `<div style="${S.levelRow}">
-<span style="${isAxis ? S.levelAxis : S.levelDiv}">${l.division}</span>
+<span style="${isAxis ? S.levelAxis : S.levelDiv}">${l.label}</span>
 <span style="${S.levelPrice}">${fmtNum(l.price)}${isAxis ? '（中轴）' : ''}</span>
-<span style="${S.levelDist};color:${distColor};">${dist}</span>
+<span style="${S.levelDist};color:${distColor};font-weight:600;">${dist}</span>
 </div>`;
         })
         .join('')
@@ -300,8 +308,9 @@ export function assembleArticleHtml(d: ArticleData, c: ArticleContent): string {
 <div style="${S.dataRow}"><span style="${S.dataLabel}">现价</span><span style="${S.dataValue}">${fmtNum(d.price)}</span></div>
 <div style="${S.dataRow}"><span style="${S.dataLabel}">24小时</span><span style="${S.dataValue};color:${changeColor};">${changeStr}</span></div>
 <div style="${S.dataRow}"><span style="${S.dataLabel}">24小时最高 / 最低</span><span style="${S.dataValue}">${fmtNum(d.high24h)} / ${fmtNum(d.low24h)}</span></div>
-${d.gann ? `<div style="${S.dataRow}"><span style="${S.dataLabel}">摆动区间</span><span style="${S.dataValue}">${fmtNum(d.gann.swingLow)} ~ ${fmtNum(d.gann.swingHigh)}</span></div>
-<div style="${S.dataRow}"><span style="${S.dataLabel}">区间位置</span><span style="${S.dataValue}">${d.gann.positionPct}%（${esc(d.gann.zoneLabel)}）</span></div>` : ''}
+${d.ab9 ? `<div style="${S.dataRow}"><span style="${S.dataLabel}">AB波段（${d.ab9.direction === 'up' ? '上升' : '下降'}）</span><span style="${S.dataValue}">${fmtNum(d.ab9.pointA)} → ${fmtNum(d.ab9.pointB)}</span></div>
+<div style="${S.dataRow}"><span style="${S.dataLabel}">趋势强度</span><span style="${S.dataValue}">${esc(d.ab9.strength)}</span></div>
+<div style="${S.dataRow}"><span style="${S.dataLabel}">当前位置</span><span style="${S.dataValue}">${esc(d.ab9.betweenLines)}${d.ab9.nearLine ? ` · 贴近${d.ab9.nearLine}线` : ''}</span></div>` : ''}
 </div>
 
 <h2 style="${S.h2}"><span style="${S.h2Bar}"></span>多周期结构</h2>
@@ -311,7 +320,7 @@ ${badge('1小时', d.structure.h1)}
 ${badge('4小时', d.structure.h4)}
 </p>
 
-${d.gann ? `<h2 style="${S.h2}"><span style="${S.h2Bar}"></span>关键点位（江恩八分位）</h2>
+${d.ab9 ? `<h2 style="${S.h2}"><span style="${S.h2Bar}"></span>关键点位（AB9线）</h2>
 <p style="${S.p}">${levelRows}</p>` : ''}
 
 <h2 style="${S.h2}"><span style="${S.h2Bar}"></span>分型信号</h2>
@@ -344,9 +353,10 @@ export function assembleArticlePlainText(d: ArticleData, c: ArticleContent, titl
     `风险提示：${c.riskNote}`,
     '本文不构成任何投资建议，据此操作风险自负。',
   ];
-  if (d.gann) {
-    const levels = [...d.gann.levels].sort((a, b) => b.price - a.price).map((l) => `${l.division} ${fmtNum(l.price)}`).join('  ');
-    parts.splice(5, 0, `关键点位（八分位）：${levels}`);
+  if (d.ab9) {
+    const lines = [...d.ab9.lines].sort((a, b) => b.price - a.price).map((l) => `${l.label} ${fmtNum(l.price)}`).join('  ');
+    parts.splice(5, 0, `AB波段（${d.ab9.direction === 'up' ? '上升' : '下降'}）：${fmtNum(d.ab9.pointA)} → ${fmtNum(d.ab9.pointB)} · ${d.ab9.strength} · ${d.ab9.betweenLines}`);
+    parts.splice(6, 0, `关键点位（AB9线）：${lines}`);
   }
   return parts.join('\n');
 }
@@ -364,7 +374,7 @@ export async function generateArticle(
   if (!config.enabled) throw new Error('AI 分析功能未启用');
   if (!config.apiUrl || !config.apiKey || !config.model) throw new Error('AI 模型配置不完整');
 
-  // 1. 客观数据（与交易面板完全同源：同一套八分位/结构/分型计算）
+  // 1. 客观数据（AB9线/多周期结构/分型，全部服务端客观计算）
   const data = await collectArticleData(symbol, okxId, label, currentPrice);
 
   // 2. AI 写叙述（标题/导语/正文/观点，不含数字）
