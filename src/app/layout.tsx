@@ -6,9 +6,11 @@ import CacheBuster from '@/components/CacheBuster';
 export const viewport: Viewport = {
   width: 1280,
   initialScale: 0.25,
-  minimumScale: 0.2,
-  maximumScale: 1.5,
-  userScalable: true,
+  minimumScale: 0.25,
+  // 禁止缩放：手机上聚焦搜索框（币种选择器）时 iOS 不再自动放大页面
+  // （交易图表类应用标准做法 — 图表与面板布局固定，缩放后反而溢出难用）
+  maximumScale: 1,
+  userScalable: false,
 };
 
 export async function generateMetadata(): Promise<Metadata> {

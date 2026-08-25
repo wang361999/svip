@@ -326,7 +326,8 @@ export default function SymbolSelector({
                   placeholder="搜索币种..."
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  className="w-full bg-dark-800/60 text-white text-xs rounded-lg pl-8 pr-3 py-2 border border-dark-700/50 focus:outline-none focus:border-blue-500/50 placeholder-dark-500 transition-colors"
+                  // 16px：移动端浏览器聚焦小于 16px 的输入框会自动放大页面（双保险，配合 viewport 禁缩放）
+                  className="w-full bg-dark-800/60 text-white text-base rounded-lg pl-8 pr-3 py-2 border border-dark-700/50 focus:outline-none focus:border-blue-500/50 placeholder-dark-500 transition-colors"
                 />
                 {search && (
                   <button
