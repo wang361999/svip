@@ -44,7 +44,7 @@ interface AiAnalysis {
     } | null;
     /** 江恩八分法策略（唯一引擎 — 4h 主框架）状态 */
     gannOctave?: {
-      status: 'pending' | 'filled' | 'closed' | 'waiting';
+      status: 'pending' | 'confirmed' | 'filled' | 'closed' | 'waiting';
       direction: 'long' | 'short';
       signalType: 'pullback' | 'breakout' | null;
       swingHigh: number | null;
@@ -68,6 +68,14 @@ interface AiAnalysis {
       };
       order: { entry: number; stop: number; tp1: number; tp2: number; riskPct: number; stopSource: 'octave' | 'atr'; levelIdx: number } | null;
       outcome: 'tp' | 'sl' | null;
+      /** 15分钟入场确认层（4h信号 → 15m同向确认才进场） */
+      m15: {
+        available: boolean;
+        status: 'waiting' | 'confirmed' | 'expired' | 'invalidated' | 'bypass';
+        confirmTime: number | null;
+        entry: number | null;
+        reason: string;
+      };
       waitingReason: string;
     } | null;
   } | null;
@@ -501,7 +509,8 @@ export default function AiAnalysisPanel() {
             const g = analysis.meta.gannOctave!;
             const OCTAVE_LABELS = ['0%', '12.5%', '25%', '37.5%', '50%', '62.5%', '75%', '87.5%', '100%'];
             const statusCfg: Record<string, { label: string; cls: string }> = {
-              pending: { label: '信号触发', cls: 'text-blue-400 bg-blue-500/10 border-blue-500/30' },
+              pending: { label: '4h信号·等15m确认', cls: 'text-blue-400 bg-blue-500/10 border-blue-500/30' },
+              confirmed: { label: '15m已确认·可进场', cls: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/30' },
               filled: { label: '持仓中', cls: 'text-amber-400 bg-amber-500/10 border-amber-500/30' },
               closed: { label: g.outcome === 'tp' ? '已止盈' : '已止损', cls: g.outcome === 'tp' ? 'text-green-400 bg-green-500/10 border-green-500/30' : 'text-dark-400 bg-dark-800/60 border-dark-700/40' },
               waiting: { label: '观望', cls: 'text-dark-400 bg-dark-800/60 border-dark-700/40' },
@@ -536,8 +545,8 @@ export default function AiAnalysisPanel() {
                   </div>
                 )}
 
-                {/* 信号单（触发/持仓时显示） */}
-                {g.order && (g.status === 'pending' || g.status === 'filled') && (
+                {/* 信号单（触发/确认/持仓时显示） */}
+                {g.order && (g.status === 'pending' || g.status === 'confirmed' || g.status === 'filled') && (
                   <div className="text-[11px] text-dark-400 leading-relaxed">
                     <span className={g.direction === 'long' ? 'text-green-400 font-semibold' : 'text-red-400 font-semibold'}>
                       {g.direction === 'long' ? '多' : '空'}{g.signalType === 'breakout' ? '·突破' : '·回踩'}
@@ -547,6 +556,25 @@ export default function AiAnalysisPanel() {
                     <span className="mx-1">TP1 {formatPrice(g.order.tp1)}</span>
                     <span className="mx-1">TP2 {formatPrice(g.order.tp2)}</span>
                     <span className="text-dark-600">·-{(g.order.riskPct * 100).toFixed(1)}%</span>
+                  </div>
+                )}
+
+                {/* 15分钟入场确认层（4h信号 → 15m同向确认才进场） */}
+                {g.order && (g.status === 'pending' || g.status === 'confirmed' || g.status === 'filled') && g.m15 && (
+                  <div className={`text-[11px] leading-relaxed px-1.5 py-1 rounded border ${
+                    g.m15.status === 'confirmed'
+                      ? 'text-cyan-400 bg-cyan-500/5 border-cyan-500/30'
+                      : g.m15.status === 'bypass'
+                        ? 'text-dark-400 bg-dark-800/40 border-dark-700/40'
+                        : g.m15.status === 'waiting'
+                          ? 'text-blue-300 bg-blue-500/5 border-blue-500/20'
+                          : 'text-dark-500 bg-dark-800/40 border-dark-700/40'
+                  }`}>
+                    <span className="font-medium">15m入场：</span>
+                    {g.m15.status === 'confirmed' && `已确认 @${formatPrice(g.m15.entry ?? g.order.entry)}${g.m15.confirmTime ? ` · ${new Date(g.m15.confirmTime).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}`}
+                    {g.m15.status === 'waiting' && g.m15.reason}
+                    {g.m15.status === 'bypass' && `降级直进 — ${g.m15.reason}`}
+                    {(g.m15.status === 'expired' || g.m15.status === 'invalidated') && g.m15.reason}
                   </div>
                 )}
 

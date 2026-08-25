@@ -812,7 +812,8 @@ export async function analyzeMarketWithAI(
 
   // 4. 唯一引擎：江恩八分法动态支撑阻力（ETH 4h）
   //    枢轴(左右5根) → 波段高低点 → 9档八分位 → AI(随机森林)信号过滤 → 五条件开仓
-  const gann = analyzeGannOctave(k4h, k1d, price);
+  //    → 15分钟入场确认（4h信号后16根15m窗口内同向确认才进场；数据不足降级直进）
+  const gann = analyzeGannOctave(k4h, k1d, price, k15m);
 
   // 5. 展示层客观计算（面板阶梯 / 结构徽章沿用；结构趋势仅供展示参考，不参与开仓判定）
   const struct15 = computeStructureTrend(k15m, '15分钟');
@@ -821,9 +822,9 @@ export async function analyzeMarketWithAI(
   const struct1d = computeStructureTrend(k1d, '1天');
 
   // 6. 方向与置信度（确定性）：
-  //    仅「信号触发(待进场)」给方向 — 与策略五条件完全一致；
-  //    持仓中/已了结/观望一律 neutral，防止对同一信号重复开仓。
-  const isPending = gann.status === 'pending';
+  //    仅「15m已确认(可进场)」给方向 — 模拟盘据此下单（15分钟入场规则）；
+  //    pending(等15m确认)/持仓中/已了结/观望一律 neutral，防止对同一信号重复开仓。
+  const isPending = gann.status === 'confirmed';
   const direction: 'long' | 'short' | 'neutral' = isPending ? gann.direction : 'neutral';
   // 置信度：AI 模型输出（0~1 → 0~100），信号触发时按方向取对应置信度
   const aiConf = gann.ai
@@ -833,7 +834,7 @@ export async function analyzeMarketWithAI(
     ? Math.round(Math.max(60, Math.min(95, aiConf * 100)))
     : Math.round(Math.min(59, aiConf * 100));
 
-  // 7. 挂单价 / 止损 / 止盈（仅信号触发时落库）
+  // 7. 挂单价 / 止损 / 止盈（仅信号触发时落库；进场价=15m确认价）
   //    止损=触发分位的下一档八分位（距离≥1.5×ATR）；分批止盈 TP1=最近一档 TP2=再下一档
   const num = (v: number): number => Number(v.toFixed(v >= 100 ? 2 : 4));
   const o = gann.order;
@@ -848,8 +849,11 @@ export async function analyzeMarketWithAI(
   let summary: string;
   if (isPending && o) {
     const sigLabel = gann.signalType === 'breakout' ? '突破追单' : '回踩分位';
+    const m15Src = gann.m15.status === 'bypass' ? '4h价直进' : '15m确认';
     summary =
-      `【江恩八分法】${dirCn}头信号：${fp(o.entry)}（${sigLabel}）· 损 ${fp(o.stop)}（-${(o.riskPct * 100).toFixed(2)}%）· TP1 ${fp(o.tp1)} / TP2 ${fp(o.tp2)} · AI置信 ${(aiConf * 100).toFixed(0)}%`;
+      `【江恩八分法】${dirCn}头信号（${m15Src}）：${fp(o.entry)}（${sigLabel}）· 损 ${fp(o.stop)}（-${(o.riskPct * 100).toFixed(2)}%）· TP1 ${fp(o.tp1)} / TP2 ${fp(o.tp2)} · AI置信 ${(aiConf * 100).toFixed(0)}%`;
+  } else if (gann.status === 'pending' && o) {
+    summary = `【江恩八分法】4h信号已触发（${dirCn}${gann.signalType === 'breakout' ? '·突破' : '·回踩'}）· ${gann.m15.reason}`;
   } else if (gann.status === 'filled' && o) {
     summary = `【江恩八分法】持仓${dirCn} @${fp(o.entry)} · 损 ${fp(o.stop)} · TP1 ${fp(o.tp1)} / TP2 ${fp(o.tp2)} · 等待离场`;
   } else if (gann.status === 'closed') {

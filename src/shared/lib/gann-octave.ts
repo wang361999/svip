@@ -11,6 +11,11 @@
  *                     + RSI(14)>30 + 日线趋势上升(价>日线MA30)
  *    做空（全部满足）：价触及50%或37.5%分位 + 看跌形态 + AI卖出置信≥0.65 + RSI(14)<70 + 日线下降
  *    突破追单：强势突破87.5%分位且AI确认 → 开多目标100%；跌破12.5%且AI确认 → 开空目标0%
+ * ④b 15分钟入场确认（降周期触发）：
+ *    4h五条件共振出信号后不立即进场；在信号bar收盘后的16根15m窗口内等同向确认
+ *    （做多：15m收盘>EMA20且阳线；做空：收盘<EMA20且阴线）；
+ *    确认根15m收盘价为生效进场价；确认前触及止损→信号作废；窗口结束未确认→过期；
+ *    15m数据不足（<30根或起点晚于信号bar）→ 降级按4h信号价直接进场（不阻塞）
  * ⑤ 风险仓位：止损=入场分位的上一/下一档八分位（距离不小于1.5×ATR）；
  *    分批止盈 TP1=最近一档、TP2=再下一档；单笔最大风险=权益2%；
  *    波动率过滤：ATR(14)超过30天ATR均值2倍 → 暂停开仓
@@ -24,6 +29,9 @@ export const STRATEGY_ID = 'gann-octave-4h-v1';
 
 const FOUR_H_MS = 4 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const FIFTEEN_MS = 15 * 60 * 1000;
+/** 价格格式化（整数位≥100留2位小数，否则4位） */
+const fp0 = (v: number) => v.toLocaleString('en-US', { maximumFractionDigits: v >= 100 ? 2 : 4 });
 
 // ==================== 参数 ====================
 
@@ -92,8 +100,8 @@ export interface GannOctaveOrder {
 }
 
 export interface GannOctaveState {
-  /** waiting观望 / pending信号触发(待进场) / filled持仓中 / closed已了结 */
-  status: 'waiting' | 'pending' | 'filled' | 'closed';
+  /** waiting观望 / pending信号触发(待15m确认) / confirmed15m已确认待进场 / filled持仓中 / closed已了结 */
+  status: 'waiting' | 'pending' | 'confirmed' | 'filled' | 'closed';
   direction: 'long' | 'short';
   signalType: 'pullback' | 'breakout' | null;
   /** 八分位阶梯（0~8档） */
@@ -128,6 +136,19 @@ export interface GannOctaveState {
   };
   order: GannOctaveOrder | null;
   outcome: 'tp' | 'sl' | null;
+  /** 15分钟入场确认层（4h信号 → 15m同向确认才进场；数据不足降级直接进场） */
+  m15: {
+    /** 15m 数据可用性（<30根或时间不覆盖 → bypass 降级） */
+    available: boolean;
+    /** waiting等确认 / confirmed已确认 / expired窗口过期末确认 / invalidated确认前触及止损 / bypass数据不足降级直进 */
+    status: 'waiting' | 'confirmed' | 'expired' | 'invalidated' | 'bypass';
+    /** 确认15m收盘时刻 */
+    confirmTime: number | null;
+    /** 15m确认进场价（覆盖order.entry） */
+    entry: number | null;
+    /** 窗口内已扫描/待扫描说明 */
+    reason: string;
+  };
   waitingReason: string;
   /** 推理链（面板展示） */
   chain: string[];
@@ -309,6 +330,7 @@ export function analyzeGannOctave(
   k4hRaw: KlineData[],
   k1dRaw: KlineData[],
   currentPrice: number,
+  k15mRaw: KlineData[] = [],
 ): GannOctaveState {
   const p = DEFAULT_GO_PARAMS;
   const chain: string[] = [];
@@ -319,7 +341,9 @@ export function analyzeGannOctave(
     positionPct: null, dailyTrend: 'unknown', dailyMa30: null, rsi: null, atr: null, atrRatio: null,
     volatilityPaused: false, ai: null, pattern: null,
     checks: { levelTouched: false, levelIdx: -1, patternOk: false, aiOk: 'none', rsiOk: false, dailyOk: false },
-    order: null, outcome: null, waitingReason: reason, chain, insufficientData: insufficient,
+    order: null, outcome: null,
+    m15: { available: false, status: 'bypass', confirmTime: null, entry: null, reason: '无信号无需确认' },
+    waitingReason: reason, chain, insufficientData: insufficient,
   });
 
   // 0. 剔除未收盘K线（4h 与 1d）
@@ -605,6 +629,7 @@ export function analyzeGannOctave(
     pattern: patBNow || patSNow,
     checks: baseChecks,
     order: null, outcome: null,
+    m15: { available: k15mRaw.filter((k) => k.time + FIFTEEN_MS <= Date.now()).length >= 30, status: 'waiting', confirmTime: null, entry: null, reason: '暂无信号' },
     waitingReason: '', chain, insufficientData: false,
   };
 
@@ -619,30 +644,85 @@ export function analyzeGannOctave(
     )[0];
     const o = sig.order;
 
+    // ============ 15分钟入场确认层（4h信号 → 15m同向确认才进场） ============
+    // 窗口：信号bar收盘后一个4h周期内的16根15m。确认=收盘过EMA20且同向K线；作废=确认前触及止损
+    const tSigClose = bars[sig.barIdx].time + FOUR_H_MS;
+    const winEnd = tSigClose + FOUR_H_MS;
+    const m15Bars = k15mRaw.filter((k) => k.time + FIFTEEN_MS <= now);
+    const m15Ready = m15Bars.length >= 30 && m15Bars[0].time <= tSigClose;
+    let m15: GannOctaveState['m15'];
+    let entryEff = o.entry; // 生效进场价（15m确认后覆盖）
+    if (!m15Ready) {
+      m15 = { available: false, status: 'bypass', confirmTime: null, entry: null, reason: `15m数据不足（${m15Bars.length}根${m15Bars.length > 0 ? '，起点晚于信号bar' : ''}），降级按4h信号价直接进场` };
+    } else {
+      // 15m EMA20（全量计算，窗口内取值）
+      const m15Closes = m15Bars.map((k) => k.close);
+      const m15Ema = emaSeries(m15Closes, 20);
+      const win = m15Bars.map((k, idx) => ({ k, idx })).filter(({ k }) => k.time >= tSigClose && k.time < winEnd);
+      let st: GannOctaveState['m15']['status'] = 'waiting';
+      let confirmTime: number | null = null;
+      let entry15: number | null = null;
+      let reasonTxt = '';
+      for (const { k, idx } of win) {
+        const e = m15Ema[idx];
+        if (e == null) continue;
+        // 作废优先（保守）：确认前先触及止损
+        if (sig.direction === 'long' ? k.low <= o.stop : k.high >= o.stop) {
+          st = 'invalidated'; reasonTxt = `确认前价格触及止损${fp0(o.stop)}，信号作废`; break;
+        }
+        // 同向确认：收盘站上/跌破EMA20 + 同向K线
+        const okLong = sig.direction === 'long' && k.close > e && k.close > k.open;
+        const okShort = sig.direction === 'short' && k.close < e && k.close < k.open;
+        if (okLong || okShort) { st = 'confirmed'; confirmTime = k.time + FIFTEEN_MS; entry15 = k.close; break; }
+      }
+      if (st === 'waiting') {
+        const winComplete = win.length > 0 && win[win.length - 1].k.time + FIFTEEN_MS >= winEnd;
+        if (winComplete) { st = 'expired'; reasonTxt = `16根15m窗口内未出现同向确认（收盘过EMA20+同向K线），信号过期`; }
+        else reasonTxt = `等待15m确认（窗口已过${win.length}/16根，需${sig.direction === 'long' ? '收盘>EMA20阳线' : '收盘<EMA20阴线'}）`;
+      }
+      if (st === 'confirmed') {
+        entryEff = entry15 as number;
+        m15 = { available: true, status: 'confirmed', confirmTime, entry: entry15, reason: `15m确认进场 @${fp0(entry15 as number)}（${new Date(confirmTime as number).toISOString().slice(5, 16).replace('T', ' ')} UTC）` };
+      } else {
+        m15 = { available: true, status: st, confirmTime: null, entry: null, reason: reasonTxt };
+      }
+    }
+    state.m15 = m15;
+    // 生效进场价与风险比回写
+    const orderEff: GannOctaveOrder = {
+      ...o,
+      entry: entryEff,
+      riskPct: sig.direction === 'long' ? (entryEff - o.stop) / entryEff : (o.stop - entryEff) / entryEff,
+    };
+
     // 后续bar推演：同bar先看止损（保守）
     let outcome: 'tp' | 'sl' | null = null;
     for (let j = sig.barIdx + 1; j < n; j++) {
       const b = bars[j];
       if (sig.direction === 'long') {
-        if (b.low <= o.stop) { outcome = 'sl'; break; }
-        if (b.high >= o.tp2) { outcome = 'tp'; break; }
+        if (b.low <= orderEff.stop) { outcome = 'sl'; break; }
+        if (b.high >= orderEff.tp2) { outcome = 'tp'; break; }
       } else {
-        if (b.high >= o.stop) { outcome = 'sl'; break; }
-        if (b.low <= o.tp2) { outcome = 'tp'; break; }
+        if (b.high >= orderEff.stop) { outcome = 'sl'; break; }
+        if (b.low <= orderEff.tp2) { outcome = 'tp'; break; }
       }
     }
 
     state.direction = sig.direction;
     state.signalType = sig.signalType;
-    state.order = o;
+    state.order = orderEff;
     state.outcome = outcome;
-    if (sig.barIdx === last && !outcome) {
-      // 信号就在最新收盘bar：待进场（极端波动时暂停）
+    // 15m未确认（过期/作废）→ 信号终结不进场，回观望并说明
+    if (m15.status === 'expired' || m15.status === 'invalidated') {
+      state.status = 'waiting';
+      state.waitingReason = `近信号（${sig.pattern}·${sig.direction === 'long' ? '多' : '空'}）${m15.status === 'expired' ? '15m窗口内未确认已过期' : '15m确认前触及止损作废'} — 等待下一次五条件共振`;
+    } else if (sig.barIdx === last && !outcome) {
+      // 信号就在最新收盘bar：待15m确认（极端波动时暂停）
       if (state.volatilityPaused) {
         state.status = 'waiting';
         state.waitingReason = `信号触发（${sig.pattern}）但ATR为30天均值${(ratioNow as number).toFixed(1)}倍 > ${p.atrVolFilterMult}倍，极端行情暂停开仓`;
       } else {
-        state.status = 'pending';
+        state.status = m15.status === 'confirmed' ? 'confirmed' : 'pending';
       }
     } else if (outcome) {
       state.status = 'closed';
@@ -678,9 +758,17 @@ export function analyzeGannOctave(
   );
   if (state.order && state.status !== 'waiting') {
     const o = state.order;
+    const m15txt = state.m15.status === 'confirmed'
+      ? `15m已确认进场 @${fp0(state.m15.entry as number)}`
+      : state.m15.status === 'bypass'
+        ? '15m数据不足·按4h信号价直进'
+        : state.m15.status === 'waiting'
+          ? state.m15.reason
+          : state.m15.status;
     chain.push(
-      `信号：${state.signalType === 'breakout' ? '突破追单' : '分位回调'}${state.direction === 'long' ? '做多' : '做空'} @${fp(o.entry)} · 止损${fp(o.stop)}（${o.stopSource === 'octave' ? '上一/下一档分位' : '1.5×ATR下限'}，-${(o.riskPct * 100).toFixed(2)}%）· TP1 ${fp(o.tp1)} / TP2 ${fp(o.tp2)}`,
-      `状态：${state.status === 'pending' ? '信号已触发待进场' : state.status === 'filled' ? '持仓中（等待TP/SL）' : state.outcome === 'tp' ? '已止盈离场' : '已止损离场'}`,
+      `信号：${state.signalType === 'breakout' ? '突破追单' : '分位回调'}${state.direction === 'long' ? '做多' : '做空'} 4h价 @${fp(o.entry)} · 止损${fp(o.stop)}（${o.stopSource === 'octave' ? '上一/下一档分位' : '1.5×ATR下限'}，-${(o.riskPct * 100).toFixed(2)}%）· TP1 ${fp(o.tp1)} / TP2 ${fp(o.tp2)}`,
+      `15m入场确认：${m15txt}${state.m15.entry != null ? `（生效进场价 ${fp0(state.m15.entry)}）` : ''}`,
+      `状态：${state.status === 'pending' ? '信号已触发·等15m确认' : state.status === 'confirmed' ? '15m已确认·待进场' : state.status === 'filled' ? '持仓中（等待TP/SL）' : state.outcome === 'tp' ? '已止盈离场' : '已止损离场'}`,
     );
   }
   chain.push(`口径：${STRATEGY_ID} · ETH 4h主框架 · 单笔最大风险权益2% · 止损距离≥${p.atrStopFloorMult}×ATR · 无回测逻辑（纯实盘规则）`);
