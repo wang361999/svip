@@ -18,21 +18,8 @@ interface AiAnalysis {
   reasoning: string;
   keyLevels: { price: number; type: string; note: string }[] | null;
   meta?: {
-    regime: string;
-    aPlusChecklist?: Record<string, boolean>;
-    atr15m?: number | null;
-    evidence?: { dimension: string; data: string; signal: string; note: string }[];
-    plans?: {
-      name: string; style: string; recommended: boolean;
-      entry: number | null; stopLoss: number | null;
-      takeProfit1: number | null; takeProfit2: number | null;
-      rr1: number | null; rr2: number | null; condition: string;
-      entryType?: 'limit_pull' | 'limit_break' | 'market';
-      cancelIf?: { price: number; reason: string } | null;
-      validFor?: string;
-    }[];
-    noTradeZone?: { from: number; to: number; reason: string } | null;
-    /** 江恩八分位阶梯（服务端客观计算） */
+    regime?: string;
+    /** 江恩八分位阶梯（服务端客观计算 — 唯一分析依据） */
     gann?: {
       swingHigh: number; swingLow: number; rangePct: number;
       positionPct: number; zoneLabel: string;
@@ -95,7 +82,6 @@ export default function AiAnalysisPanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showHistory, setShowHistory] = useState(false);
-  const [showPlanB, setShowPlanB] = useState(false);
   const [copiedPlan, setCopiedPlan] = useState<string | null>(null);
   const [autoAnalyze, setAutoAnalyze] = useState(true);
   const [intervalSec, setIntervalSec] = useState(30); // 默认 30 秒
@@ -228,103 +214,82 @@ export default function AiAnalysisPanel() {
     return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
   };
 
-  /** 一键复制挂单信息（可直接粘贴到交易所下单） */
-  const copyPlanOrder = async (p: NonNullable<NonNullable<AiAnalysis['meta']>['plans']>[number]) => {
+  /** 一键复制挂单信息（价位全部为八分位，可直接粘贴到交易所下单） */
+  const copyOrder = async () => {
     if (!analysis) return;
     const dirText = analysis.direction === 'long' ? '做多' : analysis.direction === 'short' ? '做空' : '';
-    const etText = p.entryType === 'limit_break' ? '突破挂单' : p.entryType === 'market' ? '市价' : '限价';
     const parts = [
-      `${label} ${etText}${dirText}`,
-      p.entry != null ? `挂单价 ${p.entry}` : null,
-      p.stopLoss != null ? `止损 ${p.stopLoss}` : null,
-      p.takeProfit1 != null ? `止盈1 ${p.takeProfit1}` : null,
-      p.takeProfit2 != null ? `止盈2 ${p.takeProfit2}` : null,
-      p.cancelIf ? `撤单价 ${p.cancelIf.price}` : null,
+      `${label} 限价${dirText}`,
+      analysis.entryPrice != null ? `挂单价 ${analysis.entryPrice}` : null,
+      analysis.stopLoss != null ? `止损 ${analysis.stopLoss}` : null,
+      analysis.takeProfit1 != null ? `止盈1 ${analysis.takeProfit1}` : null,
+      analysis.takeProfit2 != null ? `止盈2 ${analysis.takeProfit2}` : null,
     ].filter(Boolean).join(' | ');
     try {
       await navigator.clipboard.writeText(parts);
-      setCopiedPlan(p.name);
+      setCopiedPlan('order');
       setTimeout(() => setCopiedPlan(null), 1500);
     } catch {}
   };
 
-  const plans = analysis?.meta?.plans || [];
-  const planA = plans.find((p) => p.recommended) || plans[0] || null;
-  const planB = plans.find((p) => p !== planA) || null;
   const gann = analysis?.meta?.gann || null;
-  const inNoTradeZone = !!(
-    analysis?.meta?.noTradeZone &&
-    currentPrice >= analysis.meta.noTradeZone.from &&
-    currentPrice <= analysis.meta.noTradeZone.to
-  );
 
-  /** 挂单指令卡（纯数字结果） */
-  const OrderCard = ({ p }: { p: NonNullable<NonNullable<AiAnalysis['meta']>['plans']>[number] }) => {
-    const isLong = analysis?.direction === 'long';
-    const accent = p.recommended ? (isLong ? 'border-green-500/40 bg-green-500/5' : 'border-red-500/40 bg-red-500/5') : 'border-dark-800 bg-dark-900/40';
+  /** 挂单指令卡（纯数字结果 — 价位全部为八分位价格） */
+  const OrderCard = () => {
+    if (!analysis) return null;
+    const e = analysis.entryPrice;
+    const risk = e != null && analysis.stopLoss != null ? Math.abs(e - analysis.stopLoss) : 0;
+    const rr1 = risk > 0 && analysis.takeProfit1 != null ? Math.abs(analysis.takeProfit1 - e!) / risk : null;
+    const rr2 = risk > 0 && analysis.takeProfit2 != null ? Math.abs(analysis.takeProfit2 - e!) / risk : null;
+    const accent = analysis.direction === 'short'
+      ? 'border-red-500/40 bg-red-500/5'
+      : 'border-green-500/40 bg-green-500/5';
     return (
       <div className={`rounded-xl border ${accent} p-3.5`}>
-        {/* 第一行：挂单价（大） + 类型 + 复制 */}
+        {/* 第一行：挂单价（大）+ 复制 */}
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-baseline gap-2">
-            <span className="text-dark-500 text-xs">{dir?.label}</span>
-            <span className="text-white text-2xl font-bold tracking-tight">{p.entry != null ? formatPrice(p.entry) : '--'}</span>
-            {pctFromPrice(p.entry)}
+            <span className="text-dark-500 text-xs">{dir?.label} @</span>
+            <span className="text-white text-2xl font-bold tracking-tight">{formatPrice(e)}</span>
+            {pctFromPrice(e)}
           </div>
-          <div className="flex items-center gap-1.5">
-            {p.entryType && (
-              <span className={`text-[10px] px-1.5 py-0.5 rounded border ${entryTypeMap[p.entryType]?.cls || ''}`}>
-                {entryTypeMap[p.entryType]?.label}
-              </span>
-            )}
-            <button
-              onClick={() => copyPlanOrder(p)}
-              className={`text-[10px] px-2.5 py-1 rounded-md border font-medium transition-colors ${
-                copiedPlan === p.name
-                  ? 'text-green-400 border-green-500/40 bg-green-500/10'
-                  : 'text-blue-400 border-blue-500/30 bg-blue-500/10 hover:bg-blue-500/20'
-              }`}
-            >
-              {copiedPlan === p.name ? '✓ 已复制' : '复制挂单'}
-            </button>
-          </div>
+          <button
+            onClick={copyOrder}
+            className={`text-[10px] px-2.5 py-1 rounded-md border font-medium transition-colors ${
+              copiedPlan === 'order'
+                ? 'text-green-400 border-green-500/40 bg-green-500/10'
+                : 'text-blue-400 border-blue-500/30 bg-blue-500/10 hover:bg-blue-500/20'
+            }`}
+          >
+            {copiedPlan === 'order' ? '✓ 已复制' : '复制挂单'}
+          </button>
         </div>
 
         {/* 第二行：止损 / 止盈1 / 止盈2 / 盈亏比 */}
-        <div className="grid grid-cols-4 gap-2 mb-2.5">
+        <div className="grid grid-cols-4 gap-2">
           <div className="rounded-lg bg-red-500/8 border border-red-500/20 py-1.5 text-center">
             <div className="text-dark-500 text-[10px]">止损</div>
-            <div className="text-red-400 text-sm font-semibold">{formatPrice(p.stopLoss)}</div>
-            {pctFromPrice(p.stopLoss)}
+            <div className="text-red-400 text-sm font-semibold">{formatPrice(analysis.stopLoss)}</div>
+            {pctFromPrice(analysis.stopLoss)}
           </div>
           <div className="rounded-lg bg-green-500/8 border border-green-500/20 py-1.5 text-center">
             <div className="text-dark-500 text-[10px]">止盈 1</div>
-            <div className="text-green-400 text-sm font-semibold">{formatPrice(p.takeProfit1)}</div>
-            {pctFromPrice(p.takeProfit1)}
+            <div className="text-green-400 text-sm font-semibold">{formatPrice(analysis.takeProfit1)}</div>
+            {pctFromPrice(analysis.takeProfit1)}
           </div>
           <div className="rounded-lg bg-green-500/8 border border-green-500/20 py-1.5 text-center">
             <div className="text-dark-500 text-[10px]">止盈 2</div>
-            <div className="text-green-400 text-sm font-semibold">{formatPrice(p.takeProfit2)}</div>
-            {pctFromPrice(p.takeProfit2)}
+            <div className="text-green-400 text-sm font-semibold">{formatPrice(analysis.takeProfit2)}</div>
+            {pctFromPrice(analysis.takeProfit2)}
           </div>
           <div className="rounded-lg bg-dark-800/60 border border-dark-700/40 py-1.5 text-center">
             <div className="text-dark-500 text-[10px]">盈亏比</div>
             <div className="text-white text-sm font-semibold">
-              {p.rr1 != null ? `1:${p.rr1}` : '--'}
+              {rr1 != null ? `1:${rr1.toFixed(1)}` : '--'}
             </div>
-            {p.rr2 != null ? <div className="text-dark-500 text-[10px]">→ {p.rr2}</div> : null}
+            {rr2 != null ? <div className="text-dark-500 text-[10px]">→ {rr2.toFixed(1)}</div> : null}
           </div>
         </div>
-
-        {/* 第三行：撤单价（只显示数字） */}
-        {p.cancelIf && p.cancelIf.price > 0 && (
-          <div className="flex items-center justify-center gap-2 py-1.5 rounded-lg bg-dark-900/60 border border-dark-800">
-            <span className="text-dark-500 text-[11px]">撤单价</span>
-            <span className="text-amber-400 text-sm font-semibold">{formatPrice(p.cancelIf.price)}</span>
-            {pctFromPrice(p.cancelIf.price)}
-            <span className="text-dark-600 text-[10px]">越过即撤</span>
-          </div>
-        )}
       </div>
     );
   };
@@ -425,46 +390,21 @@ export default function AiAnalysisPanel() {
             </div>
           </div>
 
-          {/* 不做区警示（当前处于观望区 = 行动指令） */}
-          {inNoTradeZone && analysis.meta?.noTradeZone && (
-            <div className="flex items-center gap-2 p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/40">
-              <span className="text-amber-400">⛔</span>
-              <span className="text-xs text-amber-400 font-medium">
-                不做区 {formatPrice(analysis.meta.noTradeZone.from)} ~ {formatPrice(analysis.meta.noTradeZone.to)} — 观望
-              </span>
-            </div>
-          )}
-
-          {/* 挂单指令卡（Plan A） */}
-          {planA && analysis.direction !== 'neutral' && (
-            <OrderCard p={planA} />
+          {/* 挂单指令卡（价位全部为八分位价格） */}
+          {analysis.direction !== 'neutral' && (
+            <>
+              <OrderCard />
+              {analysis.summary && (
+                <div className="text-dark-400 text-xs leading-relaxed px-1">{analysis.summary}</div>
+              )}
+            </>
           )}
 
           {/* 观望时的提示（neutral = 结果本身） */}
           {analysis.direction === 'neutral' && (
             <div className="p-4 rounded-xl border border-dark-700 bg-dark-800/40 text-center">
               <div className="text-dark-300 text-sm">当前无挂单信号</div>
-              <div className="text-dark-500 text-xs mt-1">等待下一次分析或参考下方八分位</div>
-            </div>
-          )}
-
-          {/* Plan B 折叠 */}
-          {planB && analysis.direction !== 'neutral' && (
-            <div>
-              <button
-                onClick={() => setShowPlanB(!showPlanB)}
-                className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-dark-800/40 border border-dark-800 text-dark-400 text-xs hover:text-white transition-colors"
-              >
-                <svg className={`w-3 h-3 transition-transform ${showPlanB ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
-                激进备选 Plan B
-              </button>
-              {showPlanB && (
-                <div className="mt-2">
-                  <OrderCard p={planB} />
-                </div>
-              )}
+              <div className="text-dark-500 text-xs mt-1">{analysis.summary}</div>
             </div>
           )}
 

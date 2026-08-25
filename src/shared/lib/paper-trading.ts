@@ -830,31 +830,13 @@ export async function runEngine(userId: string): Promise<{
           const price = priceMap[sym.symbol];
           if (!price || price <= 0) continue;
 
-          // ===== 挂单执行：等价格触达挂单价才成交（模拟限价单，与 AI 挂单导向输出对齐）=====
-          // Plan A 为 limit_pull/limit_break 时：价格未触达挂单价（容差 0.12%）→ 本轮等待，绝不追价；
-          // 价格越过 cancelIf（撤单价）→ 信号作废，等待下一次新分析；触达 → 按挂单价成交。
-          // market 计划或旧记录（无 plan 字段）：退回原漂移检查（偏离 >0.3% = 窗口已过，跳过）
+          // ===== 江恩挂单成交：等价格触达八分位挂单价才成交（模拟限价单，绝不追价）=====
+          // 价格未到挂单分位（容差 0.3%）→ 本轮等待；触达 → 按挂单分位价成交（限价单语义）
           const execPrice = (() => {
-            const planEntry = aiMeta.plan?.entry ?? latestAi.entryPrice;
-            if (!planEntry || planEntry <= 0) return price;
-            const isLong = latestAi.direction === 'long';
-            const et = aiMeta.plan?.entryType;
-            const cancelAt = aiMeta.plan?.cancelIf ?? null;
-
-            if (et === 'limit_pull' || et === 'limit_break') {
-              // 撤单检查（错过即撤）：多单挂回踩位但价格直接上穿撤单价；空单反向
-              if (cancelAt && cancelAt > 0 && (isLong ? price >= cancelAt : price <= cancelAt)) return -1;
-              // 触达判定（限价单语义：价格到达即成交，穿透也按挂单价成交）
-              const reached = et === 'limit_pull'
-                ? (isLong ? price <= planEntry * 1.0012 : price >= planEntry * 0.9988)
-                : (isLong ? price >= planEntry * 0.9988 : price <= planEntry * 1.0012);
-              if (!reached) return -1; // 未触达，本轮等待
-              return planEntry; // 按挂单价成交
-            }
-
-            // market / 旧记录：现价偏离参考价超 0.3% = 入场窗口已过
-            if (Math.abs(price - planEntry) / planEntry > 0.003) return -1;
-            return price;
+            const gannEntry = latestAi.entryPrice;
+            if (!gannEntry || gannEntry <= 0) return price; // 无挂单价（异常兜底）按现价
+            if (Math.abs(price - gannEntry) / gannEntry > 0.003) return -1; // 未触达分位，本轮等待
+            return gannEntry; // 按八分位挂单价成交
           })();
           if (execPrice <= 0) continue;
 
@@ -882,28 +864,11 @@ export async function runEngine(userId: string): Promise<{
           // 检查该币种同方向是否已有持仓（含本次运行内新开的）
           if (openDirKeys.has(`${sym.symbol}:${latestAi.direction}`)) continue;
 
-          // ===== 风控闸门：止损必须存在且距离合理（短线标准）=====
-          // 止损距离占价格 0.3% ~ 5% 才视为有效；过近会被瞬时波动扫损，
-          // 超过 5% 属于波段/中线级别的止损，不符合短线定位（丢弃后按账户默认止损重算）
-          // 距离以挂单成交价 execPrice 计算（模拟限价单成交后的真实风险敞口）
-          const MIN_SL_PCT = 0.003;
-          const MAX_SL_PCT = 0.05;
+          // ===== 江恩止损：AI 止损 = 相邻外侧分位，直接采用（严格江恩规则，不按距离/ATR 丢弃） =====
+          // 仅当 AI 未给止损时按账户默认百分比兜底
           let stopLoss = latestAi.stopLoss;
-          if (stopLoss != null) {
-            const distPct = Math.abs(execPrice - stopLoss) / execPrice;
-            if (distPct < MIN_SL_PCT || distPct > MAX_SL_PCT) stopLoss = null; // 距离不合理 → 丢弃 AI 的止损
-          }
-          // ===== 无效点校验（大神思维的核心）：入场离无效点太远 = 盈亏比差 = 放弃 =====
-          // 止损距离超过 1.5 倍 15m ATR，说明这笔交易要扛过多根 K 线的噪音才能证明自己错了
-          if (stopLoss != null && aiMeta.atr15m && aiMeta.atr15m > 0) {
-            if (Math.abs(execPrice - stopLoss) > aiMeta.atr15m * 1.5) continue;
-          }
-          // AI 没给有效止损时，按 ATR 生成贴近无效点的止损（0.75×ATR），无 ATR 再退回账户默认
-          if (stopLoss == null) {
-            const atrDist = aiMeta.atr15m && aiMeta.atr15m > 0
-              ? Math.max(aiMeta.atr15m * 0.75, execPrice * MIN_SL_PCT)
-              : null;
-            const slDist0 = atrDist ?? execPrice * (account.stopLossPct > 0 ? account.stopLossPct / 100 : 0.02);
+          if (stopLoss == null || stopLoss <= 0) {
+            const slDist0 = execPrice * (account.stopLossPct > 0 ? account.stopLossPct / 100 : 0.02);
             stopLoss = latestAi.direction === 'long'
               ? execPrice - slDist0
               : execPrice + slDist0;
