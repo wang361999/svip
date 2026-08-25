@@ -1,84 +1,65 @@
 'use client';
 
 /**
- * 公众号文章写作页
+ * 消息面页面（原公众号文章页改造）
  *
- * 流程：选币种（ETH/BTC 快捷 + 全部下拉）→ 生成文章 → 手机宽预览 →
- *      三选一标题 → 一键复制富文本（粘贴公众号编辑器保留排版）/ 复制纯文本
- *
- * 历史：localStorage 存最近 10 篇（本设备），刷新不丢
+ * 板块：
+ * 1. 美联储利率卡 — 当前区间 / 最近决议 / 下次 FOMC 倒计时 / 2026 剩余会议
+ * 2. 新闻流 — 双 tab：宏观·加息降息 / 加密市场（Google News 中文，48h 内）
+ * 3. 一键复制今日要闻（纯文本速览，零 AI 成本）
  */
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { apiGet, apiPost } from '@/shared/api/client';
+import { apiGet } from '@/shared/api/client';
 import useAuthStore from '@/store/authStore';
 
-interface SymbolOption {
-  symbol: string;
-  okxId: string;
-  label: string;
-  isPopular?: boolean;
-}
-
-interface ArticleContent {
-  titles: string[];
-  lead: string;
-  keyPoint: string;
-  body: string[];
-  operation: string;
-  riskNote: string;
-}
-
-interface ArticleData {
-  symbol: string;
-  label: string;
-  price: number;
-  change24hPct: number;
-  high24h: number;
-  low24h: number;
-  gann: unknown;
-  structure: { m15: { trend: string }; h1: { trend: string }; h4: { trend: string } };
-  fractal: unknown;
-  generatedAt: string;
-}
-
-interface ArticleResult {
-  data: ArticleData;
-  content: ArticleContent;
-  html: string;
-  plainText: string;
-  model: string;
-}
-
-interface HistoryEntry {
-  key: string;
-  symbol: string;
-  label: string;
+interface NewsItem {
   title: string;
-  createdAt: string;
-  result: ArticleResult;
+  link: string;
+  source: string;
+  publishedAt: number;
 }
 
-const HISTORY_KEY = 'article_history_v1';
-const HISTORY_MAX = 10;
+interface FomcMeeting {
+  decisionDate: string;
+  label: string;
+  hasSEP: boolean;
+}
 
-export default function WriterPage() {
+interface MacroNewsData {
+  rate: { rangeLow: number; rangeHigh: number; lastDecisionDate: string; lastDecisionNote: string; updatedAt: string };
+  fomc: { next: FomcMeeting | null; daysUntil: number; upcoming: FomcMeeting[] };
+  macroNews: NewsItem[];
+  cryptoNews: NewsItem[];
+  digest: string;
+}
+
+type Tab = 'macro' | 'crypto';
+
+export default function MacroNewsPage() {
   const router = useRouter();
   const { setUser } = useAuthStore();
-  const [symbols, setSymbols] = useState<SymbolOption[]>([]);
-  const [symbol, setSymbol] = useState('ETHUSDT');
-  const [okxId, setOkxId] = useState('ETH-USDT');
-  const [label, setLabel] = useState('ETH/USDT');
-  const [article, setArticle] = useState<ArticleResult | null>(null);
-  const [titleIdx, setTitleIdx] = useState(0);
-  const [loading, setLoading] = useState(false);
+  const [data, setData] = useState<MacroNewsData | null>(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [copied, setCopied] = useState<'' | 'html' | 'text'>('');
-  const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const [showHistory, setShowHistory] = useState(false);
+  const [tab, setTab] = useState<Tab>('macro');
+  const [copied, setCopied] = useState(false);
 
-  // 登录守卫（未登录跳登录页）+ 加载币种列表与历史
+  const load = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const d = await apiGet<MacroNewsData>('/api/macro-news');
+      setData(d);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '加载失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 登录守卫 + 首次加载
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -89,115 +70,38 @@ export default function WriterPage() {
         if (!cancelled) router.push('/login');
         return;
       }
-      try {
-        const list = await apiGet<SymbolOption[]>('/api/symbols');
-        if (!cancelled && Array.isArray(list) && list.length > 0) {
-          setSymbols(list);
-          const eth = list.find((s) => s.symbol === 'ETHUSDT');
-          if (eth) {
-            setOkxId(eth.okxId);
-            setLabel(eth.label);
-          }
-        }
-      } catch {}
+      await load();
     })();
-    try {
-      const raw = localStorage.getItem(HISTORY_KEY);
-      if (raw) setHistory(JSON.parse(raw));
-    } catch {}
     return () => {
       cancelled = true;
     };
-  }, [router, setUser]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const selectSymbol = (s: SymbolOption) => {
-    setSymbol(s.symbol);
-    setOkxId(s.okxId);
-    setLabel(s.label);
-  };
+  // 5 分钟自动刷新（新闻缓存 10 分钟，无需更频繁）
+  useEffect(() => {
+    const t = setInterval(load, 5 * 60_000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const generate = async () => {
-    setLoading(true);
-    setError('');
+  const copyDigest = async () => {
+    if (!data) return;
     try {
-      const result = await apiPost<ArticleResult>('/api/article', { symbol, okxId, label });
-      setArticle(result);
-      setTitleIdx(0);
-      // 写入历史
-      const entry: HistoryEntry = {
-        key: `${Date.now()}`,
-        symbol,
-        label,
-        title: result.content.titles[0],
-        createdAt: new Date().toISOString(),
-        result,
-      };
-      setHistory((prev) => {
-        const next = [entry, ...prev].slice(0, HISTORY_MAX);
-        try {
-          localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
-        } catch {}
-        return next;
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '生成失败');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // 选中的标题 + 替换占位符后的 HTML
-  const finalHtml = article
-    ? article.html.replace('<!--TITLE_SLOT-->', article.content.titles[titleIdx] || '')
-    : '';
-
-  /** 复制富文本（text/html — 公众号编辑器粘贴后保留全部排版） */
-  const copyRich = async () => {
-    if (!finalHtml) return;
-    const plain = article ? article.plainText : '';
-    try {
-      // ClipboardItem 同时写 html + 纯文本（编辑器不支持 html 时退化为纯文本）
-      const item = new ClipboardItem({
-        'text/html': new Blob([finalHtml], { type: 'text/html' }),
-        'text/plain': new Blob([plain], { type: 'text/plain' }),
-      });
-      await navigator.clipboard.write([item]);
-      setCopied('html');
-    } catch {
-      // 兜底：execCommand 复制（隐藏节点承载样式 HTML）
-      const holder = document.createElement('div');
-      holder.setAttribute('contenteditable', 'true');
-      holder.innerHTML = finalHtml;
-      holder.style.position = 'fixed';
-      holder.style.left = '-9999px';
-      document.body.appendChild(holder);
-      const range = document.createRange();
-      range.selectNodeContents(holder);
-      const sel = window.getSelection();
-      sel?.removeAllRanges();
-      sel?.addRange(range);
-      document.execCommand('copy');
-      document.body.removeChild(holder);
-      sel?.removeAllRanges();
-      setCopied('html');
-    }
-    setTimeout(() => setCopied(''), 2000);
-  };
-
-  /** 复制纯文本 */
-  const copyPlain = async () => {
-    if (!article) return;
-    try {
-      await navigator.clipboard.writeText(article.plainText);
-      setCopied('text');
-      setTimeout(() => setCopied(''), 2000);
+      await navigator.clipboard.writeText(data.digest);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
     } catch {}
   };
 
-  const quickPicks = ['ETHUSDT', 'BTCUSDT']
-    .map((s) => symbols.find((x) => x.symbol === s))
-    .filter((x): x is SymbolOption => !!x);
-  const otherSymbols = symbols.filter((s) => !['ETHUSDT', 'BTCUSDT'].includes(s.symbol));
+  const fmtTime = (ts: number) => {
+    const diff = Date.now() - ts;
+    if (diff < 3_600_000) return `${Math.max(1, Math.floor(diff / 60_000))} 分钟前`;
+    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+    return new Date(ts).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+  };
+
+  const newsList = tab === 'macro' ? data?.macroNews : data?.cryptoNews;
 
   return (
     <main className="min-h-screen bg-dark-950 pt-16">
@@ -205,182 +109,148 @@ export default function WriterPage() {
         {/* 顶栏 */}
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-xl font-bold text-white">公众号文章</h1>
-            <p className="text-xs text-dark-500 mt-1">
-              行情分析文章生成 · 点位与交易面板同源 · 复制后直接粘贴公众号编辑器
-            </p>
-          </div>
-          <Link href="/trading" className="text-xs text-dark-400 hover:text-white transition-colors">
-            ← 返回交易
-          </Link>
-        </div>
-
-        {/* 生成控制条 */}
-        <div className="glass-card p-4 mb-6">
-          <div className="flex flex-wrap items-center gap-2 mb-3">
-            <span className="text-xs text-dark-500">币种：</span>
-            {quickPicks.map((s) => (
-              <button
-                key={s.symbol}
-                onClick={() => selectSymbol(s)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                  symbol === s.symbol
-                    ? 'bg-blue-600 text-white border-blue-500'
-                    : 'text-dark-300 bg-dark-800 border-dark-700 hover:text-white'
-                }`}
-              >
-                {s.label}
-              </button>
-            ))}
-            {otherSymbols.length > 0 && (
-              <select
-                value={symbol}
-                onChange={(e) => {
-                  const s = symbols.find((x) => x.symbol === e.target.value);
-                  if (s) selectSymbol(s);
-                }}
-                className="px-3 py-1.5 rounded-lg text-xs bg-dark-800 border border-dark-700 text-dark-300"
-              >
-                <option value={symbol}>{symbol === 'ETHUSDT' || symbol === 'BTCUSDT' ? '其他币种' : label}</option>
-                {otherSymbols.map((s) => (
-                  <option key={s.symbol} value={s.symbol}>
-                    {s.label}
-                  </option>
-                ))}
-              </select>
-            )}
+            <h1 className="text-xl font-bold text-white">消息面</h1>
+            <p className="text-xs text-dark-500 mt-1">美联储利率 · 加息降息动态 · 宏观与加密新闻</p>
           </div>
           <div className="flex items-center gap-3">
-            <button
-              onClick={generate}
-              disabled={loading}
-              className="px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-            >
-              {loading ? (
-                <>
-                  <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  AI 撰写中（约 30 秒）...
-                </>
-              ) : (
-                <>✍️ 生成文章</>
-              )}
+            <button onClick={load} disabled={loading} className="text-xs text-dark-400 hover:text-white transition-colors">
+              {loading ? '刷新中…' : '↻ 刷新'}
             </button>
-            {history.length > 0 && (
-              <button
-                onClick={() => setShowHistory(!showHistory)}
-                className="text-xs text-dark-400 hover:text-white transition-colors"
-              >
-                历史 ({history.length})
-              </button>
-            )}
+            <Link href="/trading" className="text-xs text-dark-400 hover:text-white transition-colors">
+              ← 返回交易
+            </Link>
           </div>
-
-          {/* 错误提示 */}
-          {error && (
-            <div className="mt-3 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm">
-              {error}
-            </div>
-          )}
-
-          {/* 历史 */}
-          {showHistory && history.length > 0 && (
-            <div className="mt-3 space-y-1 max-h-40 overflow-y-auto">
-              {history.map((h) => (
-                <button
-                  key={h.key}
-                  onClick={() => {
-                    setArticle(h.result);
-                    setTitleIdx(0);
-                    setShowHistory(false);
-                  }}
-                  className="w-full flex items-center gap-3 px-3 py-2 rounded-lg bg-dark-900/60 border border-dark-800 text-xs text-left hover:border-dark-600 transition-colors"
-                >
-                  <span className="text-dark-500 flex-shrink-0">{h.label}</span>
-                  <span className="text-dark-300 truncate flex-1">{h.title}</span>
-                  <span className="text-dark-600 flex-shrink-0">
-                    {new Date(h.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
         </div>
 
-        {/* 文章预览 */}
-        {!article && !loading && (
-          <div className="text-center py-16 text-dark-400">
-            <p className="text-4xl mb-4">📝</p>
-            <p className="text-sm">选择币种，点击「生成文章」</p>
-            <p className="text-xs text-dark-500 mt-2">
-              标题 / 导语 / 走势解读由 AI 撰写 · 点位表 / 多周期结构 / 分型信号为系统客观计算
-            </p>
+        {error && (
+          <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm mb-4">{error}</div>
+        )}
+
+        {/* 美联储利率卡 */}
+        {data && (
+          <div className="glass-card p-5 mb-5">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <div className="text-dark-500 text-xs mb-1">联邦基金利率目标区间</div>
+                <div className="text-3xl font-bold text-white leading-none">
+                  {data.rate.rangeLow.toFixed(2)}
+                  <span className="text-dark-500 text-lg mx-1">–</span>
+                  {data.rate.rangeHigh.toFixed(2)}
+                  <span className="text-lg ml-1">%</span>
+                </div>
+                <div className="text-dark-400 text-xs mt-2">{data.rate.lastDecisionNote}</div>
+              </div>
+              {data.fomc.next && (
+                <div className="rounded-xl border border-blue-500/30 bg-blue-500/10 px-4 py-3 text-center min-w-[120px]">
+                  <div className="text-dark-400 text-[10px] mb-0.5">下次 FOMC 决议</div>
+                  <div className="text-white text-lg font-bold leading-none">{data.fomc.daysUntil} 天</div>
+                  <div className="text-blue-400 text-xs mt-1">
+                    {data.fomc.next.label}
+                    {data.fomc.next.hasSEP && <span className="text-dark-500"> · 带点阵图</span>}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 2026 剩余会议 */}
+            {data.fomc.upcoming.length > 0 && (
+              <div className="flex flex-wrap gap-2 mt-4 pt-4 border-t border-dark-800">
+                <span className="text-dark-500 text-xs py-1">2026 剩余会议：</span>
+                {data.fomc.upcoming.map((m) => (
+                  <span key={m.decisionDate} className="px-2.5 py-1 rounded-lg bg-dark-800/60 border border-dark-700 text-xs text-dark-300">
+                    {m.label}
+                    {m.hasSEP && <span className="text-dark-500 ml-1">*</span>}
+                  </span>
+                ))}
+                <span className="text-dark-600 text-[10px] py-1.5 self-end">* 附经济预测摘要（SEP）与点阵图</span>
+              </div>
+            )}
+            <div className="text-dark-600 text-[10px] mt-3">
+              利率数据截至 {data.rate.lastDecisionDate} 决议 · 资料来源：美联储官网
+            </div>
           </div>
         )}
 
-        {article && (
-          <div className="space-y-4">
-            {/* 标题三选一 */}
-            <div className="glass-card p-4">
-              <div className="text-xs text-dark-500 mb-2">候选标题（点击切换）</div>
-              <div className="space-y-1.5">
-                {article.content.titles.map((t, i) => (
-                  <button
-                    key={i}
-                    onClick={() => setTitleIdx(i)}
-                    className={`w-full text-left px-3 py-2 rounded-lg text-sm border transition-colors ${
-                      titleIdx === i
-                        ? 'bg-blue-600/15 border-blue-500/40 text-white'
-                        : 'bg-dark-900/40 border-dark-800 text-dark-300 hover:border-dark-600'
-                    }`}
-                  >
-                    <span className={`mr-2 text-[10px] font-bold ${titleIdx === i ? 'text-blue-400' : 'text-dark-500'}`}>
-                      {i + 1}
-                    </span>
-                    {t}
-                  </button>
-                ))}
-              </div>
-              {/* 复制按钮 */}
-              <div className="flex items-center gap-2 mt-3">
-                <button
-                  onClick={copyRich}
-                  className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium border transition-colors ${
-                    copied === 'html'
-                      ? 'text-green-400 border-green-500/40 bg-green-500/10'
-                      : 'text-white bg-blue-600 border-blue-500 hover:bg-blue-700'
-                  }`}
-                >
-                  {copied === 'html' ? '✓ 已复制，去公众号编辑器粘贴' : '📋 一键复制（公众号排版）'}
-                </button>
-                <button
-                  onClick={copyPlain}
-                  className={`px-4 py-2.5 rounded-lg text-sm border transition-colors ${
-                    copied === 'text'
-                      ? 'text-green-400 border-green-500/40 bg-green-500/10'
-                      : 'text-dark-300 bg-dark-800 border-dark-700 hover:text-white'
-                  }`}
-                >
-                  {copied === 'text' ? '✓ 已复制' : '纯文本'}
-                </button>
-              </div>
-            </div>
+        {/* 新闻流 */}
+        <div className="glass-card p-4">
+          {/* Tab 切换 */}
+          <div className="flex items-center gap-2 mb-4">
+            <button
+              onClick={() => setTab('macro')}
+              className={`px-4 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+                tab === 'macro'
+                  ? 'bg-blue-600 text-white border-blue-500'
+                  : 'text-dark-300 bg-dark-800 border-dark-700 hover:text-white'
+              }`}
+            >
+              宏观 · 加息降息
+            </button>
+            <button
+              onClick={() => setTab('crypto')}
+              className={`px-4 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+                tab === 'crypto'
+                  ? 'bg-blue-600 text-white border-blue-500'
+                  : 'text-dark-300 bg-dark-800 border-dark-700 hover:text-white'
+              }`}
+            >
+              加密市场
+            </button>
+            {data && (
+              <span className="text-dark-600 text-xs ml-auto">
+                {tab === 'macro' ? data.macroNews.length : data.cryptoNews.length} 条 · 48 小时内
+              </span>
+            )}
+          </div>
 
-            {/* 手机宽预览（模拟公众号阅读视图：白底黑字） */}
-            <div className="flex justify-center">
-              <div
-                className="w-full max-w-[420px] bg-white rounded-xl overflow-hidden shadow-2xl"
-                style={{ minHeight: 400 }}
+          {/* 列表 */}
+          {loading && !data && (
+            <div className="flex items-center justify-center py-12">
+              <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            </div>
+          )}
+
+          {data && newsList && newsList.length === 0 && (
+            <div className="text-center py-10 text-dark-400 text-sm">暂无新闻（抓取失败或超出 48 小时窗口）</div>
+          )}
+
+          <div className="space-y-1">
+            {newsList?.map((n, i) => (
+              <a
+                key={`${n.link}-${i}`}
+                href={n.link}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block px-3 py-2.5 rounded-lg hover:bg-dark-800/60 transition-colors group"
               >
-                <div
-                  className="article-preview"
-                  dangerouslySetInnerHTML={{ __html: finalHtml }}
-                />
-              </div>
-            </div>
+                <div className="flex items-start gap-2">
+                  <span className={`mt-1 w-1 h-1 rounded-full flex-shrink-0 ${tab === 'macro' ? 'bg-blue-400' : 'bg-amber-400'}`} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-dark-200 text-sm leading-relaxed group-hover:text-white transition-colors">{n.title}</div>
+                    <div className="text-dark-600 text-xs mt-1">
+                      {n.source} · {fmtTime(n.publishedAt)}
+                    </div>
+                  </div>
+                </div>
+              </a>
+            ))}
+          </div>
+        </div>
 
-            <p className="text-center text-[11px] text-dark-600">
-              预览即为粘贴到公众号后的实际排版 · 模型 {article.model} · 生成于{' '}
-              {new Date(article.data.generatedAt).toLocaleString('zh-CN')}
+        {/* 复制今日要闻 */}
+        {data && (
+          <div className="mt-5">
+            <button
+              onClick={copyDigest}
+              className={`w-full px-4 py-3 rounded-xl text-sm font-medium border transition-colors ${
+                copied
+                  ? 'text-green-400 border-green-500/40 bg-green-500/10'
+                  : 'text-white bg-blue-600 border-blue-500 hover:bg-blue-700'
+              }`}
+            >
+              {copied ? '✓ 已复制今日要闻' : '📋 一键复制今日要闻（利率 + 头条速览）'}
+            </button>
+            <p className="text-center text-[11px] text-dark-600 mt-3">
+              新闻来自 Google News 公开源 · 每 10 分钟服务端缓存 · 点击标题查看原文
             </p>
           </div>
         )}
