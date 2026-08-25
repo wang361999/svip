@@ -881,9 +881,6 @@ export async function runEngine(userId: string): Promise<{
   return result;
 }
 
-/** 引擎默认开启的策略 ID 列表 */
-const ENGINE_DEFAULT_STRATEGIES = ['trend_macd_ema', 'bollinger_squeeze', 'ichimoku_cloud'];
-
 /** 计算自动交易信号（指定币种） */
 async function computeAutoSignals(userId: string, symbol: string, okxId: string, currentPrice: number) {
   // 获取用户策略配置
@@ -893,18 +890,18 @@ async function computeAutoSignals(userId: string, symbol: string, okxId: string,
     const rawConfig = await userService.getStrategyConfig(userId);
     config = normalizeStrategyConfig(rawConfig);
   } catch {
-    // 用户不存在或查询失败，用默认配置
+    // 用户不存在或查询失败，视为无启用策略（不自动开仓）
     config = normalizeStrategyConfig(null);
   }
 
-  // 如果用户没有保存过任何策略配置（全部 disabled），自动开启默认策略
+  // 修复：移除「全部关闭时强制启用默认策略」的逻辑。
+  // 原逻辑：用户策略全部 disabled 时，引擎强制开启 trend_macd_ema 等 3 个默认策略，
+  // 导致用户在策略中心明确关闭所有策略后仍然自动开仓，且与前端「尚未启用任何策略」
+  // 的显示状态矛盾。
+  // 现在：引擎严格遵循用户配置 — 用户启用了哪些策略就计算哪些信号；全部关闭 = 不开仓。
   const anyEnabled = Object.values(config).some((c) => c.enabled);
   if (!anyEnabled) {
-    for (const sid of ENGINE_DEFAULT_STRATEGIES) {
-      if (config[sid]) {
-        config[sid].enabled = true;
-      }
-    }
+    return []; // 用户未启用任何策略，不产生信号
   }
 
   // 获取K线数据
