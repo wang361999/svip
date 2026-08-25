@@ -305,54 +305,76 @@ export interface StructureInfo {
 }
 
 /**
- * 客观判定市场结构（道氏 HH/HL/LH/LL 框架，纯结构不看指标）
- * 取近端已确认摆动点（顶/底各最多 4 个，[0]=最新），对每对相邻同类型摆动做新旧比较并加权投票：
- * 越新的摆动对权重越高（3/2/1），单一新摆动点只能改变最新一对，无法整体翻转结构标签（降抖动）。
- * - 加权总分 ≥ +60% 满分 → up（HH+HL 主导上升结构）
- * - 加权总分 ≤ -60% 满分 → down（LH+LL 主导下降结构）
- * - 其余（方向分歧、证据不一致）→ range（震荡结构）
+ * 客观判定市场结构（币圈通用道氏结构框架）
+ * 1) 摆动点：左右各5根K线确认的枢轴（与江恩引擎同一套算法）— 1根确认识别的是噪音小坑，不是波段高低点
+ * 2) 结构分类：最近两个已确认顶 + 最近两个已确认底
+ *    HH+HL=上升 / LH+LL=下降 / 高低点矛盾或持平（双顶双底）=震荡
+ * 3) 突破修正（BOS）：结构为震荡时，现价突破最近已确认摆动高→升为上升（突破进行中），
+ *    跌破最近已确认摆动低→降为下降。解决大级别行情刚启动、新摆动点未及确认导致的滞后。
  */
 export function computeStructureTrend(klines: KlineData[], tfLabel: string): StructureInfo {
   if (klines.length < 30) return { trend: 'unknown', seq: '', note: `${tfLabel} K线不足` };
 
+  const K = 5; // 枢轴确认强度：左右各5根（与江恩八分法引擎一致）
   const n = klines.length;
-  const start = Math.max(2, n - 120); // 近 120 根内找摆动
-  const tops: number[] = []; // [0]=最新
+  const start = Math.max(K, n - 150); // 近150根内找摆动
+  const tops: number[] = []; // 时间升序（旧→新），最多留最近4个
   const bottoms: number[] = [];
-
-  for (let i = n - 2; i >= start && (tops.length < 4 || bottoms.length < 4); i--) {
+  for (let i = start; i < n - K; i++) {
     const k = klines[i];
-    if (tops.length < 4 && k.high > klines[i - 1].high && k.high > klines[i + 1].high) tops.push(k.high);
-    if (bottoms.length < 4 && k.low < klines[i - 1].low && k.low < klines[i + 1].low) bottoms.push(k.low);
+    let isH = true;
+    let isL = true;
+    for (let j = 1; j <= K; j++) {
+      if (k.high <= klines[i - j].high || k.high <= klines[i + j].high) isH = false;
+      if (k.low >= klines[i - j].low || k.low >= klines[i + j].low) isL = false;
+    }
+    if (isH) { tops.push(k.high); if (tops.length > 4) tops.shift(); }
+    if (isL) { bottoms.push(k.low); if (bottoms.length > 4) bottoms.shift(); }
   }
 
   if (tops.length < 2 || bottoms.length < 2) {
-    return { trend: 'unknown', seq: '', note: `${tfLabel} 摆动点不足，结构不明` };
+    return { trend: 'unknown', seq: '', note: `${tfLabel} 已确认摆动点不足，结构不明` };
   }
 
-  /** 相邻同类型摆动对加权投票：新>旧=+w（HH/HL），新<旧=-w（LH/LL） */
-  const vote = (arr: number[]): { score: number; max: number } => {
-    const pairs = Math.min(arr.length - 1, 3);
-    const weights = [3, 2, 1].slice(0, pairs);
-    let score = 0;
-    for (let p = 0; p < pairs; p++) score += arr[p] > arr[p + 1] ? weights[p] : -weights[p];
-    return { score, max: weights.reduce((s, w) => s + w, 0) };
+  const T1 = tops[tops.length - 1];  // 最近已确认摆动高
+  const T2 = tops[tops.length - 2];
+  const B1 = bottoms[bottoms.length - 1]; // 最近已确认摆动低
+  const B2 = bottoms[bottoms.length - 2];
+  const price = klines[n - 1].close;
+
+  // 持平容差：0.1% 内视为双顶/双底（不构成方向证据）
+  const eps = 0.001;
+  const topEv = T1 > T2 * (1 + eps) ? 1 : T1 < T2 * (1 - eps) ? -1 : 0; // 1=HH -1=LH 0=持平
+  const botEv = B1 > B2 * (1 + eps) ? 1 : B1 < B2 * (1 - eps) ? -1 : 0; // 1=HL -1=LL 0=持平
+
+  const tl = topEv === 1 ? 'HH' : topEv === -1 ? 'LH' : '＝';
+  const bl = botEv === 1 ? 'HL' : botEv === -1 ? 'LL' : '＝';
+  const seq = `高点 ${tops.join('→')}（${tl}）· 低点 ${bottoms.join('→')}（${bl}）`;
+
+  if (topEv === 1 && botEv === 1) {
+    return { trend: 'up', seq, note: `${tfLabel} HH+HL 上升结构` };
+  }
+  if (topEv === -1 && botEv === -1) {
+    return { trend: 'down', seq, note: `${tfLabel} LH+LL 下降结构` };
+  }
+
+  // 矛盾/持平 → 震荡；再用突破修正（BOS）捕捉未确认的新行情
+  const t0 = Math.max(...tops);
+  const b0 = Math.min(...bottoms);
+  if (tops.length >= 2 && price > T1 * (1 + eps)) {
+    return { trend: 'up', seq, note: `${tfLabel} 现价 ${price} 突破摆动高 ${T1}（BOS 转升）` };
+  }
+  if (bottoms.length >= 2 && price < B1 * (1 - eps)) {
+    return { trend: 'down', seq, note: `${tfLabel} 现价 ${price} 跌破摆动低 ${B1}（BOS 转降）` };
+  }
+  const why = topEv === 0 || botEv === 0
+    ? (topEv === 0 && botEv === 0 ? '双顶双底持平' : topEv === 0 ? '顶部持平' : '底部持平')
+    : '高低点矛盾';
+  return {
+    trend: 'range',
+    seq,
+    note: `${tfLabel} ${why}（顶${tl} 底${bl}），价格 ${b0.toFixed(0)}~${t0.toFixed(0)} 区间内震荡`,
   };
-
-  const tv = vote(tops);
-  const bv = vote(bottoms);
-  const total = tv.score + bv.score;
-  const maxTotal = tv.max + bv.max;
-  const ratio = maxTotal > 0 ? total / maxTotal : 0; // -1 ~ +1
-
-  // 序列描述（旧→新，最近一对带 HH/HL/LH/LL 标签）
-  const topLabel = tops[0] > tops[1] ? 'HH' : 'LH';
-  const bottomLabel = bottoms[0] > bottoms[1] ? 'HL' : 'LL';
-  const seq = `高点 ${[...tops].reverse().join('→')}（${topLabel}）· 低点 ${[...bottoms].reverse().join('→')}（${bottomLabel}）`;
-
-  if (ratio >= 0.6) return { trend: 'up', seq, note: `${tfLabel} HH+HL 主导上升（加权 ${Math.round(ratio * 100)}%）` };
-  if (ratio <= -0.6) return { trend: 'down', seq, note: `${tfLabel} LH+LL 主导下降（加权 ${Math.round(-ratio * 100)}%）` };
-  return { trend: 'range', seq, note: `${tfLabel} 摆动方向分歧，震荡（加权 ${Math.round(ratio * 100)}%）` };
 }
 
 /** 多周期结构文本（注入 prompt — 方向过滤层，15m/1h/4h/1d 四周期） */

@@ -184,7 +184,7 @@ export default function TrendPanel() {
                 })}
               </div>
               <p className="text-dark-500 text-[11px] mt-3">
-                判定规则：道氏市场结构 — 近端摆动点 HH+HL 加权占优=多头，LH+LL 占优=空头，高低点矛盾=震荡
+                判定规则：道氏市场结构 — 左右各5根K线确认枢轴摆动点，HH+HL=多头，LH+LL=空头，矛盾/双顶双底=震荡；现价突破最近摆动高/低（BOS）按突破方向修正
               </p>
             </div>
           )}
