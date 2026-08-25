@@ -138,16 +138,71 @@ function parsePullback(raw: string | null): NonNullable<AiAnalysisResult['pullba
   }
 }
 
-/** 将数据库 TEXT 列安全解析为 meta 对象（regime / checklist / atr15m） */
+/** 将数据库 TEXT 列安全解析为 meta 对象（regime / checklist / atr15m / evidence / plans / noTradeZone） */
 function parseMeta(raw: string | null): {
   regime: string;
   aPlusChecklist: Record<string, boolean>;
   atr15m: number | null;
+  evidence?: { dimension: string; data: string; signal: string; note: string }[];
+  plans?: {
+    name: string; style: string; recommended: boolean;
+    entry: number | null; stopLoss: number | null;
+    takeProfit1: number | null; takeProfit2: number | null;
+    rr1: number | null; rr2: number | null; condition: string;
+  }[];
+  noTradeZone?: { from: number; to: number; reason: string } | null;
 } | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return null;
+
+    // 证据表清洗
+    const evidence = Array.isArray(parsed.evidence)
+      ? parsed.evidence
+          .filter((e: any) => e != null && typeof e === 'object')
+          .slice(0, 8)
+          .map((e: any) => ({
+            dimension: String(e.dimension || '未命名'),
+            data: String(e.data || ''),
+            signal: ['bullish', 'bearish', 'neutral'].includes(e.signal) ? e.signal : 'neutral',
+            note: String(e.note || ''),
+          }))
+      : [];
+
+    // 双计划清洗
+    const num = (v: unknown): number | null => {
+      const n = Number(v);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    };
+    const plans = Array.isArray(parsed.plans)
+      ? parsed.plans
+          .filter((p: any) => p != null && typeof p === 'object')
+          .slice(0, 2)
+          .map((p: any) => ({
+            name: String(p.name || '计划'),
+            style: String(p.style || ''),
+            recommended: p.recommended === true,
+            entry: num(p.entry),
+            stopLoss: num(p.stopLoss),
+            takeProfit1: num(p.takeProfit1),
+            takeProfit2: num(p.takeProfit2),
+            rr1: Number.isFinite(Number(p.rr1)) ? Number(p.rr1) : null,
+            rr2: Number.isFinite(Number(p.rr2)) ? Number(p.rr2) : null,
+            condition: String(p.condition || ''),
+          }))
+      : [];
+
+    // 不做区清洗
+    let noTradeZone: { from: number; to: number; reason: string } | null = null;
+    if (parsed.noTradeZone && typeof parsed.noTradeZone === 'object') {
+      const from = num(parsed.noTradeZone.from);
+      const to = num(parsed.noTradeZone.to);
+      if (from != null && to != null) {
+        noTradeZone = { from: Math.min(from, to), to: Math.max(from, to), reason: String(parsed.noTradeZone.reason || '') };
+      }
+    }
+
     return {
       regime: String(parsed.regime || 'unknown'),
       aPlusChecklist:
@@ -155,6 +210,9 @@ function parseMeta(raw: string | null): {
           ? parsed.aPlusChecklist
           : {},
       atr15m: typeof parsed.atr15m === 'number' && Number.isFinite(parsed.atr15m) ? parsed.atr15m : null,
+      ...(evidence.length > 0 ? { evidence } : {}),
+      ...(plans.length > 0 ? { plans } : {}),
+      ...(noTradeZone ? { noTradeZone } : {}),
     };
   } catch {
     return null;

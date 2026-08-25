@@ -28,6 +28,14 @@ interface AiAnalysis {
     regime: string;
     aPlusChecklist?: Record<string, boolean>;
     atr15m?: number | null;
+    evidence?: { dimension: string; data: string; signal: string; note: string }[];
+    plans?: {
+      name: string; style: string; recommended: boolean;
+      entry: number | null; stopLoss: number | null;
+      takeProfit1: number | null; takeProfit2: number | null;
+      rr1: number | null; rr2: number | null; condition: string;
+    }[];
+    noTradeZone?: { from: number; to: number; reason: string } | null;
   } | null;
   riskWarning: string | null;
   provider: string;
@@ -322,6 +330,38 @@ export default function AiAnalysisPanel() {
             <p className="text-dark-300 text-sm leading-relaxed">{analysis.summary}</p>
           </div>
 
+          {/* 多维证据表（大神框架核心：每条证据带数值与多空倾向） */}
+          {analysis.meta?.evidence && analysis.meta.evidence.length > 0 && (
+            <div>
+              <div className="text-dark-400 text-xs font-medium mb-2">
+                多维证据表
+                <span className="ml-2 text-dark-600 font-normal">
+                  {(() => {
+                    const ev = analysis.meta!.evidence!;
+                    const b = ev.filter((e) => e.signal === 'bullish').length;
+                    const s = ev.filter((e) => e.signal === 'bearish').length;
+                    return `${b} 利多 / ${s} 利空 / ${ev.length - b - s} 中性`;
+                  })()}
+                </span>
+              </div>
+              <div className="space-y-1">
+                {analysis.meta.evidence.map((e, i) => (
+                  <div key={i} className="flex items-center gap-2 text-xs px-2 py-1.5 rounded bg-dark-900/40 border border-dark-800/50">
+                    <span className="w-3 flex-shrink-0">
+                      {e.signal === 'bullish' ? '▲' : e.signal === 'bearish' ? '▼' : '●'}
+                    </span>
+                    <span className={`w-3 flex-shrink-0 ${
+                      e.signal === 'bullish' ? 'text-green-400' : e.signal === 'bearish' ? 'text-red-400' : 'text-dark-500'
+                    }`} />
+                    <span className="text-dark-300 w-24 flex-shrink-0 truncate" title={e.dimension}>{e.dimension}</span>
+                    <span className="text-white flex-shrink-0 max-w-[38%] truncate" title={e.data}>{e.data}</span>
+                    <span className="text-dark-500 flex-1 truncate" title={e.note}>{e.note}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* 市场状态 + A+ 清单（大神思维核心） */}
           {analysis.meta && analysis.meta.regime && (
             <div className="flex flex-wrap items-center gap-2">
@@ -498,6 +538,84 @@ export default function AiAnalysisPanel() {
               })()}
             </div>
           )}
+
+          {/* 双交易计划：A 推荐 / B 激进 */}
+          {analysis.meta?.plans && analysis.meta.plans.length > 0 && (
+            <div>
+              <div className="text-dark-400 text-xs font-medium mb-2">双计划</div>
+              <div className="space-y-2">
+                {analysis.meta.plans.map((p, i) => (
+                  <div
+                    key={i}
+                    className={`p-2.5 rounded-lg border ${
+                      p.recommended
+                        ? 'bg-green-500/5 border-green-500/30'
+                        : 'bg-dark-900/40 border-dark-800'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                          p.recommended ? 'bg-green-500/20 text-green-400' : 'bg-dark-800 text-dark-400'
+                        }`}>
+                          Plan {p.name}
+                        </span>
+                        <span className="text-dark-300 text-xs">{p.style}</span>
+                      </div>
+                      {p.recommended && (
+                        <span className="text-[10px] text-green-400 font-medium">推荐</span>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-5 gap-1.5 text-center mb-1.5">
+                      <div>
+                        <div className="text-dark-600 text-[10px]">入场</div>
+                        <div className="text-white text-xs font-medium">{p.entry != null ? formatPrice(p.entry) : '--'}</div>
+                      </div>
+                      <div>
+                        <div className="text-dark-600 text-[10px]">止损</div>
+                        <div className="text-red-400 text-xs font-medium">{p.stopLoss != null ? formatPrice(p.stopLoss) : '--'}</div>
+                      </div>
+                      <div>
+                        <div className="text-dark-600 text-[10px]">止盈1</div>
+                        <div className="text-green-400 text-xs font-medium">{p.takeProfit1 != null ? formatPrice(p.takeProfit1) : '--'}</div>
+                      </div>
+                      <div>
+                        <div className="text-dark-600 text-[10px]">止盈2</div>
+                        <div className="text-green-400 text-xs font-medium">{p.takeProfit2 != null ? formatPrice(p.takeProfit2) : '--'}</div>
+                      </div>
+                      <div>
+                        <div className="text-dark-600 text-[10px]">盈亏比</div>
+                        <div className="text-white text-xs font-medium">
+                          {p.rr1 != null ? `1:${p.rr1}` : '--'}
+                          {p.rr2 != null ? <span className="text-dark-500"> / {p.rr2}</span> : null}
+                        </div>
+                      </div>
+                    </div>
+                    {p.condition && (
+                      <p className="text-dark-400 text-[11px] leading-relaxed">
+                        <span className="text-dark-600">进场前提：</span>{p.condition}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 不做区（盈亏比最差的观望区间） */}
+          {analysis.meta?.noTradeZone && currentPrice >= analysis.meta.noTradeZone.from && currentPrice <= analysis.meta.noTradeZone.to ? (
+            <div className="flex items-center gap-2 p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/40">
+              <svg className="w-4 h-4 text-amber-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              <div className="text-xs">
+                <span className="text-amber-400 font-medium">
+                  当前处于不做区（{formatPrice(analysis.meta.noTradeZone.from)} ~ {formatPrice(analysis.meta.noTradeZone.to)}）
+                </span>
+                <span className="text-dark-400"> — {analysis.meta.noTradeZone.reason}，建议观望</span>
+              </div>
+            </div>
+          ) : null}
 
           {/* 风险提示 */}
           {analysis.riskWarning && (

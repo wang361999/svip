@@ -32,6 +32,8 @@ export interface MarketContext {
   openInterestUsd: number | null;
   /** 1 小时持仓量变化 %（快照积累不足时为 null） */
   oiChange1hPct: number | null;
+  /** 24 小时持仓量变化 %（价涨仓减=获利了结背离信号） */
+  oiChange24hPct: number | null;
   /** 散户多空比（账户数口径，>1 多头账户占多） */
   longShortAccountRatio: number | null;
   /** 主动买卖多空比（taker 成交量口径，>1 主动买盘占优） */
@@ -87,6 +89,7 @@ interface DerivData {
   openInterestUsd: number | null;
   longShortAccountRatio: number | null;
   takerLongShortRatio: number | null;
+  oiChange24hPct: number | null;
 }
 const derivCache = new Map<string, { data: DerivData; at: number }>();
 const fearCache = { data: null as MarketContext['fearGreed'], at: 0 };
@@ -99,18 +102,30 @@ const oiHistory = new Map<string, { t: number; oi: number }[]>();
 
 async function fetchFundingAndOI(symbol: string, okxId: string): Promise<DerivData> {
   // --- Binance：premiumIndex 同时拿费率+标记价，openInterest 拿币本位持仓 ---
-  const [premium, oi, lsAcc, lsTaker] = await Promise.all([
+  const [premium, oi, lsAcc, lsTaker, oiHist] = await Promise.all([
     fetchJson(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${symbol}`),
     fetchJson(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${symbol}`),
     // 多空比（账户数口径 / 主动买卖口径）— 散户情绪的反向指标
     fetchJson(`https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=${symbol}&period=5m&limit=1`).catch(() => null),
     fetchJson(`https://fapi.binance.com/futures/data/takerlongshortRatio?symbol=${symbol}&period=5m&limit=1`).catch(() => null),
+    // 持仓量 24h 历史（价涨仓减=获利了结 / 价涨仓增=趋势健康，关键背离证据）
+    fetchJson(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${symbol}&period=1h&limit=25`).catch(() => null),
   ]);
 
   const lsAccount = Array.isArray(lsAcc) && lsAcc[0]?.longShortRatio != null
     ? parseFloat(lsAcc[0].longShortRatio) : null;
   const lsTakerVal = Array.isArray(lsTaker) && lsTaker[0]?.buySellRatio != null
     ? parseFloat(lsTaker[0].buySellRatio) : null;
+
+  // 24h 持仓量变化：首末快照对比（币本位口径，与价格无关，直接可比）
+  let oiChange24h: number | null = null;
+  if (Array.isArray(oiHist) && oiHist.length >= 13) {
+    const first = parseFloat(oiHist[0].sumOpenInterest);
+    const lastOi = parseFloat(oiHist[oiHist.length - 1].sumOpenInterest);
+    if (Number.isFinite(first) && Number.isFinite(lastOi) && first > 0) {
+      oiChange24h = Number((((lastOi - first) / first) * 100).toFixed(2));
+    }
+  }
 
   if (premium && premium.lastFundingRate != null) {
     const rate = parseFloat(premium.lastFundingRate);
@@ -128,6 +143,7 @@ async function fetchFundingAndOI(symbol: string, okxId: string): Promise<DerivDa
         openInterestUsd: oiUsd,
         longShortAccountRatio: Number.isFinite(lsAccount as number) ? lsAccount : null,
         takerLongShortRatio: Number.isFinite(lsTakerVal as number) ? lsTakerVal : null,
+        oiChange24hPct: oiChange24h,
       };
     }
   }
@@ -157,6 +173,7 @@ async function fetchFundingAndOI(symbol: string, okxId: string): Promise<DerivDa
     openInterestUsd: oiUsd,
     longShortAccountRatio: null, // OKX 备用路径无对应接口
     takerLongShortRatio: null,
+    oiChange24hPct: null,
   };
 }
 
@@ -297,6 +314,7 @@ export async function fetchMarketContext(symbol: string, okxId: string): Promise
     fundingRate8h: deriv.fundingRate8h,
     openInterestUsd: deriv.openInterestUsd,
     oiChange1hPct: deriv.oiChange1hPct,
+    oiChange24hPct: deriv.oiChange24hPct,
     longShortAccountRatio: deriv.longShortAccountRatio,
     takerLongShortRatio: deriv.takerLongShortRatio,
     fearGreed,
@@ -432,7 +450,16 @@ export function buildMarketContextText(ctx: MarketContext): string {
     const changeText = ctx.oiChange1hPct != null
       ? `${ctx.oiChange1hPct > 0 ? '+' : ''}${ctx.oiChange1hPct}%`
       : '数据积累中';
-    lines.push(`持仓量: ${oiText}（1小时 ${changeText}）`);
+    const change24hText = ctx.oiChange24hPct != null
+      ? `，24小时 ${ctx.oiChange24hPct > 0 ? '+' : ''}${ctx.oiChange24hPct}%`
+      : '';
+    lines.push(`持仓量: ${oiText}（1小时 ${changeText}${change24hText}）`);
+    // 量价背离提示（价涨仓减 = 上涨缺乏新增杠杆，获利了结迹象）
+    if (ctx.oiChange24hPct != null) {
+      const chg24 = ctx.oiChange24hPct < -1 ? ' ⚠️ 价涨仓减，趋势健康度存疑'
+        : ctx.oiChange24hPct > 3 ? ' ⚠️ 仓增过快，拥挤度上升' : '';
+      if (change24hText && chg24) lines[lines.length - 1] += chg24;
+    }
   } else {
     lines.push('持仓量: 暂无数据');
   }

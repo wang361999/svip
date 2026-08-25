@@ -152,7 +152,7 @@ export interface AiAnalysisResult {
   provider: string;
   model: string;
   rawResponse: string;
-  /** 结构化元数据：市场状态 / A+清单 / 15m ATR（供引擎闸门与前端展示） */
+  /** 结构化元数据：市场状态 / A+清单 / 15m ATR / 证据表 / 双计划 / 不做区（供引擎闸门与前端展示） */
   meta: {
     /** AI 判定的市场状态：trending 趋势 / range 区间 / chop 碎波 / event 事件驱动 */
     regime: 'trending' | 'range' | 'chop' | 'event';
@@ -166,6 +166,17 @@ export interface AiAnalysisResult {
     };
     /** 15m ATR（引擎校验止损距离用） */
     atr15m: number | null;
+    /** 多维证据表：每条证据带具体数值与多空倾向（大神分析框架核心） */
+    evidence?: { dimension: string; data: string; signal: 'bullish' | 'bearish' | 'neutral'; note: string }[];
+    /** 双交易计划：A=推荐主计划（顶层价位字段与其一致），B=激进备选（逆势/小仓） */
+    plans?: {
+      name: string; style: string; recommended: boolean;
+      entry: number | null; stopLoss: number | null;
+      takeProfit1: number | null; takeProfit2: number | null;
+      rr1: number | null; rr2: number | null; condition: string;
+    }[];
+    /** 不做区：盈亏比最差、应观望的价格区间 */
+    noTradeZone?: { from: number; to: number; reason: string } | null;
   };
 }
 
@@ -473,6 +484,16 @@ const SYSTEM_PROMPT = `你是一位顶级加密货币短线合约交易员，交
 - invalidation：回调论失效价 — 价格越过此位（多单场景=突破前高继续走强），回调预判作废
 - 回调预判与方向判断独立：做多也可以预判「先回调到 X 再涨」；此时 entryPrice 应设在回调位附近而非现价追多
 
+第七步：证据表 + 双计划 + 不做区（大神输出框架）
+- evidence 证据表 6-8 条，每条必须带具体数值（如「RSI 80.4 极端超买」），禁止空泛描述；dimension 覆盖：趋势/动量（多周期 RSI/MACD）、量能（持仓量24h变化/成交量）、情绪（资金费率/多空比/恐贪）、结构（价格与枢轴/布林位置、K线形态）、BTC联动、消息面；signal 标 bullish/bearish/neutral
+- 多空矛盾是常态（日线多头 + 15m 动能衰竭 = 回调中继），证据表如实呈现，不要为了统一而扭曲
+- plans 双计划：Plan A = 推荐（顺势或高把握，recommended=true，顶层 entryPrice/stopLoss/takeProfit1/takeProfit2 必须与 Plan A 一致）；Plan B = 激进备选（逆势/抢反弹，recommended=false，condition 里注明仓位减半）
+- 每个计划给 rr1/rr2（R 倍数，1位小数）；condition 写清进场前提（如「15m出现看涨吞没后进场」「反弹至2490滞涨」）
+- noTradeZone：明确标注当前盈亏比最差、应观望的价格区间（通常夹在现价与关键位中间的无人区）及原因；无明确不做区给 null
+
+summary 必须结论先行，格式：短线方向/回调预判 + 目标区间 + 当前最优动作。
+示例："短线大概率回调至 2477-2480 企稳，日线趋势仍多头；最优动作 = 挂 2478 限价多等回调，不追现价"
+
 风控铁律：
 1. 单笔风险不超过 2%；止盈第一目标 1.5R-2R，第二目标 3R
 2. 震荡/碎波市宁可观望也要给 neutral；不交易也是一种交易
@@ -492,6 +513,10 @@ const SYSTEM_PROMPT = `你是一位顶级加密货币短线合约交易员，交
   "takeProfit2": 数字或null,
   "reasoning": "详细分析：regime判定依据 → 多周期结构 → BTC联动 → 衍生品/量能 → 无效点与盈亏比",
   "keyLevels": [{"price": 数字, "type": "支撑/阻力/前高/前低", "note": "说明"}],
+  "evidence": [
+    {"dimension": "日线RSI", "data": "80.4 极端超买", "signal": "bearish", "note": "回调压力"},
+    {"dimension": "持仓量24h", "data": "-2.2% 价涨仓减", "signal": "bearish", "note": "获利了结迹象"}
+  ],
   "pullback": {
     "expected": "high" | "medium" | "low" | "none",
     "trigger": "什么情况下会触发回调（具体证据，如：再冲前高量能不足/费率极端多头拥挤）",
@@ -499,6 +524,11 @@ const SYSTEM_PROMPT = `你是一位顶级加密货币短线合约交易员，交
     "invalidation": 数字或null,
     "rationale": "回调判断的完整证据链：为什么判这个方向、为什么到这个价位、为什么在此止跌/受阻"
   },
+  "plans": [
+    {"name": "A", "style": "顺势回调接多", "recommended": true, "entry": 2479, "stopLoss": 2462, "takeProfit1": 2505, "takeProfit2": 2533, "rr1": 1.5, "rr2": 3.2, "condition": "15m出现止跌形态（看涨吞没/长下影）后进场"},
+    {"name": "B", "style": "激进逆势短空", "recommended": false, "entry": 2490, "stopLoss": 2512, "takeProfit1": 2478, "takeProfit2": 2464, "rr1": 0.5, "rr2": 1.2, "condition": "反弹至2490-2495滞涨，仓位减半"}
+  ],
+  "noTradeZone": {"from": 2486, "to": 2505, "reason": "现价与失效区之间的无人区，上下空间不足，盈亏比最差"} 或 null,
   "riskWarning": "当前市场风险提示",
   "checklist": {
     "regimeClear": 布尔,
@@ -570,6 +600,8 @@ function buildUserPrompt(
   k5m: KlineData[],
   k15m: KlineData[],
   k1h: KlineData[],
+  k4h: KlineData[],
+  k1d: KlineData[],
   marketContextText: string,
   btcContextText: string,
   atr15m: number | null,
@@ -578,6 +610,8 @@ function buildUserPrompt(
   const ind5m = computeIndicatorSnapshot(k5m);
   const ind15m = computeIndicatorSnapshot(k15m);
   const ind1h = computeIndicatorSnapshot(k1h);
+  const ind4h = computeIndicatorSnapshot(k4h);
+  const ind1d = computeIndicatorSnapshot(k1d);
   const regimeHint = computeRegimeHint(k15m);
   const pullbackAnchors = computePullbackAnchors(k15m, currentPrice);
   const pullbackAnchorText = buildPullbackAnchorText(pullbackAnchors, currentPrice);
@@ -612,6 +646,14 @@ ${buildIndicatorText(ind15m, currentPrice)}
 ${buildKlineSummary(k1h, '1H K线')}
 技术指标:
 ${buildIndicatorText(ind1h, currentPrice)}
+
+=== 4小时周期（波段背景，判断中期趋势健康度） ===
+技术指标:
+${buildIndicatorText(ind4h, currentPrice)}
+
+=== 日线周期（大趋势与超买超卖 — 判断「趋势强但已超买」这类分层信号的关键） ===
+技术指标:
+${buildIndicatorText(ind1d, currentPrice)}
 
 请综合以上多周期数据和指标，给出你的交易分析建议。记住，只返回 JSON 格式。`;
 }
@@ -798,6 +840,50 @@ function normalizeResult(parsed: any, config: AiConfig, rawResponse: string, cur
   const cl = parsed.checklist && typeof parsed.checklist === 'object' ? parsed.checklist : {};
   const toBool = (v: unknown): boolean => v === true || v === 'true' || v === 1;
 
+  // ===== 证据表 / 双计划 / 不做区清洗（大神输出框架） =====
+  const evidence = Array.isArray(parsed.evidence)
+    ? parsed.evidence
+        .filter((e: any) => e != null && typeof e === 'object' && (e.dimension || e.data))
+        .slice(0, 8)
+        .map((e: any) => ({
+          dimension: String(e.dimension || '未命名'),
+          data: String(e.data || ''),
+          signal: ['bullish', 'bearish', 'neutral'].includes(e.signal) ? e.signal : 'neutral',
+          note: String(e.note || ''),
+        }))
+    : [];
+
+  const num = (v: unknown): number | null => {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+  const plans = Array.isArray(parsed.plans)
+    ? parsed.plans
+        .filter((p: any) => p != null && typeof p === 'object')
+        .slice(0, 2)
+        .map((p: any) => ({
+          name: String(p.name || '计划'),
+          style: String(p.style || ''),
+          recommended: p.recommended === true || p.recommended === 'true',
+          entry: num(p.entry),
+          stopLoss: num(p.stopLoss),
+          takeProfit1: num(p.takeProfit1),
+          takeProfit2: num(p.takeProfit2),
+          rr1: Number.isFinite(Number(p.rr1)) ? Number(Number(p.rr1).toFixed(1)) : null,
+          rr2: Number.isFinite(Number(p.rr2)) ? Number(Number(p.rr2).toFixed(1)) : null,
+          condition: String(p.condition || ''),
+        }))
+    : [];
+
+  let noTradeZone: AiAnalysisResult['meta']['noTradeZone'] = null;
+  if (parsed.noTradeZone && typeof parsed.noTradeZone === 'object') {
+    const from = num(parsed.noTradeZone.from);
+    const to = num(parsed.noTradeZone.to);
+    if (from != null && to != null && from > 0 && to > 0) {
+      noTradeZone = { from: Math.min(from, to), to: Math.max(from, to), reason: String(parsed.noTradeZone.reason || '') };
+    }
+  }
+
   return {
     direction: direction as 'long' | 'short' | 'neutral',
     confidence,
@@ -823,6 +909,9 @@ function normalizeResult(parsed: any, config: AiConfig, rawResponse: string, cur
         nearInvalidation: toBool(cl.nearInvalidation),
       },
       atr15m: null, // 由主入口回填（normalizeResult 不重复拉 K 线）
+      evidence: evidence.length > 0 ? evidence : undefined,
+      plans: plans.length > 0 ? plans : undefined,
+      noTradeZone: noTradeZone ?? undefined,
     },
   };
 }
@@ -869,13 +958,15 @@ export async function analyzeMarketWithAI(
     throw new Error('无法获取当前价格');
   }
 
-  // 3. 获取多周期 K 线数据（短线风格：5m 即时动能 / 15m 主判定 / 1h 大方向过滤）
+  // 3. 获取多周期 K 线数据（短线 5m/15m/1h + 波段背景 4h/1d）
   //    并行抓取衍生品/情绪/要闻上下文 + BTC 快照（带缓存，失败优雅降级）
   const isBtc = symbol.toUpperCase().startsWith('BTC');
-  const [k5m, k15m, k1h, marketCtx, btcSnap] = await Promise.all([
+  const [k5m, k15m, k1h, k4h, k1d, marketCtx, btcSnap] = await Promise.all([
     fetchKlines(symbol, okxId, '5m', 200).catch(() => []),
     fetchKlines(symbol, okxId, '15m', 200).catch(() => []),
     fetchKlines(symbol, okxId, '1h', 200).catch(() => []),
+    fetchKlines(symbol, okxId, '4h', 120).catch(() => []),
+    fetchKlines(symbol, okxId, '1d', 60).catch(() => []),
     fetchMarketContext(symbol, okxId).catch(() => null),
     // 分析山寨币时必看 BTC；分析 BTC 自身时跳过（避免冗余）
     isBtc ? Promise.resolve(null) : fetchBtcSnapshot().catch(() => null),
@@ -902,6 +993,8 @@ export async function analyzeMarketWithAI(
     k5m,
     k15m,
     k1h,
+    k4h,
+    k1d,
     marketCtx ? buildMarketContextText(marketCtx) : '=== 衍生品与市场情绪 === 暂无数据',
     isBtc ? '' : buildBtcContextText(btcSnap),
     atr15m,
