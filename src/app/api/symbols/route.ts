@@ -96,6 +96,44 @@ async function syncExistingTradeSymbols() {
   return created;
 }
 
+/**
+ * 热门币保障清单：交易页每次拉取 active 列表时幂等补建/标热门。
+ * 精度参数取自 Binance exchangeInfo 实测（SNDKB tickSize 0.01 / stepSize 0.0001）。
+ */
+const HOT_ENSURE_SYMBOLS = [
+  // 闪迪（SanDisk 代币化股票，2026-06 币安现货上线）
+  {
+    symbol: 'SNDKBUSDT', okxId: 'SNDKB-USDT', label: 'SNDKB/USDT', baseAsset: 'SNDKB',
+    pricePrecision: 2, qtyPrecision: 4, minQty: 0.0001, sortOrder: 7,
+  },
+];
+
+/** 进程内只跑一次（幂等：缺失补建，已存在但非热门则标记为热门） */
+let hotEnsureDone = false;
+async function ensureHotSymbols() {
+  if (hotEnsureDone) return;
+  for (const s of HOT_ENSURE_SYMBOLS) {
+    const existing = await prisma.tradingSymbol.findUnique({ where: { symbol: s.symbol } });
+    if (existing) {
+      if (!existing.isPopular) {
+        await prisma.tradingSymbol.update({ where: { symbol: s.symbol }, data: { isPopular: true } });
+      }
+      continue;
+    }
+    await prisma.tradingSymbol.create({
+      data: {
+        ...s,
+        quoteAsset: 'USDT',
+        minNotional: 5,
+        active: true,
+        autoTrade: false, // 代币化股票波动大，默认不参与自动交易，用户可自行开启
+        isPopular: true,
+      },
+    });
+  }
+  hotEnsureDone = true;
+}
+
 /** GET - 获取币种列表 */
 export const GET = createHandler(async ({ req }) => {
   const { searchParams } = new URL(req.url);
@@ -105,6 +143,11 @@ export const GET = createHandler(async ({ req }) => {
   // 确保历史持仓/交易里已经出现过的币种，也能进入币种管理中心
   if (!activeOnly && !popularOnly) {
     await syncExistingTradeSymbols().catch(() => 0);
+  }
+
+  // 交易页拉取 active 列表时，幂等保障热门清单齐全（如新上线的闪迪）
+  if (activeOnly) {
+    await ensureHotSymbols().catch(() => 0);
   }
 
   const where: any = {};

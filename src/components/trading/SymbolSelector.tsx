@@ -126,6 +126,11 @@ function getCoinIcon(baseAsset?: string): string {
   return baseAsset.slice(0, 2).toUpperCase();
 }
 
+/** 中文别名（搜索匹配用 — 用户按中文名找币，如「闪迪」→ SNDKB） */
+const CN_ALIASES: Record<string, string> = {
+  SNDKBUSDT: '闪迪',
+};
+
 // ============ 组件 ============
 
 interface SymbolSelectorProps {
@@ -154,8 +159,8 @@ export default function SymbolSelector({
   // 热门币种（按市值/交易量排序的常用币种）
   const HOT_SYMBOLS = useMemo(() => new Set([
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
-    'DOGEUSDT', 'ADAUSDT', 'TRXUSDT', 'AVAXUSDT', 'LINKUSDT',
-    'DOTUSDT', 'MATICUSDT', 'SHIBUSDT', 'UNIUSDT', 'LTCUSDT',
+    'DOGEUSDT', 'SNDKBUSDT', 'ADAUSDT', 'TRXUSDT', 'AVAXUSDT',
+    'LINKUSDT', 'DOTUSDT', 'MATICUSDT', 'SHIBUSDT', 'UNIUSDT', 'LTCUSDT',
   ]), []);
 
   const filteredSymbols = useMemo(() => {
@@ -165,11 +170,13 @@ export default function SymbolSelector({
     }
     if (!search.trim()) return list;
     const q = search.toLowerCase();
+    const cn = search.trim();
     return list.filter(
       (s) =>
         s.label.toLowerCase().includes(q) ||
         s.value.toLowerCase().includes(q) ||
-        (s.baseAsset && s.baseAsset.toLowerCase().includes(q))
+        (s.baseAsset && s.baseAsset.toLowerCase().includes(q)) ||
+        (CN_ALIASES[s.value] ?? '').includes(cn)
     );
   }, [symbolList, search, activeTab, HOT_SYMBOLS]);
 

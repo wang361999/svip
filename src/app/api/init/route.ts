@@ -551,10 +551,11 @@ const DEFAULT_SYMBOLS = [
   { symbol: 'BNBUSDT', okxId: 'BNB-USDT', label: 'BNB/USDT', baseAsset: 'BNB', isPopular: true, autoTrade: false, sortOrder: 4, pricePrecision: 2, qtyPrecision: 3, minQty: 0.001 },
   { symbol: 'XRPUSDT', okxId: 'XRP-USDT', label: 'XRP/USDT', baseAsset: 'XRP', isPopular: true, autoTrade: false, sortOrder: 5, pricePrecision: 4, qtyPrecision: 1, minQty: 0.1 },
   { symbol: 'DOGEUSDT', okxId: 'DOGE-USDT', label: 'DOGE/USDT', baseAsset: 'DOGE', isPopular: true, autoTrade: false, sortOrder: 6, pricePrecision: 5, qtyPrecision: 0, minQty: 1 },
-  { symbol: 'ADAUSDT', okxId: 'ADA-USDT', label: 'ADA/USDT', baseAsset: 'ADA', isPopular: false, autoTrade: false, sortOrder: 7, pricePrecision: 4, qtyPrecision: 1, minQty: 0.1 },
-  { symbol: 'AVAXUSDT', okxId: 'AVAX-USDT', label: 'AVAX/USDT', baseAsset: 'AVAX', isPopular: false, autoTrade: false, sortOrder: 8, pricePrecision: 3, qtyPrecision: 2, minQty: 0.01 },
-  { symbol: 'LINKUSDT', okxId: 'LINK-USDT', label: 'LINK/USDT', baseAsset: 'LINK', isPopular: false, autoTrade: false, sortOrder: 9, pricePrecision: 3, qtyPrecision: 2, minQty: 0.01 },
-  { symbol: 'LTCUSDT', okxId: 'LTC-USDT', label: 'LTC/USDT', baseAsset: 'LTC', isPopular: false, autoTrade: false, sortOrder: 10, pricePrecision: 2, qtyPrecision: 3, minQty: 0.001 },
+  { symbol: 'SNDKBUSDT', okxId: 'SNDKB-USDT', label: 'SNDKB/USDT', baseAsset: 'SNDKB', isPopular: true, autoTrade: false, sortOrder: 7, pricePrecision: 2, qtyPrecision: 4, minQty: 0.0001 },
+  { symbol: 'ADAUSDT', okxId: 'ADA-USDT', label: 'ADA/USDT', baseAsset: 'ADA', isPopular: false, autoTrade: false, sortOrder: 8, pricePrecision: 4, qtyPrecision: 1, minQty: 0.1 },
+  { symbol: 'AVAXUSDT', okxId: 'AVAX-USDT', label: 'AVAX/USDT', baseAsset: 'AVAX', isPopular: false, autoTrade: false, sortOrder: 9, pricePrecision: 3, qtyPrecision: 2, minQty: 0.01 },
+  { symbol: 'LINKUSDT', okxId: 'LINK-USDT', label: 'LINK/USDT', baseAsset: 'LINK', isPopular: false, autoTrade: false, sortOrder: 10, pricePrecision: 3, qtyPrecision: 2, minQty: 0.01 },
+  { symbol: 'LTCUSDT', okxId: 'LTC-USDT', label: 'LTC/USDT', baseAsset: 'LTC', isPopular: false, autoTrade: false, sortOrder: 11, pricePrecision: 2, qtyPrecision: 3, minQty: 0.001 },
 ];
 
 /** 写入默认币种 */
