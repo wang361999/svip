@@ -19,6 +19,7 @@ interface NewsItem {
   link: string;
   source: string;
   publishedAt: number;
+  sentiment: 'bullish' | 'bearish' | 'neutral';
 }
 
 interface FomcMeeting {
@@ -102,6 +103,21 @@ export default function MacroNewsPage() {
   };
 
   const newsList = tab === 'macro' ? data?.macroNews : data?.cryptoNews;
+
+  // 利好/利空标签样式
+  const sentimentCfg: Record<NewsItem['sentiment'], { label: string; cls: string }> = {
+    bullish: { label: '利好', cls: 'text-green-400 bg-green-500/10 border-green-500/30' },
+    bearish: { label: '利空', cls: 'text-red-400 bg-red-500/10 border-red-500/30' },
+    neutral: { label: '中性', cls: 'text-dark-400 bg-dark-800/80 border-dark-700' },
+  };
+
+  // 当前板块利好/利空统计
+  const stats = (() => {
+    if (!newsList || newsList.length === 0) return null;
+    const b = newsList.filter((n) => n.sentiment === 'bullish').length;
+    const x = newsList.filter((n) => n.sentiment === 'bearish').length;
+    return { b, x, n: newsList.length - b - x };
+  })();
 
   return (
     <main className="min-h-screen bg-dark-950 pt-16">
@@ -195,9 +211,13 @@ export default function MacroNewsPage() {
             >
               加密市场
             </button>
-            {data && (
-              <span className="text-dark-600 text-xs ml-auto">
-                {tab === 'macro' ? data.macroNews.length : data.cryptoNews.length} 条 · 48 小时内
+            {stats && (
+              <span className="text-dark-600 text-xs ml-auto flex items-center gap-1.5">
+                <span className="text-green-500">利好 {stats.b}</span>
+                <span className="text-dark-700">/</span>
+                <span className="text-red-500">利空 {stats.x}</span>
+                <span className="text-dark-700">/</span>
+                <span>中性 {stats.n}</span>
               </span>
             )}
           </div>
@@ -225,7 +245,14 @@ export default function MacroNewsPage() {
                 <div className="flex items-start gap-2">
                   <span className={`mt-1 w-1 h-1 rounded-full flex-shrink-0 ${tab === 'macro' ? 'bg-blue-400' : 'bg-amber-400'}`} />
                   <div className="flex-1 min-w-0">
-                    <div className="text-dark-200 text-sm leading-relaxed group-hover:text-white transition-colors">{n.title}</div>
+                    <div className="flex items-start gap-2">
+                      <div className="text-dark-200 text-sm leading-relaxed group-hover:text-white transition-colors flex-1">
+                        {n.title}
+                      </div>
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium border flex-shrink-0 ${sentimentCfg[n.sentiment].cls}`}>
+                        {sentimentCfg[n.sentiment].label}
+                      </span>
+                    </div>
                     <div className="text-dark-600 text-xs mt-1">
                       {n.source} · {fmtTime(n.publishedAt)}
                     </div>

@@ -70,11 +70,39 @@ export function nextFomc(now = new Date()): { next: FomcMeeting | null; daysUnti
 
 // ==================== Google News RSS 新闻抓取 ====================
 
+export type NewsSentiment = 'bullish' | 'bearish' | 'neutral';
+
+/**
+ * 新闻利好/利空分类（服务端关键词打分，客观可解释，零 AI 成本）
+ * 中文财经语境：降息/宽松/流入/新高 = 利好；加息/鹰派/监管打击/流出/爆仓 = 利空；打平 = 中性
+ * 否定短语优先且加权（不降息 = 利空，不加息 = 利好）
+ */
+const BULLISH_KW = ['降息', '宽松', '鸽派', '降准', '刺激经济', '注资', '批准', '获批', '利好',
+  '上涨', '大涨', '飙升', '暴涨', '新高', '流入', '增持', '买入', '扫货', '采用',
+  '合作', '上架', '上线', '减半', '回购', '放宽', '松绑', '合规', '明朗', '牛市', '看涨'];
+const BEARISH_KW = ['加息', '鹰派', '收紧', '缩表', '禁止', '禁令', '打压', '罚款', '处罚',
+  '起诉', '诉讼', '调查', '黑客', '被盗', '攻击', '漏洞', '爆仓', '清算',
+  '暴跌', '大跌', '下挫', '跌破', '流出', '减持', '抛售', '做空', '看空', '警告',
+  '崩盘', '裁员', '破产', '冻结', '制裁', '关税', '避险', '熊市', '利空', '下跌'];
+const NEGATED_BULLISH = ['不降息', '暂停降息', '推迟降息', '搁置降息', '否认降息', '降息无望', '降息落空', '不降准'];
+const NEGATED_BEARISH = ['不加息', '暂停加息', '推迟加息', '否认加息', '加息无望', '加息落空'];
+
+export function classifySentiment(title: string): NewsSentiment {
+  let score = 0;
+  for (const p of NEGATED_BULLISH) if (title.includes(p)) score -= 2;
+  for (const p of NEGATED_BEARISH) if (title.includes(p)) score += 2;
+  for (const k of BULLISH_KW) if (title.includes(k)) score += 1;
+  for (const k of BEARISH_KW) if (title.includes(k)) score -= 1;
+  return score > 0 ? 'bullish' : score < 0 ? 'bearish' : 'neutral';
+}
+
 export interface MacroNewsItem {
   title: string;
   link: string;
   source: string;
   publishedAt: number; // ms 时间戳
+  /** 利好/利空/中性（服务端关键词分类） */
+  sentiment: NewsSentiment;
 }
 
 const NEWS_CACHE_MS = 10 * 60_000; // 10 分钟缓存
@@ -138,6 +166,7 @@ function parseGoogleNewsRss(xml: string): MacroNewsItem[] {
       link: linkMatch ? linkMatch[1].trim() : '',
       source,
       publishedAt: Number.isFinite(ts) ? ts : 0,
+      sentiment: classifySentiment(cleanTitle),
     });
   }
 
@@ -189,6 +218,12 @@ export async function fetchMacroNews(): Promise<MacroNewsResult> {
 export function buildDailyDigest(r: MacroNewsResult): string {
   const fmtTime = (ts: number) =>
     new Date(ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const tag = (s: NewsSentiment) => (s === 'bullish' ? '[利好]' : s === 'bearish' ? '[利空]' : '[中性]');
+  const stats = (list: MacroNewsItem[]) => {
+    const b = list.filter((n) => n.sentiment === 'bullish').length;
+    const x = list.filter((n) => n.sentiment === 'bearish').length;
+    return b + x > 0 ? `（利好 ${b} / 利空 ${x} / 中性 ${list.length - b - x}）` : '';
+  };
   const lines: string[] = [];
 
   lines.push(`【消息面速览 · ${new Date().toLocaleDateString('zh-CN')}】`);
@@ -200,15 +235,15 @@ export function buildDailyDigest(r: MacroNewsResult): string {
   lines.push('');
 
   if (r.macroNews.length > 0) {
-    lines.push('■ 宏观·加息降息');
-    r.macroNews.slice(0, 5).forEach((n, i) => lines.push(`${i + 1}. ${n.title}（${n.source} ${fmtTime(n.publishedAt)}）`));
+    lines.push(`■ 宏观·加息降息${stats(r.macroNews)}`);
+    r.macroNews.slice(0, 5).forEach((n, i) => lines.push(`${i + 1}. ${tag(n.sentiment)} ${n.title}（${n.source} ${fmtTime(n.publishedAt)}）`));
     lines.push('');
   }
   if (r.cryptoNews.length > 0) {
-    lines.push('■ 加密市场');
-    r.cryptoNews.slice(0, 5).forEach((n, i) => lines.push(`${i + 1}. ${n.title}（${n.source} ${fmtTime(n.publishedAt)}）`));
+    lines.push(`■ 加密市场${stats(r.cryptoNews)}`);
+    r.cryptoNews.slice(0, 5).forEach((n, i) => lines.push(`${i + 1}. ${tag(n.sentiment)} ${n.title}（${n.source} ${fmtTime(n.publishedAt)}）`));
     lines.push('');
   }
-  lines.push('— 数据来自公开新闻源，不构成投资建议');
+  lines.push('— 数据来自公开新闻源，标签为关键词分类，不构成投资建议');
   return lines.join('\n');
 }
