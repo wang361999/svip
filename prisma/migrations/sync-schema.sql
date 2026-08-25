@@ -154,7 +154,7 @@ ALTER TABLE "AiAnalysis" ADD COLUMN IF NOT EXISTS "outcome" TEXT;
 ALTER TABLE "AiAnalysis" ADD COLUMN IF NOT EXISTS "outcomePrice" DOUBLE PRECISION;
 ALTER TABLE "AiAnalysis" ADD COLUMN IF NOT EXISTS "outcomeAt" TIMESTAMP(3);
 ALTER TABLE "AiAnalysis" ADD COLUMN IF NOT EXISTS "outcomeNote" TEXT;
-ALTER TABLE "AiAnalysis" ADD COLUMN IF NOT EXISTS "pullback" TEXT;
+ALTER TABLE "AiAnalysis" DROP COLUMN IF EXISTS "pullback";
 CREATE INDEX IF NOT EXISTS "AiAnalysis_symbol_idx" ON "AiAnalysis"("symbol");
 CREATE INDEX IF NOT EXISTS "AiAnalysis_createdAt_idx" ON "AiAnalysis"("createdAt");
 CREATE INDEX IF NOT EXISTS "AiAnalysis_direction_idx" ON "AiAnalysis"("direction");
