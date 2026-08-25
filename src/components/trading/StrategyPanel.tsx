@@ -125,6 +125,12 @@ export default function StrategyPanel() {
     );
   }
 
+  // 未启用任何策略时整个面板自动隐藏（与引擎「全关 = 不开仓」的行为保持一致）
+  // 例外：配置加载失败时保留面板以展示错误信息，避免静默消失
+  if (enabledCount === 0 && !error) {
+    return null;
+  }
+
   return (
     <div className="glass-card p-4 space-y-3">
       {/* 头部 */}
@@ -157,19 +163,6 @@ export default function StrategyPanel() {
       {error && (
         <div className="px-3 py-2 rounded-md bg-red-500/10 border border-red-500/30 text-red-400 text-xs">
           {error}
-        </div>
-      )}
-
-      {/* 未启用任何策略 */}
-      {enabledCount === 0 && (
-        <div className="rounded-xl border border-dark-600/40 bg-dark-800/30 p-5 text-center">
-          <svg className="w-8 h-8 text-dark-600 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-          </svg>
-          <p className="text-dark-400 text-xs mb-3">尚未启用任何策略</p>
-          <a href="/strategies" className="inline-block px-4 py-1.5 rounded-md bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-medium hover:bg-blue-500/20 transition-all">
-            前往策略中心启用 →
-          </a>
         </div>
       )}
 
