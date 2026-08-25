@@ -150,6 +150,12 @@ export interface AiAnalysisResult {
       topBroken: boolean;
       bottomBroken: boolean;
     } | null;
+    /** 多周期结构趋势（服务端客观计算回填 — 方向过滤层，前端周期徽章展示用） */
+    structure?: {
+      m15: StructureTrend;
+      h1: StructureTrend;
+      h4: StructureTrend;
+    } | null;
   };
 }
 
@@ -292,6 +298,67 @@ function buildGannText(g: GannEighths | null, currentPrice: number): string {
 当前价 ${currentPrice}，位于区间 ${g.positionPct}% 处（${g.zoneLabel}）
 分位阶梯：
 ${lines.join('\n')}`;
+}
+
+// ==================== 多周期结构趋势（Market Structure） ====================
+
+/** 摆动点序列 → 市场结构分类 */
+export type StructureTrend = 'up' | 'down' | 'range' | 'unknown';
+
+export interface StructureInfo {
+  trend: StructureTrend;
+  /** 近端摆动序列描述（如 "HL 2458 → HH 2510 → HL 2480"） */
+  seq: string;
+  /** 结构与方向是否对齐的备注 */
+  note: string;
+}
+
+/**
+ * 客观判定市场结构（道氏 HH/HL/LH/LL 框架，纯结构不看指标）
+ * 取近端已确认摆动点序列（顶底交替），按最后两组同类型摆动比较：
+ * - 最近高点 > 前高 且 最近低点 > 前低 → up（HH+HL 上升结构）
+ * - 最近高点 < 前高 且 最近低点 < 前低 → down（LH+LL 下降结构）
+ * - 一升一降或多空矛盾 → range（震荡结构）
+ */
+export function computeStructureTrend(klines: KlineData[], tfLabel: string): StructureInfo {
+  if (klines.length < 30) return { trend: 'unknown', seq: '', note: `${tfLabel} K线不足` };
+
+  const n = klines.length;
+  const start = Math.max(2, n - 120); // 近 120 根内找摆动
+  const tops: number[] = [];
+  const bottoms: number[] = [];
+
+  for (let i = n - 2; i >= start && (tops.length < 2 || bottoms.length < 2); i--) {
+    const k = klines[i];
+    if (k.high > klines[i - 1].high && k.high > klines[i + 1].high) tops.push(k.high);
+    if (k.low < klines[i - 1].low && k.low < klines[i + 1].low) bottoms.push(k.low);
+  }
+
+  if (tops.length < 2 || bottoms.length < 2) {
+    return { trend: 'unknown', seq: '', note: `${tfLabel} 摆动点不足，结构不明` };
+  }
+
+  // tops/bottoms 从右往左收集：[0]=最近，[1]=前一个
+  const lastTop = tops[0], prevTop = tops[1];
+  const lastBottom = bottoms[0], prevBottom = bottoms[1];
+
+  const highRising = lastTop > prevTop;   // HH
+  const lowRising = lastBottom > prevBottom; // HL
+  const seq = `HL/LL ${Math.min(lastBottom, prevBottom)} → ${Math.max(lastBottom, prevBottom)}，LH/HH ${Math.min(lastTop, prevTop)} → ${Math.max(lastTop, prevTop)}`;
+
+  if (highRising && lowRising) return { trend: 'up', seq, note: `${tfLabel} HH+HL 上升结构` };
+  if (!highRising && !lowRising) return { trend: 'down', seq, note: `${tfLabel} LH+LL 下降结构` };
+  return { trend: 'range', seq, note: `${tfLabel} 高低点矛盾，震荡结构` };
+}
+
+/** 多周期结构文本（注入 prompt — 方向过滤层） */
+function buildStructureText(s15: StructureInfo, s1h: StructureInfo, s4h: StructureInfo): string {
+  const label = (s: StructureInfo) =>
+    s.trend === 'up' ? '上升（HH+HL）' : s.trend === 'down' ? '下降（LH+LL）' : s.trend === 'range' ? '震荡（矛盾）' : '不明（数据不足）';
+  return `=== 多周期结构趋势（道氏 HH/HL/LH/LL，服务端客观计算 — 方向过滤层） ===
+15分钟结构：${label(s15)}${s15.seq ? ` | ${s15.seq}` : ''}
+1小时结构：${label(s1h)}${s1h.seq ? ` | ${s1h.seq}` : ''}
+4小时结构：${label(s4h)}${s4h.seq ? ` | ${s4h.seq}` : ''}`;
 }
 
 // ==================== 顶底分型（Fractal）客观计算 ====================
@@ -449,6 +516,13 @@ const SYSTEM_PROMPT = `你是严格执行「江恩八分位 + 顶底分型」的
 6. 分型失效（顶分型高点被突破 / 底分型低点被跌破）→ 该分型信号作废，等待新分型，否则 neutral
 7. 近端无有效分型、或分型与所在分位区矛盾（如下方支撑区出现顶分型）→ neutral，不勉强给方向
 
+【方向过滤：多周期结构对齐】
+数据提供 15m/1h/4h 三个周期的市场结构（HH+HL=上升、LH+LL=下降、矛盾=震荡，服务端客观计算）。分型信号必须经结构过滤：
+- 顺势信号：信号方向与 1h、4h 结构一致（或至少不逆 4h）→ 正常置信度；三周期同向共振 → 置信度 85+
+- 逆势信号：信号方向与 1h 结构相反 → 置信度上限 55（不自动开仓）；与 4h 结构也相反 → 直接 neutral
+- 结构不明（unknown）：不加仓不重仓，置信度上限 65
+- 结构与分位矛盾时以结构为准：如下方支撑区的底分型但 1h 是 LH+LL 下降结构，反弹多只看 4/8 不看 5/8，且置信度降档
+
 【价位铁律】
 - entryPrice / takeProfit1 / takeProfit2 必须等于八分位价格；stopLoss = 分型极值（分型极值贴近分位时用该分位价）
 - 用户只挂限价单进场，不追市价
@@ -465,7 +539,7 @@ const SYSTEM_PROMPT = `你是严格执行「江恩八分位 + 顶底分型」的
   "reasoning": "两三句：命中进场规则第几条、依托哪个分型分位、止损为何放在分型极值"
 }`
 
-/** 构建用户 prompt（江恩八分位框架 + 顶底分型触发，无其他数据） */
+/** 构建用户 prompt（江恩八分位框架 + 顶底分型触发 + 多周期结构过滤） */
 function buildUserPrompt(
   symbol: string,
   label: string,
@@ -473,14 +547,17 @@ function buildUserPrompt(
   k1h: KlineData[],
   gannText: string,
   fractalText: string,
+  structureText: string,
 ): string {
-  return `请按「江恩八分位 + 顶底分型」规则分析 ${label} (${symbol})：
+  return `请按「江恩八分位 + 顶底分型 + 结构过滤」规则分析 ${label} (${symbol})：
 
 当前价格: ${currentPrice}
 
 ${gannText}
 
 ${fractalText}
+
+${structureText}
 
 === 近期价格行为（1小时K线摘要，用于判断分型与分位的突破/回踩状态） ===
 ${buildKlineSummary(k1h, '1H K线')}
@@ -684,8 +761,12 @@ export async function analyzeMarketWithAI(
     throw new Error('无法获取当前价格');
   }
 
-  // 3. 获取 1h K线（江恩八分位区间的计算源 + 判断分位突破/回踩的近期价格行为）
-  const k1h = await fetchKlines(symbol, okxId, '1h', 200).catch(() => [] as KlineData[]);
+  // 3. 获取 K 线：1h（八分位区间 + 分型触发）+ 15m/4h（结构趋势判定）
+  const [k1h, k15m, k4h] = await Promise.all([
+    fetchKlines(symbol, okxId, '1h', 200).catch(() => [] as KlineData[]),
+    fetchKlines(symbol, okxId, '15m', 120).catch(() => [] as KlineData[]),
+    fetchKlines(symbol, okxId, '4h', 60).catch(() => [] as KlineData[]),
+  ]);
 
   if (k1h.length === 0) {
     throw new Error('无法获取 K 线数据');
@@ -697,8 +778,21 @@ export async function analyzeMarketWithAI(
   // 3.6 计算近端顶底分型（进场触发器 — 注入 prompt + 回填 meta 供前端展示）
   const fractal = computeFractalSignal(k1h, gann);
 
-  // 4. 构建 prompt（八分位框架 + 分型触发 + 1h 价格行为，无其他数据）
-  const userPrompt = buildUserPrompt(symbol, label, price, k1h, buildGannText(gann, price), buildFractalText(fractal, price));
+  // 3.7 计算多周期结构趋势（15m/1h/4h 道氏结构 — 方向过滤层）
+  const struct15 = computeStructureTrend(k15m, '15分钟');
+  const struct1h = computeStructureTrend(k1h, '1小时');
+  const struct4h = computeStructureTrend(k4h, '4小时');
+
+  // 4. 构建 prompt（八分位框架 + 分型触发 + 多周期结构过滤）
+  const userPrompt = buildUserPrompt(
+    symbol,
+    label,
+    price,
+    k1h,
+    buildGannText(gann, price),
+    buildFractalText(fractal, price),
+    buildStructureText(struct15, struct1h, struct4h),
+  );
 
   // 5. 调用 AI API
   const rawResponse = await callChatCompletions(config, SYSTEM_PROMPT, userPrompt);
@@ -711,6 +805,8 @@ export async function analyzeMarketWithAI(
   result.meta.gann = gann;
   // 回填顶底分型（服务端客观计算，前端徽章展示）
   result.meta.fractal = fractal;
+  // 回填多周期结构趋势（服务端客观计算，前端周期徽章展示）
+  result.meta.structure = { m15: struct15.trend, h1: struct1h.trend, h4: struct4h.trend };
 
   return result;
 }

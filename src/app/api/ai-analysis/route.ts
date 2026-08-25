@@ -135,6 +135,11 @@ function parseMeta(raw: string | null): {
     topBroken: boolean;
     bottomBroken: boolean;
   } | null;
+  structure?: {
+    m15: 'up' | 'down' | 'range' | 'unknown';
+    h1: 'up' | 'down' | 'range' | 'unknown';
+    h4: 'up' | 'down' | 'range' | 'unknown';
+  } | null;
 } | null {
   if (!raw) return null;
   try {
@@ -247,6 +252,22 @@ function parseMeta(raw: string | null): {
       };
     }
 
+    // 多周期结构透传（服务端客观计算回填的 meta，非 AI 生成）
+    let structure: {
+      m15: 'up' | 'down' | 'range' | 'unknown';
+      h1: 'up' | 'down' | 'range' | 'unknown';
+      h4: 'up' | 'down' | 'range' | 'unknown';
+    } | null = null;
+    if (parsed.structure && typeof parsed.structure === 'object') {
+      const trendOf = (v: unknown): 'up' | 'down' | 'range' | 'unknown' =>
+        v === 'up' || v === 'down' || v === 'range' ? v : 'unknown';
+      structure = {
+        m15: trendOf(parsed.structure.m15),
+        h1: trendOf(parsed.structure.h1),
+        h4: trendOf(parsed.structure.h4),
+      };
+    }
+
     return {
       regime: String(parsed.regime || 'unknown'),
       aPlusChecklist:
@@ -259,6 +280,7 @@ function parseMeta(raw: string | null): {
       ...(noTradeZone ? { noTradeZone } : {}),
       ...(gann ? { gann } : {}),
       ...(fractal ? { fractal } : {}),
+      ...(structure ? { structure } : {}),
     };
   } catch {
     return null;

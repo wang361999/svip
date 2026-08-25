@@ -5,6 +5,9 @@ import useSymbolStore from '@/store/symbolStore';
 import usePriceStore from '@/store/priceStore';
 import { apiGet, apiPost } from '@/shared/api/client';
 
+/** 多周期结构趋势（与服务端 computeStructureTrend 对齐） */
+type StructureTrend = 'up' | 'down' | 'range' | 'unknown';
+
 interface AiAnalysis {
   id: string;
   symbol: string;
@@ -31,6 +34,12 @@ interface AiAnalysis {
       lastBottom: { price: number; barsAgo: number; strong: boolean; nearDivision: string } | null;
       topBroken: boolean;
       bottomBroken: boolean;
+    } | null;
+    /** 多周期结构趋势（服务端客观计算 — 方向过滤层） */
+    structure?: {
+      m15: StructureTrend;
+      h1: StructureTrend;
+      h4: StructureTrend;
     } | null;
   } | null;
   riskWarning: string | null;
@@ -79,6 +88,14 @@ const entryTypeMap: Record<string, { label: string; cls: string }> = {
   limit_pull: { label: '限价回踩', cls: 'text-sky-400 bg-sky-500/10 border-sky-500/30' },
   limit_break: { label: '突破挂单', cls: 'text-violet-400 bg-violet-500/10 border-violet-500/30' },
   market: { label: '市价', cls: 'text-dark-400 bg-dark-800/60 border-dark-700/40' },
+};
+
+/** 市场结构徽章配置（道氏 HH/HL/LH/LL — 纯结构，不看指标） */
+const structureConfig: Record<StructureTrend, { label: string; sub: string; icon: string; color: string; bg: string; border: string }> = {
+  up: { label: '上升', sub: 'HH+HL', icon: '▲', color: 'text-green-400', bg: 'bg-green-500/8', border: 'border-green-500/25' },
+  down: { label: '下降', sub: 'LH+LL', icon: '▼', color: 'text-red-400', bg: 'bg-red-500/8', border: 'border-red-500/25' },
+  range: { label: '震荡', sub: '高低矛盾', icon: '◆', color: 'text-amber-400', bg: 'bg-amber-500/8', border: 'border-amber-500/25' },
+  unknown: { label: '不明', sub: '数据不足', icon: '·', color: 'text-dark-400', bg: 'bg-dark-800/60', border: 'border-dark-700/40' },
 };
 
 export default function AiAnalysisPanel() {
@@ -396,6 +413,49 @@ export default function AiAnalysisPanel() {
               <div className="text-dark-600 text-[10px] mt-1">{formatTime(analysis.createdAt)}</div>
             </div>
           </div>
+
+          {/* 多周期结构趋势（道氏 HH/HL/LH/LL，服务端客观计算 — 方向过滤层） */}
+          {analysis.meta?.structure && (() => {
+            const s = analysis.meta.structure!;
+            const cells: { tf: string; trend: StructureTrend }[] = [
+              { tf: '15分', trend: s.m15 },
+              { tf: '1时', trend: s.h1 },
+              { tf: '4时', trend: s.h4 },
+            ];
+            // 三周期同向共振提示
+            const known = cells.filter((c) => c.trend !== 'unknown').map((c) => c.trend);
+            const allSame = known.length === 3 && new Set(known).size === 1;
+            return (
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-dark-400 text-xs font-medium">多周期结构</span>
+                  {allSame && (
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                      known[0] === 'up' ? 'text-green-400 bg-green-500/10' :
+                      known[0] === 'down' ? 'text-red-400 bg-red-500/10' :
+                      'text-amber-400 bg-amber-500/10'
+                    }`}>
+                      三周期共振
+                    </span>
+                  )}
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {cells.map(({ tf, trend }) => {
+                    const c = structureConfig[trend];
+                    return (
+                      <div key={tf} className={`rounded-lg border ${c.border} ${c.bg} py-1.5 text-center`}>
+                        <div className="text-dark-500 text-[10px]">{tf}</div>
+                        <div className={`text-xs font-bold ${c.color} leading-tight`}>
+                          {c.icon} {c.label}
+                        </div>
+                        <div className="text-dark-600 text-[9px]">{c.sub}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* 挂单指令卡（价位全部为八分位价格） */}
           {analysis.direction !== 'neutral' && (
