@@ -126,16 +126,6 @@ model SiteSetting {
   smtpUser               String?
   smtpPass               String?
   smtpFrom               String?
-  // AB9 九线颜色配置
-  ab9Line1Color          String   @default("rgba(100, 116, 139, 0.3)")
-  ab9Line2Color          String   @default("rgba(100, 116, 139, 0.35)")
-  ab9Line3Color          String   @default("rgba(239, 68, 68, 0.75)")
-  ab9Line4Color          String   @default("rgba(148, 163, 184, 0.7)")
-  ab9Line5Color          String   @default("rgba(34, 197, 94, 0.75)")
-  ab9Line6Color          String   @default("rgba(100, 116, 139, 0.45)")
-  ab9Line7Color          String   @default("rgba(100, 116, 139, 0.45)")
-  ab9Line8Color          String   @default("rgba(148, 163, 184, 0.6)")
-  ab9Line9Color          String   @default("rgba(168, 85, 247, 0.6)")
 
   updatedAt              DateTime @updatedAt
 }

@@ -37,16 +37,6 @@ export const updateSettingsSchema = z.object({
   smtpUser: z.string().optional(),
   smtpPass: z.string().optional(),
   smtpFrom: z.string().optional(),
-  // AB9 九线颜色配置
-  ab9Line1Color: z.string().optional(),
-  ab9Line2Color: z.string().optional(),
-  ab9Line3Color: z.string().optional(),
-  ab9Line4Color: z.string().optional(),
-  ab9Line5Color: z.string().optional(),
-  ab9Line6Color: z.string().optional(),
-  ab9Line7Color: z.string().optional(),
-  ab9Line8Color: z.string().optional(),
-  ab9Line9Color: z.string().optional(),
 });
 
 export type UpdateSettingsInput = z.infer<typeof updateSettingsSchema>;

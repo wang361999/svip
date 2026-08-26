@@ -33,6 +33,19 @@ import useChartStore from '@/store/chartStore';
 import { apiGet, apiPut } from '@/shared/api/client';
 import SymbolSelector from './SymbolSelector';
 
+// AB9线固定彩色（9种不同颜色）
+const AB9_COLORS: Record<number, string> = {
+  1: 'rgba(239, 68, 68, 0.85)',
+  2: 'rgba(249, 115, 22, 0.85)',
+  3: 'rgba(245, 158, 11, 0.85)',
+  4: 'rgba(234, 179, 8, 0.85)',
+  5: 'rgba(34, 197, 94, 0.85)',
+  6: 'rgba(20, 184, 166, 0.85)',
+  7: 'rgba(6, 182, 212, 0.85)',
+  8: 'rgba(59, 130, 246, 0.85)',
+  9: 'rgba(168, 85, 247, 0.85)',
+};
+
 interface KlineChartProps {
   isFullscreen?: boolean;
   onToggleFullscreen?: () => void;
@@ -118,19 +131,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     });
   }, [pricePrecision]);
 
-  // AB9线颜色配置（从后台加载）
-  const [ab9Colors, setAb9Colors] = useState<Record<number, string>>({
-    1: 'rgba(100, 116, 139, 0.3)',
-    2: 'rgba(100, 116, 139, 0.35)',
-    3: 'rgba(239, 68, 68, 0.75)',
-    4: 'rgba(148, 163, 184, 0.7)',
-    5: 'rgba(34, 197, 94, 0.75)',
-    6: 'rgba(100, 116, 139, 0.45)',
-    7: 'rgba(100, 116, 139, 0.45)',
-    8: 'rgba(148, 163, 184, 0.6)',
-    9: 'rgba(168, 85, 247, 0.6)',
-  });
-
   // 加载币种列表
   useEffect(() => {
     fetchSymbols();
@@ -156,18 +156,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           macdFast: parseInt(data.macdFast || '12', 10) || 12,
           macdSlow: parseInt(data.macdSlow || '26', 10) || 26,
           macdSignal: parseInt(data.macdSignal || '9', 10) || 9,
-        });
-        // 加载 AB9 线颜色配置
-        setAb9Colors({
-          1: data.ab9Line1Color || 'rgba(100, 116, 139, 0.3)',
-          2: data.ab9Line2Color || 'rgba(100, 116, 139, 0.35)',
-          3: data.ab9Line3Color || 'rgba(239, 68, 68, 0.75)',
-          4: data.ab9Line4Color || 'rgba(148, 163, 184, 0.7)',
-          5: data.ab9Line5Color || 'rgba(34, 197, 94, 0.75)',
-          6: data.ab9Line6Color || 'rgba(100, 116, 139, 0.45)',
-          7: data.ab9Line7Color || 'rgba(100, 116, 139, 0.45)',
-          8: data.ab9Line8Color || 'rgba(148, 163, 184, 0.6)',
-          9: data.ab9Line9Color || 'rgba(168, 85, 247, 0.6)',
         });
       })
       .catch(() => {});
@@ -337,15 +325,15 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         const ab9 = calcAB9Lines(klines);
         if (ab9 && candleSeries.current) {
           const ab9Styles: Record<number, { color: string; width: 1 | 2 | 3 | 4; label: string }> = {
-            1: { color: ab9Colors[1], width: 1, label: '1线' },
-            2: { color: ab9Colors[2], width: 1, label: '2线' },
-            3: { color: ab9Colors[3], width: 1, label: '3线' },
-            4: { color: ab9Colors[4], width: 1, label: '4线' },
-            5: { color: ab9Colors[5], width: 1, label: '5线' },
-            6: { color: ab9Colors[6], width: 1, label: '6线' },
-            7: { color: ab9Colors[7], width: 1, label: '7线' },
-            8: { color: ab9Colors[8], width: 1, label: '8线' },
-            9: { color: ab9Colors[9], width: 1, label: '9线' },
+            1: { color: AB9_COLORS[1], width: 1, label: '1线' },
+            2: { color: AB9_COLORS[2], width: 1, label: '2线' },
+            3: { color: AB9_COLORS[3], width: 1, label: '3线' },
+            4: { color: AB9_COLORS[4], width: 1, label: '4线' },
+            5: { color: AB9_COLORS[5], width: 1, label: '5线' },
+            6: { color: AB9_COLORS[6], width: 1, label: '6线' },
+            7: { color: AB9_COLORS[7], width: 1, label: '7线' },
+            8: { color: AB9_COLORS[8], width: 1, label: '8线' },
+            9: { color: AB9_COLORS[9], width: 1, label: '9线' },
           };
           for (const line of ab9.lines) {
             const style = ab9Styles[line.lineNo];
@@ -398,7 +386,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       const fromIdx = Math.max(0, toIdx - bars + 1);
       mainChart.current.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx + 4 });
     }
-  }, [updateIndicators, showAutoAB9, showAB9Labels, ab9Colors]);
+  }, [updateIndicators, showAutoAB9, showAB9Labels]);
 
   // 切换自动画线开关时重新绘制
   useEffect(() => {

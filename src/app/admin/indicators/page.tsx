@@ -19,15 +19,6 @@ interface IndicatorSettings {
   macdSlow: string;
   macdSignal: string;
   showPriceCard: string;
-  ab9Line1Color: string;
-  ab9Line2Color: string;
-  ab9Line3Color: string;
-  ab9Line4Color: string;
-  ab9Line5Color: string;
-  ab9Line6Color: string;
-  ab9Line7Color: string;
-  ab9Line8Color: string;
-  ab9Line9Color: string;
 }
 
 const INDICATOR_LIST = [
@@ -40,51 +31,6 @@ const INDICATOR_LIST = [
 
 const DISPLAY_LIST = [
   { key: 'showPriceCard' as const, label: '实时价格卡片', desc: '交易页顶部 ETH/USDT 实时价格滚动条' },
-];
-
-const AB9_LINES = [
-  { key: 'ab9Line1Color' as const, label: '1线', desc: '弱势区' },
-  { key: 'ab9Line2Color' as const, label: '2线', desc: '弱势区' },
-  { key: 'ab9Line3Color' as const, label: '3线', desc: '止损线（关键）' },
-  { key: 'ab9Line4Color' as const, label: '4线', desc: '进场区边界' },
-  { key: 'ab9Line5Color' as const, label: '5线', desc: '进场区边界（关键）' },
-  { key: 'ab9Line6Color' as const, label: '6线', desc: '中场区' },
-  { key: 'ab9Line7Color' as const, label: '7线', desc: '中场区' },
-  { key: 'ab9Line8Color' as const, label: '8线', desc: '目标1' },
-  { key: 'ab9Line9Color' as const, label: '9线', desc: '目标2（关键）' },
-];
-
-const COLOR_PRESETS = [
-  {
-    name: '默认配色',
-    colors: {
-      ab9Line1Color: 'rgba(100, 116, 139, 0.3)', ab9Line2Color: 'rgba(100, 116, 139, 0.35)',
-      ab9Line3Color: 'rgba(239, 68, 68, 0.75)', ab9Line4Color: 'rgba(148, 163, 184, 0.7)',
-      ab9Line5Color: 'rgba(34, 197, 94, 0.75)', ab9Line6Color: 'rgba(100, 116, 139, 0.45)',
-      ab9Line7Color: 'rgba(100, 116, 139, 0.45)', ab9Line8Color: 'rgba(148, 163, 184, 0.6)',
-      ab9Line9Color: 'rgba(168, 85, 247, 0.6)',
-    },
-  },
-  {
-    name: '高对比度',
-    colors: {
-      ab9Line1Color: 'rgba(148, 163, 184, 0.35)', ab9Line2Color: 'rgba(148, 163, 184, 0.4)',
-      ab9Line3Color: 'rgba(239, 68, 68, 0.85)', ab9Line4Color: 'rgba(251, 191, 36, 0.7)',
-      ab9Line5Color: 'rgba(34, 197, 94, 0.85)', ab9Line6Color: 'rgba(148, 163, 184, 0.5)',
-      ab9Line7Color: 'rgba(148, 163, 184, 0.5)', ab9Line8Color: 'rgba(56, 189, 248, 0.7)',
-      ab9Line9Color: 'rgba(168, 85, 247, 0.8)',
-    },
-  },
-  {
-    name: '低饱和度',
-    colors: {
-      ab9Line1Color: 'rgba(100, 116, 139, 0.2)', ab9Line2Color: 'rgba(100, 116, 139, 0.25)',
-      ab9Line3Color: 'rgba(239, 68, 68, 0.5)', ab9Line4Color: 'rgba(148, 163, 184, 0.45)',
-      ab9Line5Color: 'rgba(34, 197, 94, 0.5)', ab9Line6Color: 'rgba(100, 116, 139, 0.3)',
-      ab9Line7Color: 'rgba(100, 116, 139, 0.3)', ab9Line8Color: 'rgba(148, 163, 184, 0.4)',
-      ab9Line9Color: 'rgba(168, 85, 247, 0.4)',
-    },
-  },
 ];
 
 export default function AdminIndicatorsPage() {
@@ -104,15 +50,6 @@ export default function AdminIndicatorsPage() {
     macdSlow: '26',
     macdSignal: '9',
     showPriceCard: 'true',
-    ab9Line1Color: 'rgba(100, 116, 139, 0.3)',
-    ab9Line2Color: 'rgba(100, 116, 139, 0.35)',
-    ab9Line3Color: 'rgba(239, 68, 68, 0.75)',
-    ab9Line4Color: 'rgba(148, 163, 184, 0.7)',
-    ab9Line5Color: 'rgba(34, 197, 94, 0.75)',
-    ab9Line6Color: 'rgba(100, 116, 139, 0.45)',
-    ab9Line7Color: 'rgba(100, 116, 139, 0.45)',
-    ab9Line8Color: 'rgba(148, 163, 184, 0.6)',
-    ab9Line9Color: 'rgba(168, 85, 247, 0.6)',
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -148,15 +85,6 @@ export default function AdminIndicatorsPage() {
             macdSlow: data.macdSlow || '26',
             macdSignal: data.macdSignal || '9',
             showPriceCard: data.showPriceCard || 'true',
-            ab9Line1Color: data.ab9Line1Color || 'rgba(100, 116, 139, 0.3)',
-            ab9Line2Color: data.ab9Line2Color || 'rgba(100, 116, 139, 0.35)',
-            ab9Line3Color: data.ab9Line3Color || 'rgba(239, 68, 68, 0.75)',
-            ab9Line4Color: data.ab9Line4Color || 'rgba(148, 163, 184, 0.7)',
-            ab9Line5Color: data.ab9Line5Color || 'rgba(34, 197, 94, 0.75)',
-            ab9Line6Color: data.ab9Line6Color || 'rgba(100, 116, 139, 0.45)',
-            ab9Line7Color: data.ab9Line7Color || 'rgba(100, 116, 139, 0.45)',
-            ab9Line8Color: data.ab9Line8Color || 'rgba(148, 163, 184, 0.6)',
-            ab9Line9Color: data.ab9Line9Color || 'rgba(168, 85, 247, 0.6)',
           });
         }
       })
@@ -192,10 +120,6 @@ export default function AdminIndicatorsPage() {
       ...prev,
       [key]: prev[key] === 'true' ? 'false' : 'true',
     }));
-  };
-
-  const applyPreset = (colors: Record<string, string>) => {
-    setSettings((prev) => ({ ...prev, ...colors }));
   };
 
   if (!isAuthenticated || user?.role !== 'admin') return null;
@@ -304,50 +228,6 @@ export default function AdminIndicatorsPage() {
                 {DISPLAY_LIST.map((item) => (
                   <ToggleItem key={item.key} item={item} />
                 ))}
-              </div>
-
-              {/* AB9线颜色 */}
-              <div className="glass-card p-6">
-                <h2 className="text-lg font-semibold text-white mb-2">AB9线颜色配置</h2>
-                <p className="text-dark-400 text-sm mb-4">自定义K线图上AB9线每条线的颜色，支持 rgba 格式</p>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  {AB9_LINES.map(({ key, label, desc }) => (
-                    <div key={key} className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        <label className="block text-sm font-medium text-dark-300">{label}</label>
-                        <span className="text-dark-500 text-xs">{desc}</span>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <input
-                          type="color"
-                          value={settings[key]}
-                          onChange={(e) => setSettings({ ...settings, [key]: e.target.value })}
-                          className="w-12 h-10 rounded bg-dark-800 border border-dark-600 cursor-pointer"
-                        />
-                        <input
-                          type="text"
-                          value={settings[key]}
-                          onChange={(e) => setSettings({ ...settings, [key]: e.target.value })}
-                          className="input-dark flex-1 text-xs"
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-5 pt-4 border-t border-dark-700/30">
-                  <span className="text-dark-400 text-sm">快速预设</span>
-                  <div className="flex flex-wrap gap-2 mt-2">
-                    {COLOR_PRESETS.map((preset) => (
-                      <button
-                        key={preset.name}
-                        onClick={() => applyPreset(preset.colors)}
-                        className="px-3 py-1.5 text-xs rounded-md bg-dark-700/50 text-dark-300 hover:text-white hover:bg-dark-600 transition-all"
-                      >
-                        {preset.name}
-                      </button>
-                    ))}
-                  </div>
-                </div>
               </div>
 
               <button
