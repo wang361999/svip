@@ -162,6 +162,387 @@ export function calcATRArray(klines: KlineData[], period: number = 14): (number 
   return result;
 }
 
+// ========== 斐波那契回调线 ==========
+
+export interface FibonacciLevel {
+  /** 比例系数，如 0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.618, 2.618 */
+  ratio: number;
+  /** 对应价格 */
+  price: number;
+  /** 标签，如 "0.0", "23.6", "38.2", "50.0", "61.8", "78.6", "100.0", "161.8", "261.8" */
+  label: string;
+  /** 类型：回调（0-1之间）或扩展（>1） */
+  type: 'retracement' | 'extension';
+}
+
+export interface FibonacciAnalysis {
+  /** A点价格（波段起点） */
+  pointA: number;
+  /** B点价格（波段终点） */
+  pointB: number;
+  /** A点时间 */
+  timeA: number;
+  /** B点时间 */
+  timeB: number;
+  /** AB段高度（绝对值） */
+  height: number;
+  /** 方向 */
+  direction: 'up' | 'down';
+  /** 斐波那契水平线 */
+  levels: FibonacciLevel[];
+  /** 当前价靠近哪个水平（null=不在任何线附近） */
+  nearLevel: number | null;
+  /** 当前价在哪个区间 */
+  betweenLevels: string;
+}
+
+/**
+ * 斐波那契回调线算法
+ *
+ * 基于 AB9 线的分形检测找到最大波段，然后计算斐波那契水平：
+ * - 回调位：0%, 23.6%, 38.2%, 50%, 61.8%, 78.6%, 100%
+ * - 扩展位：161.8%, 261.8%
+ *
+ * 上升趋势（A=低点, B=高点）：
+ *   回调位价格 = B - height * ratio
+ *   扩展位价格 = B + height * (ratio - 1)
+ *
+ * 下降趋势（A=高点, B=低点）：
+ *   回调位价格 = B + height * ratio
+ *   扩展位价格 = B - height * (ratio - 1)
+ */
+export function calcFibonacci(klines: KlineData[]): FibonacciAnalysis | null {
+  if (!klines || klines.length < 30) return null;
+
+  const currentPrice = klines[klines.length - 1].close;
+
+  // 1. 找分形点（复用 AB9 的分形检测逻辑）
+  const strength = 3;
+  const fbStart = strength;
+  const fbEnd = klines.length - strength - 1;
+  const fractalHighs: { idx: number; price: number }[] = [];
+  const fractalLows: { idx: number; price: number }[] = [];
+
+  for (let i = fbStart; i <= fbEnd; i++) {
+    let isHigh = true, isLow = true;
+    for (let j = 1; j <= strength; j++) {
+      if (klines[i].high <= klines[i - j].high || klines[i].high <= klines[i + j].high) isHigh = false;
+      if (klines[i].low >= klines[i - j].low || klines[i].low >= klines[i + j].low) isLow = false;
+    }
+    if (isHigh) fractalHighs.push({ idx: i, price: klines[i].high });
+    if (isLow) fractalLows.push({ idx: i, price: klines[i].low });
+  }
+
+  if (fractalHighs.length === 0 || fractalLows.length === 0) return null;
+
+  // 2. 找包含当前价的最大波段
+  type Swing = { startPrice: number; endPrice: number; startIdx: number; endIdx: number; direction: 'up' | 'down'; range: number };
+  const allSwings: Swing[] = [];
+
+  // 上升波段：低点在前，高点在后
+  for (const low of fractalLows) {
+    for (const high of fractalHighs) {
+      if (high.idx > low.idx) {
+        const range = high.price - low.price;
+        if ((range / low.price) * 100 >= 2) {
+          allSwings.push({ startPrice: low.price, endPrice: high.price, startIdx: low.idx, endIdx: high.idx, direction: 'up', range });
+        }
+      }
+    }
+  }
+
+  // 下降波段
+  for (const high of fractalHighs) {
+    for (const low of fractalLows) {
+      if (low.idx > high.idx && high.price > low.price) {
+        const range = high.price - low.price;
+        if ((range / high.price) * 100 >= 2) {
+          allSwings.push({ startPrice: high.price, endPrice: low.price, startIdx: high.idx, endIdx: low.idx, direction: 'down', range });
+        }
+      }
+    }
+  }
+
+  if (allSwings.length === 0) return null;
+
+  // 选波段：当前价在范围内优先，否则取最大
+  let selected = allSwings
+    .filter((s) => {
+      const lo = Math.min(s.startPrice, s.endPrice);
+      const hi = Math.max(s.startPrice, s.endPrice);
+      return currentPrice > lo && currentPrice < hi;
+    })
+    .sort((a, b) => b.range - a.range)[0]
+    || allSwings.sort((a, b) => b.range - a.range)[0];
+
+  // 3. 计算斐波那契水平
+  const pointA = selected.startPrice;
+  const pointB = selected.endPrice;
+  const height = Math.abs(pointB - pointA);
+
+  // 斐波那契比例：回调 + 扩展
+  const fibRatios = [
+    { ratio: 0, label: '0.0', type: 'retracement' as const },
+    { ratio: 0.236, label: '23.6', type: 'retracement' as const },
+    { ratio: 0.382, label: '38.2', type: 'retracement' as const },
+    { ratio: 0.5, label: '50.0', type: 'retracement' as const },
+    { ratio: 0.618, label: '61.8', type: 'retracement' as const },
+    { ratio: 0.786, label: '78.6', type: 'retracement' as const },
+    { ratio: 1.0, label: '100.0', type: 'retracement' as const },
+    { ratio: 1.618, label: '161.8', type: 'extension' as const },
+    { ratio: 2.618, label: '261.8', type: 'extension' as const },
+  ];
+
+  const levels: FibonacciLevel[] = fibRatios.map(({ ratio, label, type }) => {
+    let price: number;
+    if (selected.direction === 'up') {
+      // 上升趋势：从高点B往回算回调，往前算扩展
+      price = pointB - height * ratio;
+    } else {
+      // 下降趋势：从低点B往回算回调，往前算扩展
+      price = pointB + height * ratio;
+    }
+    return { ratio, price, label, type };
+  });
+
+  // 4. 判断当前价靠近哪个水平
+  const threshold = height * 0.01; // 1% of AB height
+  let nearLevel: number | null = null;
+  for (const level of levels) {
+    if (Math.abs(currentPrice - level.price) <= threshold) {
+      nearLevel = level.ratio;
+      break;
+    }
+  }
+
+  // 5. 判断当前价在哪个区间
+  let betweenLevels = '';
+  const sortedLevels = [...levels].sort((a, b) => a.price - b.price);
+  for (let i = 0; i < sortedLevels.length - 1; i++) {
+    if (currentPrice >= sortedLevels[i].price && currentPrice <= sortedLevels[i + 1].price) {
+      betweenLevels = `${sortedLevels[i].label}% - ${sortedLevels[i + 1].label}%`;
+      break;
+    }
+  }
+  if (!betweenLevels) {
+    if (currentPrice > sortedLevels[sortedLevels.length - 1].price) {
+      betweenLevels = `${sortedLevels[sortedLevels.length - 1].label}% 之上`;
+    } else {
+      betweenLevels = `${sortedLevels[0].label}% 之下`;
+    }
+  }
+
+  return {
+    pointA,
+    pointB,
+    timeA: klines[selected.startIdx].time,
+    timeB: klines[selected.endIdx].time,
+    height,
+    direction: selected.direction,
+    levels,
+    nearLevel,
+    betweenLevels,
+  };
+}
+
+// ========== 自动划线：支撑/阻力位 ==========
+
+export interface SupportResistanceLine {
+  /** 价格水平 */
+  price: number;
+  /** 类型：支撑或阻力 */
+  type: 'support' | 'resistance';
+  /** 强度（被测试次数） */
+  strength: number;
+  /** 最近一次触及的K线索引 */
+  lastTouchIdx: number;
+}
+
+export interface AutoLinesAnalysis {
+  /** 支撑位数组（从低到高） */
+  supports: SupportResistanceLine[];
+  /** 阻力位数组（从低到高） */
+  resistances: SupportResistanceLine[];
+  /** 上升趋势线点（两个点） */
+  uptrendLine: { time1: number; price1: number; time2: number; price2: number } | null;
+  /** 下降趋势线点（两个点） */
+  downtrendLine: { time1: number; price1: number; time2: number; price2: number } | null;
+}
+
+/**
+ * 自动识别支撑/阻力位和趋势线
+ *
+ * 算法：
+ * 1. 基于分形高点/低点聚类，找出价格密集区
+ * 2. 同一价格区间内的多个分形点合并为一条支撑/阻力线
+ * 3. 被测试次数越多，强度越高
+ *
+ * 趋势线：
+ * - 上升趋势线：连接最近的两个抬高的低点
+ * - 下降趋势线：连接最近的两个降低的高点
+ */
+export function calcAutoLines(klines: KlineData[]): AutoLinesAnalysis | null {
+  if (!klines || klines.length < 50) return null;
+
+  // 1. 找分形点
+  const strength = 2;
+  const fbStart = strength;
+  const fbEnd = klines.length - strength - 1;
+  const fractalHighs: { idx: number; price: number }[] = [];
+  const fractalLows: { idx: number; price: number }[] = [];
+
+  for (let i = fbStart; i <= fbEnd; i++) {
+    let isHigh = true, isLow = true;
+    for (let j = 1; j <= strength; j++) {
+      if (klines[i].high <= klines[i - j].high || klines[i].high <= klines[i + j].high) isHigh = false;
+      if (klines[i].low >= klines[i - j].low || klines[i].low >= klines[i + j].low) isLow = false;
+    }
+    if (isHigh) fractalHighs.push({ idx: i, price: klines[i].high });
+    if (isLow) fractalLows.push({ idx: i, price: klines[i].low });
+  }
+
+  if (fractalHighs.length === 0 || fractalLows.length === 0) return null;
+
+  // 2. 计算价格范围用于聚类阈值
+  const priceRange = klines[klines.length - 1].high - klines[0].low;
+  const clusterThreshold = priceRange * 0.015; // 1.5% 作为聚类阈值
+
+  // 3. 聚类支撑位（低点）
+  const supports = clusterFractals(fractalLows, clusterThreshold, 'support', klines);
+  // 4. 聚类阻力位（高点）
+  const resistances = clusterFractals(fractalHighs, clusterThreshold, 'resistance', klines);
+
+  // 5. 计算趋势线
+  const uptrendLine = calcUptrendLine(fractalLows, klines);
+  const downtrendLine = calcDowntrendLine(fractalHighs, klines);
+
+  return {
+    supports: supports.sort((a, b) => a.price - b.price),
+    resistances: resistances.sort((a, b) => a.price - b.price),
+    uptrendLine,
+    downtrendLine,
+  };
+}
+
+/**
+ * 将分形点聚类为支撑/阻力线
+ */
+function clusterFractals(
+  fractals: { idx: number; price: number }[],
+  threshold: number,
+  type: 'support' | 'resistance',
+  klines: KlineData[]
+): SupportResistanceLine[] {
+  if (fractals.length === 0) return [];
+
+  // 按价格排序
+  const sorted = [...fractals].sort((a, b) => a.price - b.price);
+  const clusters: { prices: number[]; indices: number[] }[] = [];
+
+  let currentCluster = { prices: [sorted[0].price], indices: [sorted[0].idx] };
+
+  for (let i = 1; i < sorted.length; i++) {
+    const avgPrice = currentCluster.prices.reduce((s, p) => s + p, 0) / currentCluster.prices.length;
+    if (Math.abs(sorted[i].price - avgPrice) <= threshold) {
+      currentCluster.prices.push(sorted[i].price);
+      currentCluster.indices.push(sorted[i].idx);
+    } else {
+      clusters.push(currentCluster);
+      currentCluster = { prices: [sorted[i].price], indices: [sorted[i].idx] };
+    }
+  }
+  clusters.push(currentCluster);
+
+  // 过滤掉只有1个点的弱支撑/阻力
+  const strongClusters = clusters.filter((c) => c.prices.length >= 2);
+
+  // 转换为支撑/阻力线
+  return strongClusters.map((c) => {
+    const avgPrice = c.prices.reduce((s, p) => s + p, 0) / c.prices.length;
+    const lastTouchIdx = Math.max(...c.indices);
+    return {
+      price: avgPrice,
+      type,
+      strength: c.prices.length,
+      lastTouchIdx,
+    };
+  }).sort((a, b) => a.price - b.price);
+}
+
+/**
+ * 计算上升趋势线：连接最近的两个抬高的低点
+ */
+function calcUptrendLine(
+  fractalLows: { idx: number; price: number }[],
+  klines: KlineData[]
+): { time1: number; price1: number; time2: number; price2: number } | null {
+  // 按索引排序（从新到旧）
+  const sorted = [...fractalLows].sort((a, b) => b.idx - a.idx);
+  if (sorted.length < 2) return null;
+
+  // 找最近的两个抬高的低点
+  let point1 = sorted[0]; // 最新的低点
+  let point2: { idx: number; price: number } | null = null;
+
+  for (let i = 1; i < sorted.length; i++) {
+    // 找到一个比 point1 更早且价格更低的低点
+    if (sorted[i].idx < point1.idx && sorted[i].price < point1.price) {
+      point2 = sorted[i];
+      break;
+    }
+  }
+
+  if (!point2) return null;
+
+  // 确保 point1 是右边的点（时间较新），point2 是左边的点（时间较早）
+  const right = point1;
+  const left = point2;
+
+  return {
+    time1: klines[left.idx].time,
+    price1: left.price,
+    time2: klines[right.idx].time,
+    price2: right.price,
+  };
+}
+
+/**
+ * 计算下降趋势线：连接最近的两个降低的高点
+ */
+function calcDowntrendLine(
+  fractalHighs: { idx: number; price: number }[],
+  klines: KlineData[]
+): { time1: number; price1: number; time2: number; price2: number } | null {
+  // 按索引排序（从新到旧）
+  const sorted = [...fractalHighs].sort((a, b) => b.idx - a.idx);
+  if (sorted.length < 2) return null;
+
+  // 找最近的两个降低的高点
+  let point1 = sorted[0]; // 最新的高点
+  let point2: { idx: number; price: number } | null = null;
+
+  for (let i = 1; i < sorted.length; i++) {
+    // 找到一个比 point1 更早且价格更高的高点
+    if (sorted[i].idx < point1.idx && sorted[i].price > point1.price) {
+      point2 = sorted[i];
+      break;
+    }
+  }
+
+  if (!point2) return null;
+
+  // 确保 point1 是右边的点（时间较新），point2 是左边的点（时间较早）
+  const right = point1;
+  const left = point2;
+
+  return {
+    time1: klines[left.idx].time,
+    price1: left.price,
+    time2: klines[right.idx].time,
+    price2: right.price,
+  };
+}
+
 // ========== AB9线（江恩八分法趋势强度）==========
 
 export interface AB9Line {

@@ -32,8 +32,7 @@ function sanitize(user: {
   role: string;
   membership: string;
   membershipExpires: string | null;
-  prefAB9: string;
-  prefAB9Labels: string;
+  prefAllDrawings: string;
   createdAt: Date;
 }): AuthUser {
   return {
@@ -43,8 +42,7 @@ function sanitize(user: {
     role: user.role,
     membership: user.membership,
     membershipExpires: user.membershipExpires,
-    prefAB9: user.prefAB9,
-    prefAB9Labels: user.prefAB9Labels,
+    prefAllDrawings: user.prefAllDrawings,
     createdAt: user.createdAt,
   };
 }

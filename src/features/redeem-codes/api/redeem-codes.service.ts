@@ -111,8 +111,7 @@ export const redeemCodeService = {
         data: {
           membership: 'vip',
           membershipExpires: expiresAt,
-          prefAB9: 'true',
-          prefAB9Labels: 'true',
+          prefAllDrawings: 'true',
         },
       }),
     ]);

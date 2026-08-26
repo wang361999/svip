@@ -6,8 +6,5 @@ import type { User } from '@prisma/client';
 /** 登录/注册成功后返回的用户信息（脱敏，不含 password） */
 export type AuthUser = Pick<
   User,
-  'id' | 'email' | 'username' | 'role' | 'membership' | 'membershipExpires' | 'createdAt'
-> & {
-  prefAB9?: string;
-  prefAB9Labels?: string;
-};
+  'id' | 'email' | 'username' | 'role' | 'membership' | 'membershipExpires' | 'createdAt' | 'prefAllDrawings'
+>;

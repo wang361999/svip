@@ -17,8 +17,7 @@ model User {
   membershipExpires String?
   strategyConfig   String?
   // 用户画线偏好
-  prefAB9          String        @default("true")
-  prefAB9Labels    String        @default("true")
+  prefAllDrawings  String        @default("false")
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 
