@@ -275,6 +275,79 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     }
   }, [indicators, periods]);
 
+  // === AB9线 + 斐波那契回调线重绘 ===
+  // 数据加载、开关切换、K线收盘（isFinal）时调用，统一走这一个入口
+  const redrawOverlayLines = useCallback(() => {
+    const klines = allKlinesRef.current;
+    const series = candleSeries.current;
+    if (!mainChart.current || !series || klines.length === 0) return;
+
+    // 先清除所有旧画线
+    for (const pl of autoPriceLinesRef.current) {
+      try { series.removePriceLine(pl); } catch {}
+    }
+    autoPriceLinesRef.current = [];
+    for (const pl of fibPriceLinesRef.current) {
+      try { series.removePriceLine(pl); } catch {}
+    }
+    fibPriceLinesRef.current = [];
+
+    // —— AB9线 ——
+    if (showAutoAB9 && isMember) {
+      const ab9 = calcAB9Lines(klines);
+      if (ab9) {
+        for (const line of ab9.lines) {
+          const color = AB9_COLORS[line.lineNo];
+          if (!color) continue;
+          try {
+            const pl = series.createPriceLine({
+              price: line.price,
+              color: color.replace(/[\d.]+\)$/, '0.85)'),
+              lineWidth: 1,
+              lineStyle: 2,
+              axisLabelVisible: true,
+              title: ` ${line.lineNo}线`,
+            });
+            autoPriceLinesRef.current.push(pl);
+          } catch {}
+        }
+      }
+    }
+
+    // —— 斐波那契回调线 ——
+    if (showFibonacci && isMember) {
+      const fib = calcFibonacci(klines);
+      if (fib) {
+        const fibColors: Record<string, string> = {
+          '0.0': 'rgba(239, 68, 68, 0.85)',
+          '23.6': 'rgba(249, 115, 22, 0.75)',
+          '38.2': 'rgba(245, 158, 11, 0.75)',
+          '50.0': 'rgba(234, 179, 8, 0.85)',
+          '61.8': 'rgba(34, 197, 94, 0.75)',
+          '78.6': 'rgba(20, 184, 166, 0.75)',
+          '100.0': 'rgba(59, 130, 246, 0.85)',
+          '161.8': 'rgba(168, 85, 247, 0.75)',
+          '261.8': 'rgba(236, 72, 153, 0.75)',
+        };
+        for (const level of fib.levels) {
+          const color = fibColors[level.label] || 'rgba(148, 163, 184, 0.6)';
+          const lineWidth = level.ratio === 0.5 || level.ratio === 0.618 ? 2 : 1;
+          try {
+            const pl = series.createPriceLine({
+              price: level.price,
+              color: color.replace(/[\d.]+\)$/, '0.85)'),
+              lineWidth,
+              lineStyle: level.type === 'extension' ? 3 : 2,
+              axisLabelVisible: true,
+              title: ` FIB ${level.label}%`,
+            });
+            fibPriceLinesRef.current.push(pl);
+          } catch {}
+        }
+      }
+    }
+  }, [showAutoAB9, showFibonacci, isMember]);
+
   // 更新K线数据
   const updateChart = useCallback((klines: KlineData[]) => {
     allKlinesRef.current = klines;
@@ -299,83 +372,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     updateIndicators();
 
     // === AB9线 + 斐波那契回调线（各自独立控制）===
-    if (mainChart.current) {
-      // 先清除所有旧画线
-      for (const pl of autoPriceLinesRef.current) {
-        try { candleSeries.current?.removePriceLine(pl); } catch {}
-      }
-      autoPriceLinesRef.current = [];
-      for (const pl of fibPriceLinesRef.current) {
-        try { candleSeries.current?.removePriceLine(pl); } catch {}
-      }
-      fibPriceLinesRef.current = [];
-
-      // —— AB9线 ——
-      if (showAutoAB9 && isMember) {
-        const ab9 = calcAB9Lines(klines);
-        if (ab9 && candleSeries.current) {
-          const ab9Styles: Record<number, { color: string; label: string }> = {
-            1: { color: AB9_COLORS[1], label: '1线' },
-            2: { color: AB9_COLORS[2], label: '2线' },
-            3: { color: AB9_COLORS[3], label: '3线' },
-            4: { color: AB9_COLORS[4], label: '4线' },
-            5: { color: AB9_COLORS[5], label: '5线' },
-            6: { color: AB9_COLORS[6], label: '6线' },
-            7: { color: AB9_COLORS[7], label: '7线' },
-            8: { color: AB9_COLORS[8], label: '8线' },
-            9: { color: AB9_COLORS[9], label: '9线' },
-          };
-          for (const line of ab9.lines) {
-            const style = ab9Styles[line.lineNo];
-            if (!style) continue;
-            try {
-              const pl = candleSeries.current.createPriceLine({
-                price: line.price,
-                color: style.color.replace(/[\d.]+\)$/, '0.85)'),
-                lineWidth: 1,
-                lineStyle: 2,
-                axisLabelVisible: true,
-                title: ` ${style.label}`,
-              });
-              autoPriceLinesRef.current.push(pl);
-            } catch {}
-          }
-        }
-      }
-
-      // —— 斐波那契回调线 ——
-      if (showFibonacci && isMember) {
-        const fib = calcFibonacci(klines);
-        if (fib && candleSeries.current) {
-          const fibColors: Record<string, string> = {
-            '0.0': 'rgba(239, 68, 68, 0.85)',
-            '23.6': 'rgba(249, 115, 22, 0.75)',
-            '38.2': 'rgba(245, 158, 11, 0.75)',
-            '50.0': 'rgba(234, 179, 8, 0.85)',
-            '61.8': 'rgba(34, 197, 94, 0.75)',
-            '78.6': 'rgba(20, 184, 166, 0.75)',
-            '100.0': 'rgba(59, 130, 246, 0.85)',
-            '161.8': 'rgba(168, 85, 247, 0.75)',
-            '261.8': 'rgba(236, 72, 153, 0.75)',
-          };
-          for (const level of fib.levels) {
-            const color = fibColors[level.label] || 'rgba(148, 163, 184, 0.6)';
-            const lineWidth = level.ratio === 0.5 || level.ratio === 0.618 ? 2 : 1;
-            try {
-              const pl = candleSeries.current.createPriceLine({
-                price: level.price,
-                color: color.replace(/[\d.]+\)$/, '0.85)'),
-                lineWidth,
-                lineStyle: level.type === 'extension' ? 3 : 2,
-                axisLabelVisible: true,
-                title: ` FIB ${level.label}%`,
-              });
-              fibPriceLinesRef.current.push(pl);
-            } catch {}
-          }
-        }
-      }
-    }
+    redrawOverlayLines();
 
     if (candleSeries.current) {
       candleSeries.current.setMarkers([]);
@@ -389,14 +386,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       const fromIdx = Math.max(0, toIdx - bars + 1);
       mainChart.current.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx + 4 });
     }
-  }, [updateIndicators, showAutoAB9, showFibonacci]);
+  }, [updateIndicators, redrawOverlayLines]);
 
-  // 切换画线开关时重新绘制
+  // 切换画线开关时仅重画线（不再整图重载、不重置视图）
   useEffect(() => {
-    if (allKlinesRef.current.length > 0) {
-      updateChart(allKlinesRef.current);
-    }
-  }, [showAutoAB9, showFibonacci, updateChart]);
+    redrawOverlayLines();
+  }, [redrawOverlayLines]);
 
   // Tick 实时更新（rAF + 50ms 节流，和 v24 一致）
   const flushTick = useCallback(() => {
@@ -466,8 +461,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
     if (isFinal) {
       updateIndicators();
+      // K线收盘后重算 AB9 / 斐波那契画线：新分形确认、突破换段都能及时反映，
+      // 修复此前盘中形成的新高/新低要等手动刷新才会体现在画线上的问题
+      redrawOverlayLines();
     }
-  }, [updateIndicators]);
+  }, [updateIndicators, redrawOverlayLines]);
 
   // 获取K线 — 用 ref 引用最新的 updateChart，避免指标切换导致重新拉取K线和重连WS
   const updateChartRef = useRef(updateChart);
@@ -479,7 +477,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     setLoading(true);
     setError(null);
     try {
-      const klines = await fetchKlinesApi(symbol, okxId, intv);
+      // 300 根：OKX 直连上限（Binance/代理均支持更多），大级别波段的 A 点更不容易落在窗口外
+      const klines = await fetchKlinesApi(symbol, okxId, intv, 300);
       updateChartRef.current(klines);
     } catch (err: any) {
       setError(err.message || '获取K线数据失败');

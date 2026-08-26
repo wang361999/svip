@@ -162,6 +162,172 @@ export function calcATRArray(klines: KlineData[], period: number = 14): (number 
   return result;
 }
 
+// ========== 共享：分形检测与波段筛选 ==========
+// AB9线（江恩八分法）与斐波那契回调线共用同一套 A/B 点检测逻辑，
+// 保证两套画线在任何行情下始终锚定同一个波段、永不互相矛盾。
+
+interface SwingCandidate {
+  /** 波段起点价格（上升=低点，下降=高点） */
+  startPrice: number;
+  /** 波段终点价格（上升=高点，下降=低点） */
+  endPrice: number;
+  /** 起点在 klines 中的下标 */
+  startIdx: number;
+  /** 终点在 klines 中的下标 */
+  endIdx: number;
+  /** 方向 */
+  direction: 'up' | 'down';
+  /** 波段幅度（绝对值） */
+  range: number;
+}
+
+/**
+ * 分形检测：左右各 strength 根K线确认的局部极值。
+ *
+ * 相等极值（平顶/平底）的处理：左侧允许相等、右侧要求严格超越，
+ * 即平台走势取平台"最后一根"作为分形 —— 避免全严格比较在平顶/平底
+ * 结构下漏检极值（漏检后整个顶部无分形高点，画线会直接消失）。
+ * 注：最近 strength 根K线永远无法确认为分形（右侧K线数不足），
+ * 这是分形确认机制的固有滞后，属正常代价。
+ */
+function detectFractals(klines: KlineData[], strength = 3): {
+  fractalHighs: { idx: number; price: number }[];
+  fractalLows: { idx: number; price: number }[];
+} {
+  const fractalHighs: { idx: number; price: number }[] = [];
+  const fractalLows: { idx: number; price: number }[] = [];
+  const fbEnd = klines.length - strength - 1;
+  for (let i = strength; i <= fbEnd; i++) {
+    let isHigh = true, isLow = true;
+    for (let j = 1; j <= strength; j++) {
+      // 左侧允许相等（>= / <=），右侧要求严格超越（> / <）
+      if (klines[i].high < klines[i - j].high || klines[i].high <= klines[i + j].high) isHigh = false;
+      if (klines[i].low > klines[i - j].low || klines[i].low >= klines[i + j].low) isLow = false;
+    }
+    if (isHigh) fractalHighs.push({ idx: i, price: klines[i].high });
+    if (isLow) fractalLows.push({ idx: i, price: klines[i].low });
+  }
+  return { fractalHighs, fractalLows };
+}
+
+/** 由分形点构建候选波段：低点在前高点在后为上升，反之下降；幅度不足 minPct% 的忽略 */
+function buildSwings(
+  fractalHighs: { idx: number; price: number }[],
+  fractalLows: { idx: number; price: number }[],
+  minPct = 2,
+): SwingCandidate[] {
+  const swings: SwingCandidate[] = [];
+  // 上升波段：低点在前，高点在后
+  for (const low of fractalLows) {
+    for (const high of fractalHighs) {
+      if (high.idx > low.idx) {
+        const range = high.price - low.price;
+        if ((range / low.price) * 100 >= minPct) {
+          swings.push({ startPrice: low.price, endPrice: high.price, startIdx: low.idx, endIdx: high.idx, direction: 'up', range });
+        }
+      }
+    }
+  }
+  // 下降波段：高点在前，低点在后
+  for (const high of fractalHighs) {
+    for (const low of fractalLows) {
+      if (low.idx > high.idx && high.price > low.price) {
+        const range = high.price - low.price;
+        if ((range / high.price) * 100 >= minPct) {
+          swings.push({ startPrice: high.price, endPrice: low.price, startIdx: high.idx, endIdx: low.idx, direction: 'down', range });
+        }
+      }
+    }
+  }
+  return swings;
+}
+
+/**
+ * 选定用于画线的波段：
+ * 1. 常规：当前价包含于波段区间内 → 取幅度最大者（与原行为一致）；
+ * 2. 向上突破（价格高于所有波段高点）→ 取被突破的、终点最高的上升波段。
+ *    其 9线/斐波扩展位恰好构成突破后的目标参考。
+ *    修复：此前会一律回退到窗口内"幅度最大"的波段 —— 可能是久远的无关
+ *    大波段，甚至是方向相反的下降波段，导致突破后画线整体跳走；
+ * 3. 向下跌破（价格低于所有波段低点）→ 镜像取终点最低的下降波段；
+ * 4. 单边行情兜底（向上）：价格已越过全部已确认分形高点（创新高但高点
+ *    尚未确认，或窗口内根本无可用波段）→ 锚定"最近确认分形低点 → 其后
+ *    运行最高点"，与手动把工具拖到当前最高价的行为一致。
+ *    修复：纯单边行情下分形高点无法确认 → 此前直接返回 null 不画线；
+ * 5. 单边行情兜底（向下）：镜像；
+ * 6. 兜底 → 取最近完成的波段（endIdx 最大）。
+ */
+function selectSwing(
+  klines: KlineData[],
+  swings: SwingCandidate[],
+  fractalHighs: { idx: number; price: number }[],
+  fractalLows: { idx: number; price: number }[],
+  currentPrice: number,
+): SwingCandidate | null {
+  // 1. 当前价在波段区间内：幅度最大者优先
+  const containing = swings.filter((s) => {
+    const lo = Math.min(s.startPrice, s.endPrice);
+    const hi = Math.max(s.startPrice, s.endPrice);
+    return currentPrice > lo && currentPrice < hi;
+  });
+  if (containing.length > 0) {
+    return [...containing].sort((a, b) => b.range - a.range)[0];
+  }
+
+  // 2. 向上突破：在所有被向上突破的上升波段中，取终点（高点）最高、幅度最大者
+  const brokenUp = swings.filter(
+    (s) => s.direction === 'up' && currentPrice > Math.max(s.startPrice, s.endPrice),
+  );
+  if (brokenUp.length > 0) {
+    return [...brokenUp].sort((a, b) => b.endPrice - a.endPrice || b.range - a.range)[0];
+  }
+
+  // 3. 向下跌破：在所有被向下跌破的下降波段中，取终点（低点）最低、幅度最大者
+  const brokenDown = swings.filter(
+    (s) => s.direction === 'down' && currentPrice < Math.min(s.startPrice, s.endPrice),
+  );
+  if (brokenDown.length > 0) {
+    return [...brokenDown].sort((a, b) => a.endPrice - b.endPrice || b.range - a.range)[0];
+  }
+
+  // 4. 单边上涨兜底：价格越过全部已确认分形高点 → 最近确认低点 → 运行最高点
+  //    （分形高点为空时视为成立 —— 单边上涨中高点天然无法确认）
+  const maxFractalHigh = fractalHighs.length > 0 ? Math.max(...fractalHighs.map((h) => h.price)) : -Infinity;
+  if (currentPrice > maxFractalHigh && fractalLows.length > 0) {
+    const anchor = fractalLows[fractalLows.length - 1];
+    if (currentPrice > anchor.price) {
+      let runHigh = -Infinity;
+      let runHighIdx = anchor.idx;
+      for (let i = anchor.idx; i < klines.length; i++) {
+        if (klines[i].high > runHigh) { runHigh = klines[i].high; runHighIdx = i; }
+      }
+      if (runHigh > anchor.price && ((runHigh - anchor.price) / anchor.price) * 100 >= 2) {
+        return { startPrice: anchor.price, endPrice: runHigh, startIdx: anchor.idx, endIdx: runHighIdx, direction: 'up', range: runHigh - anchor.price };
+      }
+    }
+  }
+
+  // 5. 单边下跌兜底：镜像（价格低于全部已确认分形低点 → 最近确认高点 → 运行最低点）
+  const minFractalLow = fractalLows.length > 0 ? Math.min(...fractalLows.map((l) => l.price)) : Infinity;
+  if (currentPrice < minFractalLow && fractalHighs.length > 0) {
+    const anchor = fractalHighs[fractalHighs.length - 1];
+    if (currentPrice < anchor.price) {
+      let runLow = Infinity;
+      let runLowIdx = anchor.idx;
+      for (let i = anchor.idx; i < klines.length; i++) {
+        if (klines[i].low < runLow) { runLow = klines[i].low; runLowIdx = i; }
+      }
+      if (anchor.price > runLow && ((anchor.price - runLow) / anchor.price) * 100 >= 2) {
+        return { startPrice: anchor.price, endPrice: runLow, startIdx: anchor.idx, endIdx: runLowIdx, direction: 'down', range: anchor.price - runLow };
+      }
+    }
+  }
+
+  // 6. 兜底：最近完成的波段（endIdx 最大，幅度大者优先）
+  if (swings.length === 0) return null;
+  return [...swings].sort((a, b) => b.endIdx - a.endIdx || b.range - a.range)[0];
+}
+
 // ========== 斐波那契回调线 ==========
 
 export interface FibonacciLevel {
@@ -216,64 +382,20 @@ export function calcFibonacci(klines: KlineData[]): FibonacciAnalysis | null {
 
   const currentPrice = klines[klines.length - 1].close;
 
-  // 1. 找分形点（复用 AB9 的分形检测逻辑）
-  const strength = 3;
-  const fbStart = strength;
-  const fbEnd = klines.length - strength - 1;
-  const fractalHighs: { idx: number; price: number }[] = [];
-  const fractalLows: { idx: number; price: number }[] = [];
+  // 1. 分形检测 + 波段筛选（与 AB9线 共用同一套逻辑，两套画线始终锚定同一组 A/B 点）
+  const { fractalHighs, fractalLows } = detectFractals(klines);
+  // 仅当两侧分形全为空才放弃：单边上涨行情中分形高点天然无法确认（反之亦然），
+  // 此时恰是 selectSwing 单边兜底的用武之地。此前用 || 判断会把这类行情
+  // 全部提前拦截 → 画线消失（正是要修复的 bug）。
+  if (fractalHighs.length === 0 && fractalLows.length === 0) return null;
 
-  for (let i = fbStart; i <= fbEnd; i++) {
-    let isHigh = true, isLow = true;
-    for (let j = 1; j <= strength; j++) {
-      if (klines[i].high <= klines[i - j].high || klines[i].high <= klines[i + j].high) isHigh = false;
-      if (klines[i].low >= klines[i - j].low || klines[i].low >= klines[i + j].low) isLow = false;
-    }
-    if (isHigh) fractalHighs.push({ idx: i, price: klines[i].high });
-    if (isLow) fractalLows.push({ idx: i, price: klines[i].low });
-  }
+  const allSwings = buildSwings(fractalHighs, fractalLows);
+  // 注意：候选波段为空不提前返回 —— 纯单边行情可能凑不出任何满足幅度阈值的
+  // 完整波段，此时由 selectSwing 的兜底分支直接以「分形锚点 → 运行极值」构造
 
-  if (fractalHighs.length === 0 || fractalLows.length === 0) return null;
-
-  // 2. 找包含当前价的最大波段
-  type Swing = { startPrice: number; endPrice: number; startIdx: number; endIdx: number; direction: 'up' | 'down'; range: number };
-  const allSwings: Swing[] = [];
-
-  // 上升波段：低点在前，高点在后
-  for (const low of fractalLows) {
-    for (const high of fractalHighs) {
-      if (high.idx > low.idx) {
-        const range = high.price - low.price;
-        if ((range / low.price) * 100 >= 2) {
-          allSwings.push({ startPrice: low.price, endPrice: high.price, startIdx: low.idx, endIdx: high.idx, direction: 'up', range });
-        }
-      }
-    }
-  }
-
-  // 下降波段
-  for (const high of fractalHighs) {
-    for (const low of fractalLows) {
-      if (low.idx > high.idx && high.price > low.price) {
-        const range = high.price - low.price;
-        if ((range / high.price) * 100 >= 2) {
-          allSwings.push({ startPrice: high.price, endPrice: low.price, startIdx: high.idx, endIdx: low.idx, direction: 'down', range });
-        }
-      }
-    }
-  }
-
-  if (allSwings.length === 0) return null;
-
-  // 选波段：当前价在范围内优先，否则取最大
-  let selected = allSwings
-    .filter((s) => {
-      const lo = Math.min(s.startPrice, s.endPrice);
-      const hi = Math.max(s.startPrice, s.endPrice);
-      return currentPrice > lo && currentPrice < hi;
-    })
-    .sort((a, b) => b.range - a.range)[0]
-    || allSwings.sort((a, b) => b.range - a.range)[0];
+  // 2. 选波段：当前价包含于区间内取幅度最大者；突破时取被突破的波段（见 selectSwing）
+  const selected = selectSwing(klines, allSwings, fractalHighs, fractalLows, currentPrice);
+  if (!selected) return null;
 
   // 3. 计算斐波那契水平
   const pointA = selected.startPrice;
@@ -296,11 +418,13 @@ export function calcFibonacci(klines: KlineData[]): FibonacciAnalysis | null {
   const levels: FibonacciLevel[] = fibRatios.map(({ ratio, label, type }) => {
     let price: number;
     if (selected.direction === 'up') {
-      // 上升趋势：从高点B往回算回调，往前算扩展
-      price = pointB - height * ratio;
+      // 上升趋势：0%~100% 回调位从高点 B 往回算（0% = B，100% = A）；
+      // >100% 扩展位从 B 向上投影：161.8% = B + H×0.618（即 A + H×1.618）
+      price = ratio <= 1 ? pointB - height * ratio : pointB + height * (ratio - 1);
     } else {
-      // 下降趋势：从低点B往回算回调，往前算扩展
-      price = pointB + height * ratio;
+      // 下降趋势：0%~100% 回调位从低点 B 往回算（0% = B，100% = A）；
+      // >100% 扩展位从 B 向下投影：161.8% = B − H×0.618（即 A − H×1.618）
+      price = ratio <= 1 ? pointB + height * ratio : pointB - height * (ratio - 1);
     }
     return { ratio, price, label, type };
   });
@@ -407,64 +531,19 @@ export function calcAB9Lines(klines: KlineData[]): AB9Analysis | null {
 
   const currentPrice = klines[klines.length - 1].close;
 
-  // 1. 找分形点
-  const strength = 3;
-  const fbStart = strength;
-  const fbEnd = klines.length - strength - 1;
-  const fractalHighs: { idx: number; price: number }[] = [];
-  const fractalLows: { idx: number; price: number }[] = [];
+  // 1. 分形检测 + 波段筛选（与斐波那契共用同一套逻辑，两套画线始终锚定同一组 A/B 点）
+  const { fractalHighs, fractalLows } = detectFractals(klines);
+  // 仅当两侧分形全为空才放弃：单边行情下一侧分形为空是常态，
+  // 交给 selectSwing 的单边兜底分支处理（此前 || 会提前拦截 → 画线消失）
+  if (fractalHighs.length === 0 && fractalLows.length === 0) return null;
 
-  for (let i = fbStart; i <= fbEnd; i++) {
-    let isHigh = true, isLow = true;
-    for (let j = 1; j <= strength; j++) {
-      if (klines[i].high <= klines[i - j].high || klines[i].high <= klines[i + j].high) isHigh = false;
-      if (klines[i].low >= klines[i - j].low || klines[i].low >= klines[i + j].low) isLow = false;
-    }
-    if (isHigh) fractalHighs.push({ idx: i, price: klines[i].high });
-    if (isLow) fractalLows.push({ idx: i, price: klines[i].low });
-  }
+  const allSwings = buildSwings(fractalHighs, fractalLows);
+  // 注意：候选波段为空不提前返回 —— 纯单边行情可能凑不出任何满足幅度阈值的
+  // 完整波段，此时由 selectSwing 的兜底分支直接以「分形锚点 → 运行极值」构造
 
-  if (fractalHighs.length === 0 || fractalLows.length === 0) return null;
-
-  // 2. 找包含当前价的最大波段
-  type Swing = { startPrice: number; endPrice: number; startIdx: number; endIdx: number; direction: 'up' | 'down'; range: number };
-  const allSwings: Swing[] = [];
-
-  // 上升波段：低点在前，高点在后（low.idx < high.idx）
-  for (const low of fractalLows) {
-    for (const high of fractalHighs) {
-      if (high.idx > low.idx) {
-        const range = high.price - low.price;
-        if ((range / low.price) * 100 >= 2) {
-          allSwings.push({ startPrice: low.price, endPrice: high.price, startIdx: low.idx, endIdx: high.idx, direction: 'up', range });
-        }
-      }
-    }
-  }
-
-  // 下降波段
-  for (const high of fractalHighs) {
-    for (const low of fractalLows) {
-      if (low.idx > high.idx && high.price > low.price) {
-        const range = high.price - low.price;
-        if ((range / high.price) * 100 >= 2) {
-          allSwings.push({ startPrice: high.price, endPrice: low.price, startIdx: high.idx, endIdx: low.idx, direction: 'down', range });
-        }
-      }
-    }
-  }
-
-  if (allSwings.length === 0) return null;
-
-  // 选波段：当前价在范围内优先，否则取最大
-  let selected = allSwings
-    .filter((s) => {
-      const lo = Math.min(s.startPrice, s.endPrice);
-      const hi = Math.max(s.startPrice, s.endPrice);
-      return currentPrice > lo && currentPrice < hi;
-    })
-    .sort((a, b) => b.range - a.range)[0]
-    || allSwings.sort((a, b) => b.range - a.range)[0];
+  // 2. 选波段：当前价包含于区间内取幅度最大者；突破时取被突破的波段（见 selectSwing）
+  const selected = selectSwing(klines, allSwings, fractalHighs, fractalLows, currentPrice);
+  if (!selected) return null;
 
   // 3. 计算9条线
   const pointA = selected.startPrice;
