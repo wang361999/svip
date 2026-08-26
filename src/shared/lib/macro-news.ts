@@ -761,7 +761,7 @@ export interface MacroNewsResult {
 export async function fetchMacroNews(): Promise<MacroNewsResult> {
   const [macroNews, cryptoNews, fgLive, fred, btcLive] = await Promise.all([
     fetchFeed('macro', '美联储 OR FOMC OR 加息 OR 降息 OR 非农 OR CPI OR PCE OR 通胀 OR 失业金'),
-    fetchFeed('crypto', '比特币 OR 以太坊 OR 加密货币 OR 比特币ETF'),
+    fetchFeed('crypto', '比特币 OR 以太坊 OR 加密货币'),
     fetchFearGreedLive(),
     fetchFredSeries(),
     fetchBtcTicker(),
