@@ -1,8 +1,9 @@
 /**
  * Settings 领域 - zod schemas
  * 对应 Prisma SiteSetting 模型，所有字段均为 String 类型。
- * - 布尔型字段（指标开关 / show*）以字符串形式接收（"true" / "false"）
+ * - 布尔型字段（show* / enable*）以字符串形式接收（"true" / "false"）
  * - SMTP 字段允许空字符串
+ * - 指标显示开关（indicator*）已下放前台徽章直接管控，后台不再接收
  */
 import { z } from 'zod';
 
@@ -13,11 +14,6 @@ export const updateSettingsSchema = z.object({
   siteLogo: z.string().optional(),
   footerText: z.string().optional(),
   primaryColor: z.string().optional(),
-  // 指标开关
-  indicatorEMA: z.string().optional(),
-  indicatorBOLL: z.string().optional(),
-  indicatorMACD: z.string().optional(),
-  indicatorRSI: z.string().optional(),
   // 指标周期参数
   emaPeriod: z.string().optional(),
   bollPeriod: z.string().optional(),

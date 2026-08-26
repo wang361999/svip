@@ -50,6 +50,35 @@ interface KlineChartProps {
   onToggleFullscreen?: () => void;
 }
 
+// ========== 指标显示开关：前台徽章直接管控 ==========
+// 开关状态仅存于浏览器本地（localStorage），后台/数据库不再有任何指标开关，
+// 徽章点击即生效并持久化，刷新/换币种/换周期后保持用户的选择。
+const INDICATOR_PREFS_KEY = 'kline-indicator-prefs';
+const DEFAULT_INDICATORS = { EMA: false, BOLL: true, MACD: true, RSI: false };
+
+function loadIndicatorPrefs(): typeof DEFAULT_INDICATORS {
+  if (typeof window === 'undefined') return { ...DEFAULT_INDICATORS };
+  try {
+    const raw = window.localStorage.getItem(INDICATOR_PREFS_KEY);
+    if (!raw) return { ...DEFAULT_INDICATORS };
+    const parsed = JSON.parse(raw) as Partial<typeof DEFAULT_INDICATORS>;
+    return {
+      EMA: !!parsed.EMA,
+      BOLL: !!parsed.BOLL,
+      MACD: !!parsed.MACD,
+      RSI: !!parsed.RSI,
+    };
+  } catch {
+    return { ...DEFAULT_INDICATORS };
+  }
+}
+
+function saveIndicatorPrefs(next: typeof DEFAULT_INDICATORS) {
+  try {
+    window.localStorage.setItem(INDICATOR_PREFS_KEY, JSON.stringify(next));
+  } catch {}
+}
+
 export default function KlineChart({ isFullscreen = false, onToggleFullscreen }: KlineChartProps) {
   const mainChartRef = useRef<HTMLDivElement>(null);
   const macdChartRef = useRef<HTMLDivElement>(null);
@@ -79,7 +108,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const [showAutoAB9, setShowAutoAB9] = useState(true);
   // 斐波那契回调线
   const [showFibonacci, setShowFibonacci] = useState(false);
-  const [prefsLoaded, setPrefsLoaded] = useState(false);
   // AB9线 ref
   const autoLinesRef = useRef<ISeriesApi<'Line'>[]>([]);
   const autoPriceLinesRef = useRef<any[]>([]);
@@ -87,13 +115,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const fibLinesRef = useRef<ISeriesApi<'Line'>[]>([]);
   const fibPriceLinesRef = useRef<any[]>([]);
 
-
-  const [indicators, setIndicators] = useState({
-    EMA: false,
-    BOLL: true,
-    MACD: true,
-    RSI: false,
-  });
+  // 指标显示开关：前台徽章直接管控（localStorage 持久化，后台不再干预）
+  const [indicators, setIndicators] = useState(loadIndicatorPrefs);
   // 指标周期参数（从后台加载）
   const [periods, setPeriods] = useState({
     emaPeriod: 20,
@@ -138,7 +161,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     fetchSymbols();
   }, [fetchSymbols]);
 
-  // 从后台 API 加载指标配置 + 用户偏好（并行请求，不阻塞K线加载）
+  // 从后台 API 加载指标周期参数 + 用户画线偏好（并行请求，不阻塞K线加载）
+  // 注意：指标显示开关（EMA/BOLL/MACD/RSI）不再从后台加载 —— 前台徽章直接管控
   useEffect(() => {
     let cancelled = false;
     // 同时发起 settings + preferences，不串行等待
@@ -150,12 +174,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     Promise.all([settingsPromise, prefsPromise])
       .then(([data, prefs]) => {
         if (cancelled) return;
-        setIndicators({
-          EMA: data.indicatorEMA === 'true',
-          BOLL: data.indicatorBOLL === 'true',
-          MACD: data.indicatorMACD === 'true',
-          RSI: data.indicatorRSI === 'true',
-        });
         setPeriods({
           emaPeriod: parseInt(data.emaPeriod || '20', 10) || 20,
           bollPeriod: parseInt(data.bollPeriod || '20', 10) || 20,
@@ -167,8 +185,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         if (prefs.prefAB9 !== undefined) setShowAutoAB9(prefs.prefAB9);
         if (prefs.prefFibonacci !== undefined) setShowFibonacci(prefs.prefFibonacci);
       })
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setPrefsLoaded(true); });
+      .catch(() => {});
     return () => { cancelled = true; };
   }, [isMember]);
 
@@ -719,12 +736,17 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             <button
               key={ind}
               onClick={() => {
-                setIndicators((prev) => ({ ...prev, [ind]: !prev[ind] }));
+                // 前台徽章直接管控：点击即切换并持久化到浏览器本地，后台不参与
+                setIndicators((prev) => {
+                  const next = { ...prev, [ind]: !prev[ind] };
+                  saveIndicatorPrefs(next);
+                  return next;
+                });
               }}
               className={`px-2.5 py-1 text-xs font-medium cursor-pointer select-none transition-all ${
                 indicators[ind]
-                ? 'text-blue-300 border-b-2 border-blue-400 pb-0.5'
-                : 'text-dark-600 line-through hover:text-dark-400'
+                  ? 'text-blue-300 border-b-2 border-blue-400 pb-0.5'
+                  : 'text-dark-600 line-through hover:text-dark-400'
               }`}
               title={`点击切换${ind}显示`}
             >

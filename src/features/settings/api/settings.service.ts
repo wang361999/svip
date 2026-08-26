@@ -15,6 +15,8 @@ function safeSettings(fallback: Partial<SiteSetting> = {}): SiteSetting {
     siteLogo: '/logo.svg',
     footerText: '© 2024 ETH Trading Tool. All rights reserved.',
     primaryColor: '#3b82f6',
+    // 指标显示开关已下放前台徽章直接管控（localStorage），以下列仅为
+    // Prisma SiteSetting 类型完整性保留，不再被任何功能消费，可随时删除
     indicatorEMA: 'false',
     indicatorBOLL: 'true',
     indicatorMACD: 'true',

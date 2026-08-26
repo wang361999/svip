@@ -6,10 +6,6 @@ import { useRouter } from 'next/navigation';
 import useAuthStore from '@/store/authStore';
 
 interface IndicatorSettings {
-  indicatorEMA: string;
-  indicatorBOLL: string;
-  indicatorMACD: string;
-  indicatorRSI: string;
   emaPeriod: string;
   bollPeriod: string;
   rsiPeriod: string;
@@ -19,13 +15,6 @@ interface IndicatorSettings {
   showPriceCard: string;
 }
 
-const INDICATOR_LIST = [
-  { key: 'indicatorEMA' as const, label: 'EMA 指数均线', desc: 'EMA指数移动平均线，天蓝色叠加，比MA更灵敏' },
-  { key: 'indicatorBOLL' as const, label: 'BOLL 布林带', desc: '上轨/中轨/下轨，青色+黄色，可配置周期' },
-  { key: 'indicatorMACD' as const, label: 'MACD', desc: 'DIF/DEA/柱状图，独立副图显示，可配置快慢周期' },
-  { key: 'indicatorRSI' as const, label: 'RSI 相对强弱', desc: '0-100超买超卖指标，独立副图，30/70参考线' },
-];
-
 const DISPLAY_LIST = [
   { key: 'showPriceCard' as const, label: '实时价格卡片', desc: '交易页顶部 ETH/USDT 实时价格滚动条' },
 ];
@@ -34,10 +23,6 @@ export default function AdminIndicatorsPage() {
   const router = useRouter();
   const { user, isAuthenticated } = useAuthStore();
   const [settings, setSettings] = useState<IndicatorSettings>({
-    indicatorEMA: 'false',
-    indicatorBOLL: 'true',
-    indicatorMACD: 'true',
-    indicatorRSI: 'false',
     emaPeriod: '20',
     bollPeriod: '20',
     rsiPeriod: '14',
@@ -67,10 +52,6 @@ export default function AdminIndicatorsPage() {
           setMessage(data.error);
         } else {
           setSettings({
-            indicatorEMA: data.indicatorEMA || 'false',
-            indicatorBOLL: data.indicatorBOLL || 'true',
-            indicatorMACD: data.indicatorMACD || 'true',
-            indicatorRSI: data.indicatorRSI || 'false',
             emaPeriod: data.emaPeriod || '20',
             bollPeriod: data.bollPeriod || '20',
             rsiPeriod: data.rsiPeriod || '14',
@@ -117,7 +98,7 @@ export default function AdminIndicatorsPage() {
 
   if (!isAuthenticated || user?.role !== 'admin') return null;
 
-  const ToggleItem = ({ item }: { item: typeof INDICATOR_LIST[0] | typeof DISPLAY_LIST[0] }) => {
+  const ToggleItem = ({ item }: { item: typeof DISPLAY_LIST[0] }) => {
     const isOn = settings[item.key] === 'true';
     return (
       <div
@@ -149,7 +130,7 @@ export default function AdminIndicatorsPage() {
         <div className="max-w-3xl">
           <div className="mb-8">
             <h1 className="text-2xl font-bold text-white">指标设置</h1>
-            <p className="text-dark-400 mt-1">控制交易页K线图显示的技术指标和UI元素。</p>
+            <p className="text-dark-400 mt-1">配置指标计算周期与交易页显示元素。指标显示开关由前台图表徽章直接管控。</p>
           </div>
 
           {message && (
@@ -168,15 +149,6 @@ export default function AdminIndicatorsPage() {
             </div>
           ) : (
             <div className="space-y-6">
-              {/* K线图技术指标 */}
-              <div className="glass-card p-6 space-y-3">
-                <h2 className="text-lg font-semibold text-white mb-2">K线图技术指标</h2>
-                <p className="text-dark-400 text-sm mb-4">控制交易页K线图上显示的技术指标</p>
-                {INDICATOR_LIST.map((item) => (
-                  <ToggleItem key={item.key} item={item} />
-                ))}
-              </div>
-
               {/* 指标周期参数 */}
               <div className="glass-card p-6">
                 <h2 className="text-lg font-semibold text-white mb-2">指标周期参数</h2>
