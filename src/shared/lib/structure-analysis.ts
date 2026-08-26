@@ -385,6 +385,8 @@ export interface LiquidityPool {
   side: 'high' | 'low';
   /** 池形成时间（第二个端点） */
   formedAt: number;
+  /** 第一个端点时间（前端画等高/等低两点连线用） */
+  firstAt: number;
   /** 距当前价百分比（正=上方） */
   distancePct: number;
 }
@@ -425,6 +427,7 @@ function findLiquidityPools(klines: KlineData[], currentPrice: number): Liquidit
           price: roundPrice(pool),
           side,
           formedAt: seg[b.index].time,
+          firstAt: seg[a.index].time,
           distancePct: Math.round(((pool - currentPrice) / currentPrice) * 1000) / 10,
         });
       }
