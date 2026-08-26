@@ -15,6 +15,7 @@ interface ProbeResult {
   ms: number;
   bytes: number;
   snippet: string;
+  snippetFull?: string;
   error: string | null;
 }
 
@@ -36,6 +37,7 @@ async function probe(url: string): Promise<ProbeResult> {
       ms: Date.now() - t0,
       bytes: text.length,
       snippet: text.slice(0, 200).replace(/\n/g, '⏎'),
+      snippetFull: text,
       error: null,
     };
   } catch (e) {
@@ -57,13 +59,36 @@ export const GET = createHandler(async () => {
   const [fred, fredCosd, gnCrypto, gnMacro, alt, binance] = await Promise.all([
     probe('https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCSL'),
     probe('https://fred.stlouisfed.org/graph/fredgraph.csv?id=PAYEMS&cosd=2024-01-01'),
-    probe(`https://news.google.com/rss/search?q=${encodeURIComponent('比特币 OR 以太坊 OR 加密货币')}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans`),
+    probe(`https://news.google.com/rss/search?q=${encodeURIComponent('比特币 OR 以太坊 OR 加密货币 OR 比特币ETF')}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans`),
     probe(`https://news.google.com/rss/search?q=${encodeURIComponent('美联储 OR 降息')}&hl=zh-CN&gl=CN&ceid=CN:zh-Hans`),
     probe('https://api.alternative.me/fng/?limit=2'),
     probe('https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT'),
   ]);
 
+  // 解析 RSS：条数 + 前 5 条 pubDate（诊断 48h 过滤问题）
+  const rssDiag = (r: ProbeResult) => {
+    if (!r.ok || r.bytes === 0) return { items: 0, pubDates: [] as string[] };
+    const full = r.snippetFull || '';
+    const items = (full.match(/<item>/g) || []).length;
+    const dates = [...full.matchAll(/<pubDate>([\s\S]*?)<\/pubDate>/g)].slice(0, 5).map((m) => m[1]);
+    return { items, pubDates: dates };
+  };
+
+  const strip = (r: ProbeResult) => {
+    const { snippetFull: _full, ...rest } = r;
+    return rest;
+  };
+
   return apiSuccess({
-    probes: { fred, fredCosd, gnCrypto, gnMacro, alt, binance },
+    probes: {
+      fred: strip(fred),
+      fredCosd: strip(fredCosd),
+      gnCrypto: strip(gnCrypto),
+      gnMacro: strip(gnMacro),
+      alt: strip(alt),
+      binance: strip(binance),
+    },
+    cryptoRss: rssDiag(gnCrypto),
+    macroRss: rssDiag(gnMacro),
   });
 });
