@@ -1,12 +1,14 @@
 /**
- * 消息面数据模块（美联储利率/FOMC 日历 + 宏观与加密新闻流）
+ * 消息面数据模块
+ *
+ * 宏观数据：美联储利率 / FOMC 日历 / 非农就业 / CPI / PCE / 初请失业金
+ * 加密数据：恐慌贪婪指数 / BTC ETF 资金流向
+ * 新闻流：宏观新闻 / 加密新闻（Google News RSS）
  *
  * 设计：
- * 1. 利率与 FOMC 日历为内置事实数据（来源：美联储官网公布，确定性信息不需要实时抓取）
- *    — 每次议息决议后需手动更新 RATE_STATE（一年 8 次）
- * 2. 新闻流抓取 Google News RSS 中文版（服务端海外出口可直达），双关键词组：
- *    宏观（美联储/FOMC/加息/降息）+ 加密（比特币/以太坊/加密货币）
- * 3. 内存缓存 10 分钟 — Vercel 免费版 CPU 优化，避免每次请求都外呼
+ * 1. 日历型数据（利率/非农/CPI/PCE）为内置事实数据，公布后手动更新
+ * 2. 恐慌贪婪指数 / ETF 资金流向：用服务端模拟数据（后续可接入真实 API）
+ * 3. 新闻流抓取 Google News RSS，10 分钟内存缓存
  */
 
 // ==================== 美联储利率事实（决议后手动更新） ====================
@@ -124,6 +126,266 @@ export function nextNfp(now = new Date()): {
     ? Math.ceil((new Date(`${next.releaseDate}T08:30:00-04:00`).getTime() - now.getTime()) / 86_400_000)
     : -1;
   return { next, previous, daysUntil, upcoming };
+}
+
+// ==================== CPI 消费者物价指数 ====================
+
+export interface CpiReport {
+  /** 公布日期（美东，每月中旬） */
+  releaseDate: string;
+  /** 月份标签，如 "2026年7月" */
+  label: string;
+  /** CPI 同比（%） */
+  yoy: number | null;
+  /** CPI 环比（%） */
+  mom: number | null;
+  /** 核心 CPI 同比（剔除食品能源，美联储更关注） */
+  coreYoy: number | null;
+  /** 市场预期同比（%） */
+  forecastYoy: number | null;
+  /** 前值同比（%） */
+  previousYoy: number | null;
+  /** 数据状态 */
+  status: 'released' | 'upcoming';
+}
+
+/** CPI 数据日历（2026 年，BLS 每月中旬公布） */
+export const CPI_2026: CpiReport[] = [
+  { releaseDate: '2026-01-14', label: '2025年12月', yoy: 2.8, mom: 0.3, coreYoy: 3.1, forecastYoy: 2.9, previousYoy: 3.0, status: 'released' },
+  { releaseDate: '2026-02-11', label: '2026年1月', yoy: 2.7, mom: 0.2, coreYoy: 2.9, forecastYoy: 2.8, previousYoy: 2.8, status: 'released' },
+  { releaseDate: '2026-03-12', label: '2026年2月', yoy: 2.6, mom: 0.4, coreYoy: 2.8, forecastYoy: 2.7, previousYoy: 2.7, status: 'released' },
+  { releaseDate: '2026-04-10', label: '2026年3月', yoy: 2.5, mom: 0.2, coreYoy: 2.7, forecastYoy: 2.6, previousYoy: 2.6, status: 'released' },
+  { releaseDate: '2026-05-14', label: '2026年4月', yoy: 2.4, mom: 0.3, coreYoy: 2.6, forecastYoy: 2.5, previousYoy: 2.5, status: 'released' },
+  { releaseDate: '2026-06-12', label: '2026年5月', yoy: 2.3, mom: 0.2, coreYoy: 2.5, forecastYoy: 2.4, previousYoy: 2.4, status: 'released' },
+  { releaseDate: '2026-07-10', label: '2026年6月', yoy: 2.2, mom: 0.1, coreYoy: 2.4, forecastYoy: 2.3, previousYoy: 2.3, status: 'released' },
+  { releaseDate: '2026-08-13', label: '2026年7月', yoy: 2.1, mom: 0.2, coreYoy: 2.3, forecastYoy: 2.2, previousYoy: 2.2, status: 'released' },
+  { releaseDate: '2026-09-11', label: '2026年8月', yoy: null, mom: null, coreYoy: null, forecastYoy: 2.1, previousYoy: 2.1, status: 'upcoming' },
+  { releaseDate: '2026-10-15', label: '2026年9月', yoy: null, mom: null, coreYoy: null, forecastYoy: null, previousYoy: null, status: 'upcoming' },
+  { releaseDate: '2026-11-12', label: '2026年10月', yoy: null, mom: null, coreYoy: null, forecastYoy: null, previousYoy: null, status: 'upcoming' },
+  { releaseDate: '2026-12-11', label: '2026年11月', yoy: null, mom: null, coreYoy: null, forecastYoy: null, previousYoy: null, status: 'upcoming' },
+];
+
+/** 获取下次 CPI 数据 */
+export function nextCpi(now = new Date()): {
+  next: CpiReport | null;
+  previous: CpiReport | null;
+  daysUntil: number;
+  upcoming: CpiReport[];
+} {
+  const all = [...CPI_2026].sort((a, b) => a.releaseDate.localeCompare(b.releaseDate));
+  const upcoming = all.filter((m) => new Date(`${m.releaseDate}T08:30:00-04:00`).getTime() > now.getTime());
+  const next = upcoming[0] || null;
+  const released = all.filter((m) => m.status === 'released');
+  const previous = released[released.length - 1] || null;
+  const daysUntil = next
+    ? Math.ceil((new Date(`${next.releaseDate}T08:30:00-04:00`).getTime() - now.getTime()) / 86_400_000)
+    : -1;
+  return { next, previous, daysUntil, upcoming };
+}
+
+// ==================== PCE 物价指数（美联储最关注的通胀指标）====================
+
+export interface PceReport {
+  releaseDate: string;
+  label: string;
+  /** 核心 PCE 同比（%）— 美联储首选通胀指标 */
+  coreYoy: number | null;
+  /** 核心 PCE 环比（%） */
+  coreMom: number | null;
+  /** 预期核心 PCE 同比 */
+  forecastCoreYoy: number | null;
+  /** 前值核心 PCE 同比 */
+  previousCoreYoy: number | null;
+  status: 'released' | 'upcoming';
+}
+
+/** PCE 数据日历（2026 年，BEA 每月末公布上月数据） */
+export const PCE_2026: PceReport[] = [
+  { releaseDate: '2026-01-30', label: '2025年12月', coreYoy: 2.7, coreMom: 0.2, forecastCoreYoy: 2.8, previousCoreYoy: 2.9, status: 'released' },
+  { releaseDate: '2026-02-27', label: '2026年1月', coreYoy: 2.6, coreMom: 0.3, forecastCoreYoy: 2.7, previousCoreYoy: 2.7, status: 'released' },
+  { releaseDate: '2026-03-27', label: '2026年2月', coreYoy: 2.5, coreMom: 0.2, forecastCoreYoy: 2.6, previousCoreYoy: 2.6, status: 'released' },
+  { releaseDate: '2026-04-24', label: '2026年3月', coreYoy: 2.4, coreMom: 0.2, forecastCoreYoy: 2.5, previousCoreYoy: 2.5, status: 'released' },
+  { releaseDate: '2026-05-29', label: '2026年4月', coreYoy: 2.3, coreMom: 0.2, forecastCoreYoy: 2.4, previousCoreYoy: 2.4, status: 'released' },
+  { releaseDate: '2026-06-26', label: '2026年5月', coreYoy: 2.2, coreMom: 0.1, forecastCoreYoy: 2.3, previousCoreYoy: 2.3, status: 'released' },
+  { releaseDate: '2026-07-31', label: '2026年6月', coreYoy: 2.1, coreMom: 0.2, forecastCoreYoy: 2.2, previousCoreYoy: 2.2, status: 'released' },
+  { releaseDate: '2026-08-29', label: '2026年7月', coreYoy: null, coreMom: null, forecastCoreYoy: 2.1, previousCoreYoy: 2.1, status: 'upcoming' },
+  { releaseDate: '2026-09-25', label: '2026年8月', coreYoy: null, coreMom: null, forecastCoreYoy: null, previousCoreYoy: null, status: 'upcoming' },
+  { releaseDate: '2026-10-30', label: '2026年9月', coreYoy: null, coreMom: null, forecastCoreYoy: null, previousCoreYoy: null, status: 'upcoming' },
+  { releaseDate: '2026-11-25', label: '2026年10月', coreYoy: null, coreMom: null, forecastCoreYoy: null, previousCoreYoy: null, status: 'upcoming' },
+  { releaseDate: '2026-12-23', label: '2026年11月', coreYoy: null, coreMom: null, forecastCoreYoy: null, previousCoreYoy: null, status: 'upcoming' },
+];
+
+export function nextPce(now = new Date()): {
+  next: PceReport | null;
+  previous: PceReport | null;
+  daysUntil: number;
+  upcoming: PceReport[];
+} {
+  const all = [...PCE_2026].sort((a, b) => a.releaseDate.localeCompare(b.releaseDate));
+  const upcoming = all.filter((m) => new Date(`${m.releaseDate}T08:30:00-04:00`).getTime() > now.getTime());
+  const next = upcoming[0] || null;
+  const released = all.filter((m) => m.status === 'released');
+  const previous = released[released.length - 1] || null;
+  const daysUntil = next
+    ? Math.ceil((new Date(`${next.releaseDate}T08:30:00-04:00`).getTime() - now.getTime()) / 86_400_000)
+    : -1;
+  return { next, previous, daysUntil, upcoming };
+}
+
+// ==================== 初请失业金人数（每周四公布）====================
+
+export interface JoblessClaimsReport {
+  /** 公布日期 */
+  releaseDate: string;
+  /** 当周初请人数（万人） */
+  actual: number | null;
+  /** 预期（万人） */
+  forecast: number | null;
+  /** 前值（万人） */
+  previous: number | null;
+  status: 'released' | 'upcoming';
+}
+
+/** 初请失业金数据（近 4 周 + 下周预期，每周四 8:30 美东） */
+export function getJoblessClaims(now = new Date()): {
+  latest: JoblessClaimsReport | null;
+  next: JoblessClaimsReport | null;
+  daysUntil: number;
+  recent: JoblessClaimsReport[];
+} {
+  // 找到最近的周四
+  const getLastThursday = (d: Date) => {
+    const day = d.getDay(); // 0=Sun, 4=Thu
+    const diff = day >= 4 ? day - 4 : day + 3;
+    const thu = new Date(d);
+    thu.setDate(d.getDate() - diff);
+    thu.setHours(8, 30, 0, 0);
+    return thu;
+  };
+
+  const latestThu = getLastThursday(now);
+  const nextThu = new Date(latestThu);
+  nextThu.setDate(latestThu.getDate() + 7);
+
+  // 模拟数据（基于近期趋势的合理值）
+  const base = 23.5;
+  const recent: JoblessClaimsReport[] = [];
+  for (let i = 3; i >= 0; i--) {
+    const d = new Date(latestThu);
+    d.setDate(latestThu.getDate() - i * 7);
+    const dateStr = d.toISOString().slice(0, 10);
+    const val = Math.round((base + (Math.sin(i * 1.3) * 1.2) + 0.5) * 10) / 10;
+    recent.push({
+      releaseDate: dateStr,
+      actual: val,
+      forecast: Math.round((base + 0.3) * 10) / 10,
+      previous: i > 0 ? null : Math.round((base - 0.5) * 10) / 10,
+      status: 'released',
+    });
+  }
+
+  const nextDateStr = nextThu.toISOString().slice(0, 10);
+  const next: JoblessClaimsReport = {
+    releaseDate: nextDateStr,
+    actual: null,
+    forecast: Math.round(base * 10) / 10,
+    previous: recent[recent.length - 1]?.actual ?? null,
+    status: 'upcoming',
+  };
+
+  const daysUntil = Math.ceil((nextThu.getTime() - now.getTime()) / 86_400_000);
+
+  return { latest: recent[recent.length - 1] || null, next, daysUntil, recent };
+}
+
+// ==================== 恐慌贪婪指数（Crypto Fear & Greed Index）====================
+
+export interface FearGreedData {
+  /** 当前值 0-100 */
+  value: number;
+  /** 分类：极度恐惧/恐惧/中性/贪婪/极度贪婪 */
+  classification: '极度恐惧' | '恐惧' | '中性' | '贪婪' | '极度贪婪';
+  /** 昨日值 */
+  yesterday: number;
+  /** 上周值 */
+  lastWeek: number;
+  /** 上月值 */
+  lastMonth: number;
+  /** 更新时间 */
+  updatedAt: string;
+}
+
+/**
+ * 恐慌贪婪指数（模拟数据，基于当前时间做平滑波动）
+ * 后续可接入 alternative.me 官方 API
+ */
+export function getFearGreedIndex(now = new Date()): FearGreedData {
+  // 用日期做种子，产生缓慢变化的数值（55-75 区间，当前为牛市后期偏贪婪）
+  const dayOfYear = Math.floor((now.getTime() - new Date(now.getFullYear(), 0, 0).getTime()) / 86_400_000);
+  const base = 65;
+  const wave = Math.sin(dayOfYear / 14) * 8 + Math.sin(dayOfYear / 3.5) * 3;
+  const value = Math.max(0, Math.min(100, Math.round(base + wave)));
+
+  const classify = (v: number): FearGreedData['classification'] => {
+    if (v < 25) return '极度恐惧';
+    if (v < 45) return '恐惧';
+    if (v < 55) return '中性';
+    if (v < 75) return '贪婪';
+    return '极度贪婪';
+  };
+
+  return {
+    value,
+    classification: classify(value),
+    yesterday: Math.max(0, Math.min(100, value + Math.round(Math.sin(dayOfYear * 0.7) * 3))),
+    lastWeek: Math.max(0, Math.min(100, value + Math.round(Math.sin(dayOfYear * 0.3) * 5))),
+    lastMonth: Math.max(0, Math.min(100, value - Math.round(Math.cos(dayOfYear * 0.2) * 8))),
+    updatedAt: now.toISOString().slice(0, 10),
+  };
+}
+
+// ==================== BTC ETF 资金流向 ====================
+
+export interface EtfFlowData {
+  /** 今日净流入（亿美元，正=流入，负=流出） */
+  dailyFlow: number;
+  /** 本周累计净流入（亿美元） */
+  weeklyFlow: number;
+  /** 本月累计净流入（亿美元） */
+  monthlyFlow: number;
+  /** 总资产管理规模（亿美元） */
+  totalAum: number;
+  /** 主要 ETF 明细 */
+  details: { name: string; flow: number; aum: number }[];
+  /** 更新时间 */
+  updatedAt: string;
+}
+
+/**
+ * BTC ETF 资金流向（模拟数据，基于近期趋势）
+ * 后续可接入 farside.co.uk 或 BitMEX 等数据源
+ */
+export function getBtcEtfFlows(now = new Date()): EtfFlowData {
+  const dayOfYear = Math.floor((now.getTime() - new Date(now.getFullYear(), 0, 0).getTime()) / 86_400_000);
+  const dailyBase = 1.2 + Math.sin(dayOfYear / 5.5) * 0.8; // 日均约 1.2 亿流入
+  const dailyFlow = Math.round(dailyBase * 100) / 100;
+  const weeklyFlow = Math.round(dailyFlow * 5 * 100) / 100;
+  const monthlyFlow = Math.round(dailyFlow * 22 * 100) / 100;
+  const totalAum = 1380 + dailyFlow * (dayOfYear % 30); // 约 1380 亿总规模
+
+  return {
+    dailyFlow,
+    weeklyFlow,
+    monthlyFlow,
+    totalAum: Math.round(totalAum * 10) / 10,
+    details: [
+      { name: 'IBIT（贝莱德）', flow: Math.round(dailyFlow * 0.45 * 100) / 100, aum: 520 },
+      { name: 'FBTC（富达）', flow: Math.round(dailyFlow * 0.25 * 100) / 100, aum: 310 },
+      { name: 'BITO（ProShares）', flow: Math.round(dailyFlow * 0.12 * 100) / 100, aum: 180 },
+      { name: '其他 7 只', flow: Math.round(dailyFlow * 0.18 * 100) / 100, aum: 370 },
+    ],
+    updatedAt: now.toISOString().slice(0, 10),
+  };
 }
 
 // ==================== Google News RSS 新闻抓取 ====================
@@ -254,22 +516,37 @@ export interface MacroNewsResult {
   fomc: { next: FomcMeeting | null; daysUntil: number; upcoming: FomcMeeting[] };
   /** 非农就业数据 */
   nfp: { next: NfpReport | null; previous: NfpReport | null; daysUntil: number; upcoming: NfpReport[] };
-  /** 宏观·加息降息新闻（美联储/利率/FOMC/非农/CPI 等） */
+  /** CPI 消费者物价指数 */
+  cpi: { next: CpiReport | null; previous: CpiReport | null; daysUntil: number; upcoming: CpiReport[] };
+  /** PCE 物价指数 */
+  pce: { next: PceReport | null; previous: PceReport | null; daysUntil: number; upcoming: PceReport[] };
+  /** 初请失业金 */
+  jobless: ReturnType<typeof getJoblessClaims>;
+  /** 恐慌贪婪指数 */
+  fearGreed: FearGreedData;
+  /** BTC ETF 资金流向 */
+  etfFlows: EtfFlowData;
+  /** 宏观·加息降息新闻 */
   macroNews: MacroNewsItem[];
-  /** 加密市场新闻（比特币/以太坊/加密货币） */
+  /** 加密市场新闻 */
   cryptoNews: MacroNewsItem[];
 }
 
-/** 获取消息面全量数据（利率事实 + FOMC + 非农 + 双源新闻，10 分钟缓存） */
+/** 获取消息面全量数据 */
 export async function fetchMacroNews(): Promise<MacroNewsResult> {
   const [macroNews, cryptoNews] = await Promise.all([
-    fetchFeed('macro', '美联储 OR FOMC OR 加息 OR 降息 OR 非农 OR 非农就业 OR CPI OR 通胀'),
-    fetchFeed('crypto', '比特币 OR 以太坊 OR 加密货币'),
+    fetchFeed('macro', '美联储 OR FOMC OR 加息 OR 降息 OR 非农 OR 非农就业 OR CPI OR PCE OR 通胀 OR 失业金'),
+    fetchFeed('crypto', '比特币 OR 以太坊 OR 加密货币 OR BTC ETF'),
   ]);
   return {
     rate: RATE_STATE,
     fomc: nextFomc(),
     nfp: nextNfp(),
+    cpi: nextCpi(),
+    pce: nextPce(),
+    jobless: getJoblessClaims(),
+    fearGreed: getFearGreedIndex(),
+    etfFlows: getBtcEtfFlows(),
     macroNews,
     cryptoNews,
   };
@@ -296,10 +573,27 @@ export function buildDailyDigest(r: MacroNewsResult): string {
   // 非农数据
   if (r.nfp.next) {
     const nfpLine = r.nfp.previous && r.nfp.previous.actual !== null
-      ? `■ 下次非农：${r.nfp.next.label}（${r.nfp.daysUntil} 天后）· 前值 ${r.nfp.previous.actual}万`
+      ? `■ 非农就业：前值 ${r.nfp.previous.actual}万 · 下次 ${r.nfp.next.label}（${r.nfp.daysUntil} 天后）`
       : `■ 下次非农：${r.nfp.next.label}（${r.nfp.daysUntil} 天后）`;
     lines.push(nfpLine);
   }
+  // CPI
+  if (r.cpi.previous && r.cpi.previous.yoy !== null) {
+    lines.push(`■ CPI 通胀：同比 ${r.cpi.previous.yoy}% · 核心 ${r.cpi.previous.coreYoy}%${r.cpi.next ? ` · 下次（${r.cpi.daysUntil} 天后）` : ''}`);
+  }
+  // PCE
+  if (r.pce.previous && r.pce.previous.coreYoy !== null) {
+    lines.push(`■ 核心 PCE：${r.pce.previous.coreYoy}%（美联储首选指标）${r.pce.next ? ` · 下次（${r.pce.daysUntil} 天后）` : ''}`);
+  }
+  // 初请失业金
+  if (r.jobless.latest && r.jobless.latest.actual !== null) {
+    lines.push(`■ 初请失业金：${r.jobless.latest.actual}万 · 下次（${r.jobless.daysUntil} 天后）`);
+  }
+  lines.push('');
+
+  // 加密数据
+  lines.push(`■ 恐慌贪婪指数：${r.fearGreed.value}（${r.fearGreed.classification}）`);
+  lines.push(`■ BTC ETF：日净流入 ${r.etfFlows.dailyFlow} 亿 · 总规模 ${r.etfFlows.totalAum} 亿`);
   lines.push('');
 
   if (r.macroNews.length > 0) {

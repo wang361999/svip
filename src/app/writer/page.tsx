@@ -1,12 +1,15 @@
 'use client';
 
 /**
- * 消息面页面（原公众号文章页改造）
+ * 消息面页面
  *
  * 板块：
- * 1. 美联储利率卡 — 当前区间 / 最近决议 / 下次 FOMC 倒计时 / 2026 剩余会议
- * 2. 新闻流 — 双 tab：宏观·加息降息 / 加密市场（Google News 中文，48h 内）
- * 3. 一键复制今日要闻（纯文本速览，零 AI 成本）
+ * 1. 核心利率卡 — 美联储利率 + FOMC 倒计时
+ * 2. 重磅宏观（2列）— 非农就业 + CPI 通胀
+ * 3. 辅助宏观（2列）— PCE 物价指数 + 初请失业金
+ * 4. 加密情绪（2列）— 恐慌贪婪指数 + BTC ETF 资金流向
+ * 5. 新闻流 — 双 tab：宏观 / 加密（Google News 中文，48h 内）
+ * 6. 一键复制今日要闻
  */
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -38,10 +41,62 @@ interface NfpReport {
   status: 'released' | 'upcoming';
 }
 
+interface CpiReport {
+  releaseDate: string;
+  label: string;
+  yoy: number | null;
+  mom: number | null;
+  coreYoy: number | null;
+  forecastYoy: number | null;
+  previousYoy: number | null;
+  status: 'released' | 'upcoming';
+}
+
+interface PceReport {
+  releaseDate: string;
+  label: string;
+  coreYoy: number | null;
+  coreMom: number | null;
+  forecastCoreYoy: number | null;
+  previousCoreYoy: number | null;
+  status: 'released' | 'upcoming';
+}
+
+interface JoblessClaimsReport {
+  releaseDate: string;
+  actual: number | null;
+  forecast: number | null;
+  previous: number | null;
+  status: 'released' | 'upcoming';
+}
+
+interface FearGreedData {
+  value: number;
+  classification: string;
+  yesterday: number;
+  lastWeek: number;
+  lastMonth: number;
+  updatedAt: string;
+}
+
+interface EtfFlowData {
+  dailyFlow: number;
+  weeklyFlow: number;
+  monthlyFlow: number;
+  totalAum: number;
+  details: { name: string; flow: number; aum: number }[];
+  updatedAt: string;
+}
+
 interface MacroNewsData {
   rate: { rangeLow: number; rangeHigh: number; lastDecisionDate: string; lastDecisionNote: string; updatedAt: string };
   fomc: { next: FomcMeeting | null; daysUntil: number; upcoming: FomcMeeting[] };
   nfp: { next: NfpReport | null; previous: NfpReport | null; daysUntil: number; upcoming: NfpReport[] };
+  cpi: { next: CpiReport | null; previous: CpiReport | null; daysUntil: number; upcoming: CpiReport[] };
+  pce: { next: PceReport | null; previous: PceReport | null; daysUntil: number; upcoming: PceReport[] };
+  jobless: { latest: JoblessClaimsReport | null; next: JoblessClaimsReport | null; daysUntil: number; recent: JoblessClaimsReport[] };
+  fearGreed: FearGreedData;
+  etfFlows: EtfFlowData;
   macroNews: NewsItem[];
   cryptoNews: NewsItem[];
   digest: string;
@@ -137,7 +192,7 @@ export default function MacroNewsPage() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-xl font-bold text-white">消息面</h1>
-            <p className="text-xs text-dark-500 mt-1">美联储利率 · 非农就业 · 宏观与加密新闻</p>
+            <p className="text-xs text-dark-500 mt-1">宏观数据 · 加密情绪 · 实时新闻</p>
           </div>
           <div className="flex items-center gap-3">
             <button onClick={load} disabled={loading} className="text-xs text-dark-400 hover:text-white transition-colors">
@@ -203,14 +258,20 @@ export default function MacroNewsPage() {
           </div>
         )}
 
-        {/* 非农就业数据卡 */}
-        {data && data.nfp.next && (
-          <div className="glass-card p-5 mb-5">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <div className="text-dark-500 text-xs">非农就业数据（NFP）</div>
-                  {data.nfp.previous && data.nfp.previous.actual !== null && data.nfp.previous.forecast !== null && (
+        {/* ===== 重磅宏观 ===== */}
+        <div className="mb-5">
+          <div className="flex items-center gap-2 mb-3 px-1">
+            <div className="w-1 h-4 bg-amber-500 rounded-full" />
+            <h2 className="text-sm font-semibold text-white">重磅宏观</h2>
+            <span className="text-dark-600 text-xs">影响利率决策的核心数据</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* 非农就业 */}
+            {data && data.nfp.previous && (
+              <div className="glass-card p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-dark-500 text-xs">非农就业（NFP）</div>
+                  {data.nfp.previous.actual !== null && data.nfp.previous.forecast !== null && (
                     <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
                       data.nfp.previous.actual > data.nfp.previous.forecast
                         ? 'text-red-400 bg-red-500/10 border-red-500/30'
@@ -218,97 +279,296 @@ export default function MacroNewsPage() {
                         ? 'text-green-400 bg-green-500/10 border-green-500/30'
                         : 'text-dark-400 bg-dark-800/80 border-dark-700'
                     }`}>
-                      {data.nfp.previous.actual > data.nfp.previous.forecast
-                        ? '利空（就业强劲 → 降息难）'
-                        : data.nfp.previous.actual < data.nfp.previous.forecast
-                        ? '利好（就业疲软 → 降息预期）'
-                        : '中性（符合预期）'}
+                      {data.nfp.previous.actual > data.nfp.previous.forecast ? '利空' : data.nfp.previous.actual < data.nfp.previous.forecast ? '利好' : '中性'}
                     </span>
                   )}
                 </div>
-                <div className="flex items-baseline gap-3">
-                  {data.nfp.previous && data.nfp.previous.actual !== null ? (
-                    <>
-                      <div className="text-3xl font-bold text-white leading-none">
-                        {data.nfp.previous.actual}
-                        <span className="text-lg ml-1">万</span>
-                      </div>
-                      <div className="text-dark-400 text-xs">
-                        {data.nfp.previous.label}
-                        {data.nfp.previous.forecast !== null && (
-                          <span className="text-dark-500 ml-2">预期 {data.nfp.previous.forecast} 万</span>
-                        )}
-                      </div>
-                    </>
-                  ) : (
-                    <div className="text-dark-400 text-sm">暂无数据</div>
-                  )}
-                </div>
-                {data.nfp.previous && data.nfp.previous.unemploymentRate !== null && (
-                  <div className="text-dark-400 text-xs mt-2">
-                    失业率 <span className="text-white font-medium">{data.nfp.previous.unemploymentRate}%</span>
+                {data.nfp.previous.actual !== null ? (
+                  <div className="text-2xl font-bold text-white leading-none">
+                    {data.nfp.previous.actual}
+                    <span className="text-base ml-1 text-dark-400">万</span>
                   </div>
+                ) : (
+                  <div className="text-dark-400 text-sm">待公布</div>
                 )}
-              </div>
-              <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-center min-w-[120px]">
-                <div className="text-dark-400 text-[10px] mb-0.5">下次公布</div>
-                <div className="text-white text-lg font-bold leading-none">{data.nfp.daysUntil} 天</div>
-                <div className="text-amber-400 text-xs mt-1">
-                  {data.nfp.next.label}
-                </div>
-              </div>
-            </div>
-
-            {/* 近期非农数据对比 */}
-            {data.nfp.previous && data.nfp.previous.actual !== null && data.nfp.previous.previous !== null && (
-              <div className="flex flex-wrap gap-4 mt-4 pt-4 border-t border-dark-800">
-                <div>
-                  <div className="text-dark-500 text-[10px] mb-0.5">实际值</div>
-                  <div className={`text-sm font-semibold ${
-                    data.nfp.previous.forecast !== null
-                      ? data.nfp.previous.actual > data.nfp.previous.forecast
-                        ? 'text-red-400'
-                        : data.nfp.previous.actual < data.nfp.previous.forecast
-                        ? 'text-green-400'
-                        : 'text-white'
-                      : 'text-white'
-                  }`}>
-                    {data.nfp.previous.actual} 万
-                    {data.nfp.previous.forecast !== null && (
-                      <span className="text-dark-500 text-[10px] ml-1">
-                        ({data.nfp.previous.actual > data.nfp.previous.forecast ? '超预期' : data.nfp.previous.actual < data.nfp.previous.forecast ? '低于预期' : '符合预期'})
-                      </span>
-                    )}
+                <div className="text-dark-500 text-[11px] mt-1.5">{data.nfp.previous.label}</div>
+                <div className="flex gap-4 mt-3 pt-3 border-t border-dark-800">
+                  <div>
+                    <div className="text-dark-600 text-[10px]">预期</div>
+                    <div className="text-dark-300 text-xs">{data.nfp.previous.forecast ?? '—'} 万</div>
                   </div>
-                </div>
-                <div>
-                  <div className="text-dark-500 text-[10px] mb-0.5">预期值</div>
-                  <div className="text-sm text-dark-300">
-                    {data.nfp.previous.forecast !== null ? `${data.nfp.previous.forecast} 万` : '—'}
+                  <div>
+                    <div className="text-dark-600 text-[10px]">失业率</div>
+                    <div className="text-dark-300 text-xs">{data.nfp.previous.unemploymentRate ?? '—'}%</div>
                   </div>
-                </div>
-                <div>
-                  <div className="text-dark-500 text-[10px] mb-0.5">前值</div>
-                  <div className="text-sm text-dark-300">{data.nfp.previous.previous} 万</div>
-                </div>
-                <div>
-                  <div className="text-dark-500 text-[10px] mb-0.5">环比</div>
-                  <div className={`text-sm font-semibold ${
-                    data.nfp.previous.actual > data.nfp.previous.previous
-                      ? 'text-red-400'
-                      : 'text-green-400'
-                  }`}>
-                    {data.nfp.previous.actual > data.nfp.previous.previous ? '+' : ''}
-                    {(data.nfp.previous.actual - data.nfp.previous.previous).toFixed(1)} 万
+                  <div>
+                    <div className="text-dark-600 text-[10px]">下次公布</div>
+                    <div className="text-amber-400 text-xs font-medium">{data.nfp.daysUntil} 天后</div>
                   </div>
                 </div>
               </div>
             )}
-            <div className="text-dark-600 text-[10px] mt-3">
-              美国劳工部 BLS · 每月第一个周五 8:30 美东时间公布 · 数据为上月数据
-            </div>
+
+            {/* CPI 通胀 */}
+            {data && data.cpi.previous && (
+              <div className="glass-card p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-dark-500 text-xs">CPI 消费者物价指数</div>
+                  {data.cpi.previous.yoy !== null && data.cpi.previous.forecastYoy !== null && (
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
+                      data.cpi.previous.yoy > data.cpi.previous.forecastYoy
+                        ? 'text-red-400 bg-red-500/10 border-red-500/30'
+                        : data.cpi.previous.yoy < data.cpi.previous.forecastYoy
+                        ? 'text-green-400 bg-green-500/10 border-green-500/30'
+                        : 'text-dark-400 bg-dark-800/80 border-dark-700'
+                    }`}>
+                      {data.cpi.previous.yoy > data.cpi.previous.forecastYoy ? '利空（超预期）' : data.cpi.previous.yoy < data.cpi.previous.forecastYoy ? '利好（低于预期）' : '中性'}
+                    </span>
+                  )}
+                </div>
+                {data.cpi.previous.yoy !== null ? (
+                  <div className="text-2xl font-bold text-white leading-none">
+                    {data.cpi.previous.yoy}
+                    <span className="text-base ml-1 text-dark-400">%</span>
+                    <span className="text-dark-500 text-xs ml-2">同比</span>
+                  </div>
+                ) : (
+                  <div className="text-dark-400 text-sm">待公布</div>
+                )}
+                <div className="text-dark-500 text-[11px] mt-1.5">{data.cpi.previous.label}</div>
+                <div className="flex gap-4 mt-3 pt-3 border-t border-dark-800">
+                  <div>
+                    <div className="text-dark-600 text-[10px]">核心 CPI</div>
+                    <div className="text-dark-300 text-xs">{data.cpi.previous.coreYoy ?? '—'}%</div>
+                  </div>
+                  <div>
+                    <div className="text-dark-600 text-[10px]">环比</div>
+                    <div className="text-dark-300 text-xs">{data.cpi.previous.mom ?? '—'}%</div>
+                  </div>
+                  <div>
+                    <div className="text-dark-600 text-[10px]">下次公布</div>
+                    <div className="text-amber-400 text-xs font-medium">{data.cpi.daysUntil} 天后</div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-        )}
+        </div>
+
+        {/* ===== 辅助宏观 ===== */}
+        <div className="mb-5">
+          <div className="flex items-center gap-2 mb-3 px-1">
+            <div className="w-1 h-4 bg-blue-500 rounded-full" />
+            <h2 className="text-sm font-semibold text-white">辅助宏观</h2>
+            <span className="text-dark-600 text-xs">补充验证利率方向</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* PCE 物价指数 */}
+            {data && data.pce.previous && (
+              <div className="glass-card p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-dark-500 text-xs">核心 PCE<span className="text-dark-600 ml-1">· 美联储首选</span></div>
+                  {data.pce.previous.coreYoy !== null && data.pce.previous.forecastCoreYoy !== null && (
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
+                      data.pce.previous.coreYoy > data.pce.previous.forecastCoreYoy
+                        ? 'text-red-400 bg-red-500/10 border-red-500/30'
+                        : data.pce.previous.coreYoy < data.pce.previous.forecastCoreYoy
+                        ? 'text-green-400 bg-green-500/10 border-green-500/30'
+                        : 'text-dark-400 bg-dark-800/80 border-dark-700'
+                    }`}>
+                      {data.pce.previous.coreYoy > data.pce.previous.forecastCoreYoy ? '利空' : data.pce.previous.coreYoy < data.pce.previous.forecastCoreYoy ? '利好' : '中性'}
+                    </span>
+                  )}
+                </div>
+                {data.pce.previous.coreYoy !== null ? (
+                  <div className="text-2xl font-bold text-white leading-none">
+                    {data.pce.previous.coreYoy}
+                    <span className="text-base ml-1 text-dark-400">%</span>
+                    <span className="text-dark-500 text-xs ml-2">同比</span>
+                  </div>
+                ) : (
+                  <div className="text-dark-400 text-sm">待公布</div>
+                )}
+                <div className="text-dark-500 text-[11px] mt-1.5">{data.pce.previous.label}</div>
+                <div className="flex gap-4 mt-3 pt-3 border-t border-dark-800">
+                  <div>
+                    <div className="text-dark-600 text-[10px]">环比</div>
+                    <div className="text-dark-300 text-xs">{data.pce.previous.coreMom ?? '—'}%</div>
+                  </div>
+                  <div>
+                    <div className="text-dark-600 text-[10px]">预期</div>
+                    <div className="text-dark-300 text-xs">{data.pce.previous.forecastCoreYoy ?? '—'}%</div>
+                  </div>
+                  <div>
+                    <div className="text-dark-600 text-[10px]">下次公布</div>
+                    <div className="text-blue-400 text-xs font-medium">{data.pce.daysUntil} 天后</div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 初请失业金 */}
+            {data && data.jobless.latest && (
+              <div className="glass-card p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-dark-500 text-xs">初请失业金<span className="text-dark-600 ml-1">· 每周</span></div>
+                  {data.jobless.latest.actual !== null && data.jobless.latest.forecast !== null && (
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
+                      data.jobless.latest.actual < data.jobless.latest.forecast
+                        ? 'text-red-400 bg-red-500/10 border-red-500/30'
+                        : data.jobless.latest.actual > data.jobless.latest.forecast
+                        ? 'text-green-400 bg-green-500/10 border-green-500/30'
+                        : 'text-dark-400 bg-dark-800/80 border-dark-700'
+                    }`}>
+                      {data.jobless.latest.actual < data.jobless.latest.forecast ? '利空' : data.jobless.latest.actual > data.jobless.latest.forecast ? '利好' : '中性'}
+                    </span>
+                  )}
+                </div>
+                {data.jobless.latest.actual !== null ? (
+                  <div className="text-2xl font-bold text-white leading-none">
+                    {data.jobless.latest.actual}
+                    <span className="text-base ml-1 text-dark-400">万</span>
+                    <span className="text-dark-500 text-xs ml-2">当周</span>
+                  </div>
+                ) : (
+                  <div className="text-dark-400 text-sm">待公布</div>
+                )}
+                <div className="text-dark-500 text-[11px] mt-1.5">{data.jobless.latest.releaseDate} 当周</div>
+                <div className="flex gap-4 mt-3 pt-3 border-t border-dark-800">
+                  <div>
+                    <div className="text-dark-600 text-[10px]">预期</div>
+                    <div className="text-dark-300 text-xs">{data.jobless.latest.forecast ?? '—'} 万</div>
+                  </div>
+                  <div>
+                    <div className="text-dark-600 text-[10px]">前值</div>
+                    <div className="text-dark-300 text-xs">{data.jobless.latest.previous ?? '—'} 万</div>
+                  </div>
+                  <div>
+                    <div className="text-dark-600 text-[10px]">下次公布</div>
+                    <div className="text-blue-400 text-xs font-medium">{data.jobless.daysUntil} 天后</div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ===== 加密情绪 ===== */}
+        <div className="mb-5">
+          <div className="flex items-center gap-2 mb-3 px-1">
+            <div className="w-1 h-4 bg-green-500 rounded-full" />
+            <h2 className="text-sm font-semibold text-white">加密情绪</h2>
+            <span className="text-dark-600 text-xs">市场温度与资金流向</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* 恐慌贪婪指数 */}
+            {data && (
+              <div className="glass-card p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-dark-500 text-xs">恐慌贪婪指数</div>
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
+                    data.fearGreed.value >= 75
+                      ? 'text-red-400 bg-red-500/10 border-red-500/30'
+                      : data.fearGreed.value >= 55
+                      ? 'text-amber-400 bg-amber-500/10 border-amber-500/30'
+                      : data.fearGreed.value >= 45
+                      ? 'text-dark-300 bg-dark-800/80 border-dark-700'
+                      : data.fearGreed.value >= 25
+                      ? 'text-green-400 bg-green-500/10 border-green-500/30'
+                      : 'text-green-400 bg-green-500/10 border-green-500/30'
+                  }`}>
+                    {data.fearGreed.classification}
+                  </span>
+                </div>
+                {/* 仪表盘视觉 */}
+                <div className="relative h-16 mb-2">
+                  <div className="absolute inset-x-0 bottom-0 h-8 rounded-t-full overflow-hidden bg-dark-800">
+                    <div className="absolute inset-0" style={{
+                      background: 'linear-gradient(to right, #ef4444 0%, #f59e0b 33%, #eab308 50%, #84cc16 66%, #22c55e 100%)'
+                    }} />
+                    <div
+                      className="absolute bottom-0 w-0.5 bg-white shadow-lg transition-all duration-700"
+                      style={{ left: `${data.fearGreed.value}%`, height: '100%', transform: 'translateX(-50%)' }}
+                    >
+                      <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-white rounded-full" />
+                    </div>
+                  </div>
+                  <div className="absolute bottom-1 left-0 text-[9px] text-dark-500">恐惧</div>
+                  <div className="absolute bottom-1 right-0 text-[9px] text-dark-500">贪婪</div>
+                </div>
+                <div className="text-center">
+                  <span className="text-3xl font-bold text-white">{data.fearGreed.value}</span>
+                  <span className="text-dark-500 text-xs ml-1">/ 100</span>
+                </div>
+                <div className="flex justify-between mt-3 pt-3 border-t border-dark-800 text-center">
+                  <div className="flex-1">
+                    <div className="text-dark-600 text-[10px]">昨日</div>
+                    <div className="text-dark-300 text-xs font-medium">{data.fearGreed.yesterday}</div>
+                  </div>
+                  <div className="flex-1 border-l border-dark-800">
+                    <div className="text-dark-600 text-[10px]">上周</div>
+                    <div className="text-dark-300 text-xs font-medium">{data.fearGreed.lastWeek}</div>
+                  </div>
+                  <div className="flex-1 border-l border-dark-800">
+                    <div className="text-dark-600 text-[10px]">上月</div>
+                    <div className="text-dark-300 text-xs font-medium">{data.fearGreed.lastMonth}</div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* BTC ETF 资金流向 */}
+            {data && (
+              <div className="glass-card p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-dark-500 text-xs">BTC ETF 资金流向</div>
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
+                    data.etfFlows.dailyFlow > 0
+                      ? 'text-green-400 bg-green-500/10 border-green-500/30'
+                      : data.etfFlows.dailyFlow < 0
+                      ? 'text-red-400 bg-red-500/10 border-red-500/30'
+                      : 'text-dark-400 bg-dark-800/80 border-dark-700'
+                  }`}>
+                    {data.etfFlows.dailyFlow > 0 ? '净流入（利好）' : data.etfFlows.dailyFlow < 0 ? '净流出（利空）' : '持平'}
+                  </span>
+                </div>
+                <div className="text-2xl font-bold leading-none">
+                  <span className={data.etfFlows.dailyFlow >= 0 ? 'text-green-400' : 'text-red-400'}>
+                    {data.etfFlows.dailyFlow >= 0 ? '+' : ''}{data.etfFlows.dailyFlow}
+                  </span>
+                  <span className="text-base ml-1 text-dark-400">亿美元</span>
+                  <span className="text-dark-500 text-xs ml-2">今日</span>
+                </div>
+                <div className="text-dark-500 text-[11px] mt-1.5">总规模 {data.etfFlows.totalAum} 亿美元</div>
+                <div className="flex justify-between mt-3 pt-3 border-t border-dark-800">
+                  <div className="flex-1 text-center">
+                    <div className="text-dark-600 text-[10px]">本周</div>
+                    <div className={`text-xs font-medium ${data.etfFlows.weeklyFlow >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {data.etfFlows.weeklyFlow >= 0 ? '+' : ''}{data.etfFlows.weeklyFlow} 亿
+                    </div>
+                  </div>
+                  <div className="flex-1 text-center border-l border-dark-800">
+                    <div className="text-dark-600 text-[10px]">本月</div>
+                    <div className={`text-xs font-medium ${data.etfFlows.monthlyFlow >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {data.etfFlows.monthlyFlow >= 0 ? '+' : ''}{data.etfFlows.monthlyFlow} 亿
+                    </div>
+                  </div>
+                </div>
+                {/* ETF 明细 */}
+                <div className="mt-3 pt-3 border-t border-dark-800 space-y-1.5">
+                  {data.etfFlows.details.map((d, i) => (
+                    <div key={i} className="flex items-center justify-between text-[11px]">
+                      <span className="text-dark-400">{d.name}</span>
+                      <span className={d.flow >= 0 ? 'text-green-400 font-medium' : 'text-red-400 font-medium'}>
+                        {d.flow >= 0 ? '+' : ''}{d.flow} 亿
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
 
         {/* 新闻流 */}
         <div className="glass-card p-4">
@@ -397,10 +657,10 @@ export default function MacroNewsPage() {
                   : 'text-white bg-blue-600 border-blue-500 hover:bg-blue-700'
               }`}
             >
-              {copied ? '✓ 已复制今日要闻' : '📋 一键复制今日要闻（利率 + 头条速览）'}
+              {copied ? '✓ 已复制今日要闻' : '📋 一键复制今日要闻'}
             </button>
             <p className="text-center text-[11px] text-dark-600 mt-3">
-              新闻来自 Google News 公开源 · 每 10 分钟服务端缓存 · 点击标题查看原文
+              新闻来自 Google News 公开源 · 宏观数据为历史参考 · 不构成投资建议
             </p>
           </div>
         )}
