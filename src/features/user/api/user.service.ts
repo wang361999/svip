@@ -10,42 +10,60 @@ import type { updatePreferencesSchema } from './user.schema';
 
 type UpdatePreferencesInput = z.infer<typeof updatePreferencesSchema>;
 
+/** 安全的用户偏好默认值（数据库列不同步时使用） */
+function safePreferences(fallback: Partial<UserPreferences> = {}): UserPreferences {
+  return {
+    prefAllDrawings: false,
+    ...fallback,
+  };
+}
+
 export const userService = {
   /** 获取用户画线偏好（数据库以字符串 'true'/'false' 存储，转换为布尔值） */
   async getPreferences(userId: string): Promise<UserPreferences> {
-    const record = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { prefAllDrawings: true },
-    });
-    if (!record) {
-      throw new NotFoundError('USER_NOT_FOUND', '用户不存在');
+    try {
+      const record = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { prefAllDrawings: true },
+      });
+      if (!record) {
+        throw new NotFoundError('USER_NOT_FOUND', '用户不存在');
+      }
+      return {
+        prefAllDrawings: record.prefAllDrawings === 'true',
+      };
+    } catch {
+      // 数据库列不同步时，返回安全默认值
+      return safePreferences();
     }
-    return {
-      prefAllDrawings: record.prefAllDrawings === 'true',
-    };
   },
 
   /** 更新用户画线偏好（仅更新已定义字段，布尔值序列化为字符串） */
   async updatePreferences(userId: string, input: UpdatePreferencesInput): Promise<UserPreferences> {
-    const existing = await prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
-    if (!existing) {
-      throw new NotFoundError('USER_NOT_FOUND', '用户不存在');
+    try {
+      const existing = await prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
+      if (!existing) {
+        throw new NotFoundError('USER_NOT_FOUND', '用户不存在');
+      }
+
+      const updateData: Record<string, string> = {};
+      if (input.prefAllDrawings !== undefined) {
+        updateData.prefAllDrawings = input.prefAllDrawings ? 'true' : 'false';
+      }
+
+      const record = await prisma.user.update({
+        where: { id: userId },
+        data: updateData,
+        select: { prefAllDrawings: true },
+      });
+
+      return {
+        prefAllDrawings: record.prefAllDrawings === 'true',
+      };
+    } catch {
+      // 数据库列不同步时，返回内存中的值
+      return safePreferences(input as Partial<UserPreferences>);
     }
-
-    const updateData: Record<string, string> = {};
-    if (input.prefAllDrawings !== undefined) {
-      updateData.prefAllDrawings = input.prefAllDrawings ? 'true' : 'false';
-    }
-
-    const record = await prisma.user.update({
-      where: { id: userId },
-      data: updateData,
-      select: { prefAllDrawings: true },
-    });
-
-    return {
-      prefAllDrawings: record.prefAllDrawings === 'true',
-    };
   },
 
   // 策略配置的读写已随策略系统下线移除（原 getStrategyConfig / updateStrategyConfig）

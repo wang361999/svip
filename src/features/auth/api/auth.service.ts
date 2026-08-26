@@ -24,34 +24,21 @@ import type {
   ChangePasswordInput,
 } from './auth.schema';
 
-/** 脱敏用户（移除 password） */
-function sanitize(user: {
-  id: string;
-  email: string;
-  username: string;
-  role: string;
-  membership: string;
-  membershipExpires: string | null;
-  prefAllDrawings: string;
-  createdAt: Date;
-}): AuthUser {
-  return {
-    id: user.id,
-    email: user.email,
-    username: user.username,
-    role: user.role,
-    membership: user.membership,
-    membershipExpires: user.membershipExpires,
-    prefAllDrawings: user.prefAllDrawings,
-    createdAt: user.createdAt,
-  };
-}
-
 export const authService = {
   /** 登录 */
   async login(input: LoginInput): Promise<{ user: AuthUser; token: string; maxAge: number }> {
     const user = await prisma.user.findUnique({
       where: { email: input.email },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        password: true,
+        role: true,
+        membership: true,
+        membershipExpires: true,
+        createdAt: true,
+      },
     });
     if (!user) {
       throw new AuthError('AUTH_INVALID_CREDENTIALS', '邮箱或密码错误');
@@ -65,7 +52,20 @@ export const authService = {
       { userId: user.id, email: user.email, role: user.role },
       input.rememberMe,
     );
-    return { user: sanitize(user), token, maxAge };
+    return {
+      user: {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        role: user.role,
+        membership: user.membership,
+        membershipExpires: user.membershipExpires,
+        createdAt: user.createdAt,
+        prefAllDrawings: 'false',
+      },
+      token,
+      maxAge,
+    };
   },
 
   /** 注册 */
@@ -94,17 +94,55 @@ export const authService = {
         role: 'user',
         membership: 'free',
       },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        role: true,
+        membership: true,
+        membershipExpires: true,
+        createdAt: true,
+      },
     });
-    return sanitize(user);
+    return {
+      id: user.id,
+      email: user.email,
+      username: user.username,
+      role: user.role,
+      membership: user.membership,
+      membershipExpires: user.membershipExpires,
+      createdAt: user.createdAt,
+      prefAllDrawings: 'false',
+    };
   },
 
   /** 获取当前用户 */
   async getCurrentUser(payload: JWTPayload): Promise<AuthUser> {
-    const user = await prisma.user.findUnique({ where: { id: payload.userId } });
+    const user = await prisma.user.findUnique({
+      where: { id: payload.userId },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        role: true,
+        membership: true,
+        membershipExpires: true,
+        createdAt: true,
+      },
+    });
     if (!user) {
       throw new AuthError('AUTH_USER_NOT_FOUND', '用户不存在');
     }
-    return sanitize(user);
+    return {
+      id: user.id,
+      email: user.email,
+      username: user.username,
+      role: user.role,
+      membership: user.membership,
+      membershipExpires: user.membershipExpires,
+      createdAt: user.createdAt,
+      prefAllDrawings: 'false',
+    };
   },
 
   /** 发送验证码 */

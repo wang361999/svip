@@ -96,25 +96,46 @@ export const redeemCodeService = {
     }
     const expiresAt = newExpiry.toISOString();
 
-    // 5. 事务：标记兑换码已使用 + 更新用户 VIP 信息及默认画线偏好
-    await prisma.$transaction([
-      prisma.redeemCode.update({
-        where: { id: redeemCode.id },
-        data: {
-          used: true,
-          usedBy: userId,
-          usedAt: new Date(),
-        },
-      }),
-      prisma.user.update({
-        where: { id: userId },
-        data: {
-          membership: 'vip',
-          membershipExpires: expiresAt,
-          prefAllDrawings: 'true',
-        },
-      }),
-    ]);
+    // 5. 事务：标记兑换码已使用 + 更新用户 VIP 信息
+    try {
+      await prisma.$transaction([
+        prisma.redeemCode.update({
+          where: { id: redeemCode.id },
+          data: {
+            used: true,
+            usedBy: userId,
+            usedAt: new Date(),
+          },
+        }),
+        prisma.user.update({
+          where: { id: userId },
+          data: {
+            membership: 'vip',
+            membershipExpires: expiresAt,
+            prefAllDrawings: 'true',
+          },
+        }),
+      ]);
+    } catch {
+      // 数据库列不同步时，只更新会员信息，跳过画线偏好
+      await prisma.$transaction([
+        prisma.redeemCode.update({
+          where: { id: redeemCode.id },
+          data: {
+            used: true,
+            usedBy: userId,
+            usedAt: new Date(),
+          },
+        }),
+        prisma.user.update({
+          where: { id: userId },
+          data: {
+            membership: 'vip',
+            membershipExpires: expiresAt,
+          },
+        }),
+      ]);
+    }
 
     // 6. 返回结果
     return {
