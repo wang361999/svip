@@ -5,10 +5,10 @@ import { fetchKlines } from '@/shared/lib/market-data';
 import { calcTrendSignal, TrendSignal } from '@/shared/lib/indicators';
 import useSymbolStore from '@/store/symbolStore';
 
-/** 展示的周期集合：短线 → 长线（覆盖日内到日线级别） */
-const TREND_INTERVALS = ['5m', '15m', '1h', '4h', '1d'] as const;
+/** 展示的周期集合：短线 → 长线（去掉 5m，噪音大且结构不清晰） */
+const TREND_INTERVALS = ['15m', '1h', '4h', '1d'] as const;
 
-/** 每周期拉取的K线数量：EMA60 需要足够历史（60根起步，取120根保证平滑） */
+/** 每周期拉取的K线数量：结构判定需要足够多的分形，120根覆盖较完整 */
 const BAR_COUNT = 120;
 
 /** 刷新间隔（ms）：fetchKlines 自带分级 TTL 缓存，30s 巡检不会打爆行情源 */
@@ -139,12 +139,11 @@ export default function MultiTrendCard() {
 
       {/* 周期格子：折叠时隐藏 */}
       {!collapsed && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mt-3">
-          {TREND_INTERVALS.map((iv) => {
-            const row = rows.find((r) => r.interval === iv);
+        <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-2 mt-3">
+          {TREND_INTERVALS.map((iv, idx) => {
+            const row = rows[idx];
             const signal = row?.signal ?? null;
             const style = signal ? TREND_STYLES[signal.label] ?? TREND_STYLES['震荡'] : TREND_STYLES['震荡'];
-            const up = (signal?.changePercent ?? 0) >= 0;
             return (
               <div key={iv} className={`rounded-lg border p-3 ${style.bg}`}>
                 <div className="flex items-center justify-between">
@@ -154,9 +153,15 @@ export default function MultiTrendCard() {
                 <div className={`text-sm font-semibold mt-1.5 ${style.text}`}>
                   {loading ? '--' : signal ? signal.label : '暂无数据'}
                 </div>
-                <div className={`text-xs mt-0.5 font-mono ${up ? 'text-green-400' : 'text-red-400'}`}>
-                  {signal
-                    ? `${up ? '+' : ''}${signal.changePercent.toFixed(2)}%`
+                {/* 结构上下沿：最近确认分形高低点 */}
+                <div className="text-xs mt-0.5 font-mono text-dark-400 leading-tight">
+                  {signal && signal.lastHigh !== null && signal.lastLow !== null
+                    ? (
+                      <>
+                        <div>H {signal.lastHigh.toFixed(2)}</div>
+                        <div>L {signal.lastLow.toFixed(2)}</div>
+                      </>
+                    )
                     : '--'}
                 </div>
               </div>
@@ -168,7 +173,7 @@ export default function MultiTrendCard() {
       {/* 图例说明 */}
       {!collapsed && (
         <div className="flex items-center gap-4 mt-2.5 text-dark-500 text-xs">
-          <span>评级：价格与 EMA20/EMA60 三重位置打分</span>
+          <span>评级：高低点结构 + 最近波段方向（结构法，不用均线）</span>
           <span className="hidden sm:inline">数据仅供参考，不构成投资建议</span>
         </div>
       )}

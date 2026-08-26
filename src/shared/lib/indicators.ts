@@ -655,7 +655,7 @@ export function calcAB9Lines(klines: KlineData[]): AB9Analysis | null {
   };
 }
 
-// ========== 多周期趋势 ==========
+// ========== 多周期趋势（结构法）==========
 
 /** 趋势方向 */
 export type TrendDirection = 'bullish' | 'bearish' | 'neutral';
@@ -664,50 +664,75 @@ export type TrendDirection = 'bullish' | 'bearish' | 'neutral';
 export interface TrendSignal {
   /** 趋势方向 */
   direction: TrendDirection;
-  /** 强度评分：-3（极空）~ +3（极多），三重条件各记 ±1 */
+  /** 强度评分：-3（极空）~ +3（极多），三项结构特征各记 ±1 */
   score: number;
   /** 评级标签：强多头 / 偏多 / 震荡 / 偏空 / 强空头 */
   label: string;
   /** 最新收盘价 */
   price: number;
-  /** EMA20 最新值 */
-  ema20: number;
-  /** EMA60 最新值 */
-  ema60: number;
+  /** 最近确认分形高点（结构上沿） */
+  lastHigh: number | null;
+  /** 最近确认分形低点（结构下沿） */
+  lastLow: number | null;
   /** 最近一根K线的涨跌幅 %（相对前一收盘价） */
   changePercent: number;
 }
 
 /**
- * 单周期趋势判定：价格与 EMA20/EMA60 的三重位置关系打分
- *   +1  当前价 > EMA20      -1  当前价 < EMA20
- *   +1  EMA20  > EMA60      -1  EMA20  < EMA60
- *   +1  当前价 > EMA60      -1  当前价 < EMA60
+ * 结构趋势判定：完全基于高低点结构，不用任何均线。
+ *
+ * 三项结构特征（每项 +1 多头 / -1 空头 / 0 中性）：
+ *   1. 高点结构：最近 2 个分形高点，递升 +1，递降 -1
+ *   2. 低点结构：最近 2 个分形低点，递升 +1，递降 -1
+ *   3. 最近波段方向：最近完成的完整波段（endIdx 最大），上升 +1，下降 -1
+ *
  * score ≥ 2 强多头 / 1 偏多 / 0 震荡 / -1 偏空 / ≤ -2 强空头
  *
- * 比较带相对容差（1e-6）：完全横盘时 EMA 递推存在浮点噪声（~1e-14 相对误差），
- * 不加容差会把"价格==均线"误判成多/空；真实行情的差异远大于容差，不受影响。
+ * 为什么用结构不用均线：
+ *   - 均线本质是"价格的滞后平滑"，结构（高低点抬升/下降）才是趋势的直接定义
+ *   - 道氏理论核心：上升趋势 = 更高的高点 + 更高的低点；下降趋势反之
+ *   - 震荡行情中均线频繁假突破，结构法更稳健
+ *
+ * 分形不足时对应项记 0 分；两侧分形全空返回 null。
+ * 比较带 1e-6 相对容差，避免浮点噪声把"平顶/平底"误判成抬升/下降。
  */
 export function calcTrendSignal(klines: KlineData[]): TrendSignal | null {
-  if (!klines || klines.length < 60) return null;
+  if (!klines || klines.length < 20) return null;
 
   const last = klines.length - 1;
   const price = klines[last].close;
   const prevClose = klines[last - 1]?.close ?? price;
   const changePercent = prevClose !== 0 ? ((price - prevClose) / prevClose) * 100 : 0;
 
-  const ema20Arr = calcEMAArray(klines, 20);
-  const ema60Arr = calcEMAArray(klines, 60);
-  const ema20 = ema20Arr[last];
-  const ema60 = ema60Arr[last];
+  // 复用项目已有的分形检测（strength=3，即左右各 3 根确认的局部极值）
+  const { fractalHighs, fractalLows } = detectFractals(klines);
 
-  // 相对容差：按价格量级缩放（ETH≈3000 时约 0.003 USDT，远小于任何有效差异）
-  const eps = Math.max(price, ema20, ema60, 1) * 1e-6;
+  // 相对容差：按价格量级缩放（ETH≈3000 时约 0.003 USDT）
+  const eps = Math.max(price, 1) * 1e-6;
 
   let score = 0;
-  score += price > ema20 + eps ? 1 : price < ema20 - eps ? -1 : 0;
-  score += ema20 > ema60 + eps ? 1 : ema20 < ema60 - eps ? -1 : 0;
-  score += price > ema60 + eps ? 1 : price < ema60 - eps ? -1 : 0;
+
+  // 1. 高点结构：最近 2 个分形高点的方向
+  const highs = fractalHighs.slice(-2);
+  if (highs.length === 2) {
+    if (highs[1].price > highs[0].price + eps) score += 1;      // 高点递升
+    else if (highs[1].price < highs[0].price - eps) score -= 1; // 高点递降
+  }
+
+  // 2. 低点结构：最近 2 个分形低点的方向
+  const lows = fractalLows.slice(-2);
+  if (lows.length === 2) {
+    if (lows[1].price > lows[0].price + eps) score += 1;      // 低点递升
+    else if (lows[1].price < lows[0].price - eps) score -= 1; // 低点递降
+  }
+
+  // 3. 最近波段方向：最近完成的完整波段（endIdx 最大）
+  const swings = buildSwings(fractalHighs, fractalLows, 1); // 1% 阈值即可，趋势判定不需要大波段
+  if (swings.length > 0) {
+    const lastSwing = [...swings].sort((a, b) => b.endIdx - a.endIdx)[0];
+    if (lastSwing.direction === 'up') score += 1;
+    else score -= 1;
+  }
 
   let direction: TrendDirection;
   let label: string;
@@ -728,5 +753,8 @@ export function calcTrendSignal(klines: KlineData[]): TrendSignal | null {
     label = '强空头';
   }
 
-  return { direction, score, label, price, ema20, ema60, changePercent };
+  const lastHigh = fractalHighs.length > 0 ? fractalHighs[fractalHighs.length - 1].price : null;
+  const lastLow = fractalLows.length > 0 ? fractalLows[fractalLows.length - 1].price : null;
+
+  return { direction, score, label, price, lastHigh, lastLow, changePercent };
 }
