@@ -533,29 +533,60 @@ function fredMonthLabel(date: string): string {
   return `${y}年${Number(m)}月`;
 }
 
-/** FRED 工具：指数序列同比（%），需 13 个点 */
-function fredYoy(pts: FredPoint[]): number | null {
-  if (pts.length < 13) return null;
+/**
+ * FRED 工具：定位 cur 之前 offsetMonths 个月的数据点（按日期匹配，非索引偏移）
+ *
+ * 为什么不用 pts[length-13]：序列可能缺月（如 2025-10 美国政府停摆导致
+ * CPI/PAYEMS/UNRATE 缺失该月），索引偏移会错位到 13 个月前，同比被高估。
+ * tolerance 允许在缺口处取最近的可用月份（0 = 必须精确匹配）。
+ */
+function fredPointMonthsBefore(pts: FredPoint[], offsetMonths: number, tolerance = 0): FredPoint | null {
+  if (pts.length === 0) return null;
   const cur = pts[pts.length - 1];
-  const yearAgo = pts[pts.length - 13];
+  const [cy, cm] = cur.date.split('-').map(Number);
+  const targetIdx = cy * 12 + (cm - 1) - offsetMonths;
+
+  let best: FredPoint | null = null;
+  let bestDist = Infinity;
+  for (let i = pts.length - 2; i >= 0; i--) {
+    const [py, pm] = pts[i].date.split('-').map(Number);
+    const pIdx = py * 12 + (pm - 1);
+    const dist = Math.abs(pIdx - targetIdx);
+    if (dist <= tolerance && dist < bestDist) {
+      best = pts[i];
+      bestDist = dist;
+    }
+  }
+  return best;
+}
+
+/** FRED 工具：指数序列同比（%），按日期找 12 个月前的点，缺口时容差 1 个月 */
+function fredYoy(pts: FredPoint[]): number | null {
+  const yearAgo = fredPointMonthsBefore(pts, 12, 1);
+  if (!yearAgo) return null;
+  const cur = pts[pts.length - 1];
   return Math.round(((cur.value / yearAgo.value) - 1) * 1000) / 10;
 }
 
-/** FRED 工具：指数序列环比（%） */
+/** FRED 工具：指数序列环比（%），严格取上一个日历月（缺月时置空而非跨月错算） */
 function fredMom(pts: FredPoint[]): number | null {
-  if (pts.length < 2) return null;
+  const prev = fredPointMonthsBefore(pts, 1, 0);
+  if (!prev) return null;
   const cur = pts[pts.length - 1];
-  const prev = pts[pts.length - 2];
   return Math.round(((cur.value / prev.value) - 1) * 1000) / 10;
 }
 
 /** 解析 FRED → 非农（真实值：PAYEMS 月度增量，千人 → 万人） */
 function parseNfpFromFred(fred: FredData, fallback: { next: NfpReport | null; previous: NfpReport | null; daysUntil: number; upcoming: NfpReport[] }): { next: NfpReport | null; previous: NfpReport | null; daysUntil: number; upcoming: NfpReport[] } {
   const pts = fred.payroll;
-  if (!pts || pts.length < 3) return fallback;
-  const [p2, p1, p0] = fredLatest(pts, 3);
+  if (!pts || pts.length < 2) return fallback;
+  // 按日期取上一月/上上月（序列可能缺月，如 2025-10 停摆缺口，索引偏移会跨月错算）
+  const p0 = pts[pts.length - 1];
+  const p1 = fredPointMonthsBefore(pts, 1, 0);
+  const p2 = fredPointMonthsBefore(pts, 2, 0);
+  if (!p1) return fallback;
   const actual = Math.round(((p0.value - p1.value) / 10) * 10) / 10; // 千人 → 万人
-  const prevActual = Math.round(((p1.value - p2.value) / 10) * 10) / 10; // 前月增量
+  const prevActual = p2 ? Math.round(((p1.value - p2.value) / 10) * 10) / 10 : null; // 前月增量
   const unPts = fred.unemployment;
   const unemploymentRate = unPts && unPts.length > 0 ? fredLatest(unPts, 1)[0].value : null;
 
