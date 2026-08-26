@@ -717,16 +717,20 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             {dataStatus}
           </span>
           {(['EMA', 'BOLL', 'MACD', 'RSI'] as const).map((ind) => (
-            <span
+            <button
               key={ind}
-              className={`px-2.5 py-1 text-xs font-medium cursor-default select-none transition-all ${
+              onClick={() => {
+                setIndicators((prev) => ({ ...prev, [ind]: !prev[ind] }));
+              }}
+              className={`px-2.5 py-1 text-xs font-medium cursor-pointer select-none transition-all ${
                 indicators[ind]
                 ? 'text-blue-300 border-b-2 border-blue-400 pb-0.5'
-                : 'text-dark-600 line-through'
+                : 'text-dark-600 line-through hover:text-dark-400'
               }`}
+              title={`点击切换${ind}显示`}
             >
               {ind}
-            </span>
+            </button>
           ))}
           {/* AB9 + 斐波那契 独立按钮 */}
           {isMember && (
