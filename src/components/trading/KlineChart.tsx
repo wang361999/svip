@@ -91,6 +91,18 @@ function loadProfitPref(): boolean {
   }
 }
 
+// ========== 微观结构位画线开关（流动性池 + FVG 缺口，独立于止盈徽章） ==========
+const MICRO_PREF_KEY = 'kline-micro-pref';
+
+function loadMicroPref(): boolean {
+  if (typeof window === 'undefined') return true;
+  try {
+    return window.localStorage.getItem(MICRO_PREF_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
+
 interface ProfitPlanLine {
   id: string;
   entry: number;
@@ -147,6 +159,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const [showFibonacci, setShowFibonacci] = useState(false);
   // 利润测算画线（结构分析：预案/汇流止盈区/目标位）
   const [showProfit, setShowProfit] = useState(loadProfitPref);
+  const [showMicro, setShowMicro] = useState(loadMicroPref);
   // AB9线 ref
   const autoLinesRef = useRef<ISeriesApi<'Line'>[]>([]);
   const autoPriceLinesRef = useRef<any[]>([]);
@@ -443,9 +456,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       }
     }
 
-    // —— 利润测算画线（结构分析：预案 / 汇流止盈区 / 目标位） ——
+    // —— 利润测算画线（结构分析：预案 / 汇流止盈区 / 目标位） + 微观结构位（池/FVG，独立开关） ——
     const pdata = profitDataRef.current;
-    if (showProfit && isMember && pdata && pdata.symbol === symbol) {
+    if ((showProfit || showMicro) && isMember && pdata && pdata.symbol === symbol) {
       // 去重：距已画线 < 0.2% 现价的位不再重复画（TP2 与汇流区中值常重合）
       const drawn: number[] = [];
       const ref = pdata.currentPrice || klines[klines.length - 1].close;
@@ -469,65 +482,71 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         } catch {}
       };
 
-      // 1. 方案A（实线，最醒目）：入场 / 止损 / TP1 / TP2
-      const pa = pdata.plans.find((p) => p.id === 'A');
-      if (pa) {
-        addLine(pa.entry, 'rgba(59, 130, 246, 0.95)', 2, 0, ` 方案A入场`);
-        addLine(pa.stop, 'rgba(239, 68, 68, 0.95)', 2, 0, ` 方案A止损`);
-        addLine(pa.tp1, 'rgba(34, 197, 94, 0.85)', 1, 2, ` TP1 ${pa.tp1ProbabilityPct != null ? pa.tp1ProbabilityPct + '%' : ''}`);
-        addLine(pa.tp2, 'rgba(34, 197, 94, 0.95)', 2, 2, ` TP2 ${pa.tp2ProbabilityPct != null ? pa.tp2ProbabilityPct + '%' : ''}`);
+      // ===== 止盈组（受「止盈」徽章控制） =====
+      if (showProfit) {
+        // 1. 方案A（实线，最醒目）：入场 / 止损 / TP1 / TP2
+        const pa = pdata.plans.find((p) => p.id === 'A');
+        if (pa) {
+          addLine(pa.entry, 'rgba(59, 130, 246, 0.95)', 2, 0, ` 方案A入场`);
+          addLine(pa.stop, 'rgba(239, 68, 68, 0.95)', 2, 0, ` 方案A止损`);
+          addLine(pa.tp1, 'rgba(34, 197, 94, 0.85)', 1, 2, ` TP1 ${pa.tp1ProbabilityPct != null ? pa.tp1ProbabilityPct + '%' : ''}`);
+          addLine(pa.tp2, 'rgba(34, 197, 94, 0.95)', 2, 2, ` TP2 ${pa.tp2ProbabilityPct != null ? pa.tp2ProbabilityPct + '%' : ''}`);
+        }
+
+        // 2. 结构失效位（红点线）
+        if (pdata.invalidation) {
+          addLine(pdata.invalidation.price, 'rgba(248, 113, 113, 0.7)', 1, 3, ' 结构失效');
+        }
+
+        // 3. 汇流止盈区（琥珀实线上下沿 + 点线中值）
+        if (pdata.confluence) {
+          addLine(pdata.confluence.high, 'rgba(245, 158, 11, 0.95)', 2, 0, ` 汇流区 ${pdata.confluence.probabilityPct}%`);
+          addLine(pdata.confluence.low, 'rgba(245, 158, 11, 0.95)', 2, 0, ' 汇流区');
+          addLine(pdata.confluence.mid, 'rgba(245, 158, 11, 0.5)', 1, 1, ' 汇流中值');
+        }
+
+        // 4. 方案B（细虚线）
+        const pb = pdata.plans.find((p) => p.id === 'B');
+        if (pb) {
+          addLine(pb.entry, 'rgba(59, 130, 246, 0.45)', 1, 3, ' 方案B触发');
+          addLine(pb.stop, 'rgba(239, 68, 68, 0.45)', 1, 3, ' 方案B止损');
+          addLine(pb.tp1, 'rgba(34, 197, 94, 0.4)', 1, 3, ' B·TP1');
+          addLine(pb.tp2, 'rgba(34, 197, 94, 0.45)', 1, 3, ` B·TP2 ${pb.rrTp2}`);
+        }
+
+        // 5. 延伸档（紫色虚线）
+        if (pdata.extendedTarget) {
+          addLine(pdata.extendedTarget.price, 'rgba(168, 85, 247, 0.8)', 1, 2, ` 延伸档 ${pdata.extendedTarget.probabilityPct}%`);
+        }
+
+        // 6. 其余方法目标位（细灰点线，含触及概率）
+        for (const t of pdata.profitTargets || []) {
+          addLine(t.price, 'rgba(148, 163, 184, 0.45)', 1, 1, ` ${t.label} ${t.probabilityPct}%`);
+        }
       }
 
-      // 2. 结构失效位（红点线）
-      if (pdata.invalidation) {
-        addLine(pdata.invalidation.price, 'rgba(248, 113, 113, 0.7)', 1, 3, ' 结构失效');
-      }
+      // ===== 微构组（受「微构」徽章控制，独立于止盈） =====
+      if (showMicro) {
+        // 7. 未扫流动性池（青色实线：等高/等低点止损簇，触及后反转率 62-86%）
+        for (const p of pdata.liquidityPools || []) {
+          addLine(
+            p.price,
+            'rgba(6, 182, 212, 0.85)',
+            2,
+            0,
+            ` 流动性池·${p.side === 'high' ? '等高' : '等低'} ${p.distancePct > 0 ? '+' : ''}${p.distancePct}%`,
+          );
+        }
 
-      // 3. 汇流止盈区（琥珀实线上下沿 + 点线中值）
-      if (pdata.confluence) {
-        addLine(pdata.confluence.high, 'rgba(245, 158, 11, 0.95)', 2, 0, ` 汇流区 ${pdata.confluence.probabilityPct}%`);
-        addLine(pdata.confluence.low, 'rgba(245, 158, 11, 0.95)', 2, 0, ' 汇流区');
-        addLine(pdata.confluence.mid, 'rgba(245, 158, 11, 0.5)', 1, 1, ' 汇流中值');
-      }
-
-      // 4. 方案B（细虚线）
-      const pb = pdata.plans.find((p) => p.id === 'B');
-      if (pb) {
-        addLine(pb.entry, 'rgba(59, 130, 246, 0.45)', 1, 3, ' 方案B触发');
-        addLine(pb.stop, 'rgba(239, 68, 68, 0.45)', 1, 3, ' 方案B止损');
-        addLine(pb.tp1, 'rgba(34, 197, 94, 0.4)', 1, 3, ' B·TP1');
-        addLine(pb.tp2, 'rgba(34, 197, 94, 0.45)', 1, 3, ` B·TP2 ${pb.rrTp2}`);
-      }
-
-      // 5. 延伸档（紫色虚线）
-      if (pdata.extendedTarget) {
-        addLine(pdata.extendedTarget.price, 'rgba(168, 85, 247, 0.8)', 1, 2, ` 延伸档 ${pdata.extendedTarget.probabilityPct}%`);
-      }
-
-      // 6. 其余方法目标位（细灰点线，含触及概率）
-      for (const t of pdata.profitTargets || []) {
-        addLine(t.price, 'rgba(148, 163, 184, 0.45)', 1, 1, ` ${t.label} ${t.probabilityPct}%`);
-      }
-
-      // 7. 未扫流动性池（青色实线：等高/等低点止损簇，触及后反转率 62-86%）
-      for (const p of pdata.liquidityPools || []) {
-        addLine(
-          p.price,
-          'rgba(6, 182, 212, 0.85)',
-          2,
-          0,
-          ` 流动性池·${p.side === 'high' ? '等高' : '等低'} ${p.distancePct > 0 ? '+' : ''}${p.distancePct}%`,
-        );
-      }
-
-      // 8. 未回补 FVG 缺口（靛蓝：上下沿虚线 + 50% CE 点线，回补率 80-88%）
-      for (const f of pdata.fairValueGaps || []) {
-        addLine(f.ce, 'rgba(99, 102, 241, 0.75)', 1, 1, ` FVG·50% ${f.distancePct > 0 ? '+' : ''}${f.distancePct}%`);
-        addLine(f.high, 'rgba(99, 102, 241, 0.35)', 1, 3, '');
-        addLine(f.low, 'rgba(99, 102, 241, 0.35)', 1, 3, '');
+        // 8. 未回补 FVG 缺口（靛蓝：上下沿虚线 + 50% CE 点线，回补率 80-88%）
+        for (const f of pdata.fairValueGaps || []) {
+          addLine(f.ce, 'rgba(99, 102, 241, 0.75)', 1, 1, ` FVG·50% ${f.distancePct > 0 ? '+' : ''}${f.distancePct}%`);
+          addLine(f.high, 'rgba(99, 102, 241, 0.35)', 1, 3, '');
+          addLine(f.low, 'rgba(99, 102, 241, 0.35)', 1, 3, '');
+        }
       }
     }
-  }, [showAutoAB9, showFibonacci, showProfit, isMember, symbol]);
+  }, [showAutoAB9, showFibonacci, showProfit, showMicro, isMember, symbol]);
 
   // 更新K线数据
   const updateChart = useCallback((klines: KlineData[], intv?: string) => {
@@ -578,10 +597,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     redrawOverlayLines();
   }, [redrawOverlayLines]);
 
-  // 拉取结构分析数据（利润测算画线的数据源，与 AI 分析卡片同接口同缓存）
+  // 拉取结构分析数据（利润测算+微构画线的数据源，与 AI 分析卡片同接口同缓存）
   // 服务端按 4h 收盘缓存，这里 5 分钟静默轮询：跨 4h 收盘后能自动换新结构
   useEffect(() => {
-    if (!showProfit || !isMember || !symbol) return;
+    if ((!showProfit && !showMicro) || !isMember || !symbol) return;
     let cancelled = false;
     const fetchOnce = () => {
       const st = profitFetchStateRef.current;
@@ -601,7 +620,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       cancelled = true;
       clearInterval(timer);
     };
-  }, [showProfit, isMember, symbol, redrawOverlayLines]);
+  }, [showProfit, showMicro, isMember, symbol, redrawOverlayLines]);
 
   // Tick 实时更新（rAF + 50ms 节流，和 v24 一致）
   const flushTick = useCallback(() => {
@@ -990,6 +1009,17 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
                 title="利润测算画线（结构分析：预案 / 汇流止盈区 / 目标位）"
               >
                 止盈
+              </button>
+              <button
+                onClick={() => {
+                  const v = !showMicro;
+                  setShowMicro(v);
+                  try { window.localStorage.setItem(MICRO_PREF_KEY, v ? '1' : '0'); } catch {}
+                }}
+                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showMicro ? 'text-indigo-400' : 'text-dark-600'}`}
+                title="微观结构位画线（流动性池·等高/等低 + FVG缺口·50%回补），独立于止盈画线"
+              >
+                微构
               </button>
             </>
           )}
