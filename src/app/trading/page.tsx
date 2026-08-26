@@ -7,6 +7,7 @@ import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
 import PriceTicker from '@/components/trading/PriceTicker';
 import MultiTrendCard from '@/components/trading/MultiTrendCard';
+import StrategySignalCard from '@/components/trading/StrategySignalCard';
 import useAuthStore from '@/store/authStore';
 import { apiGet } from '@/shared/api/client';
 
@@ -126,7 +127,10 @@ export default function TradingPage() {
           {/* K线图（含 MACD 副图 + 布林带 + EMA） */}
           <KlineChart isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen} />
 
-          {/* 多周期趋势卡片（5m/15m/1h/4h/1d 趋势一览，点击标题栏折叠） */}
+          {/* 策略信号卡片（三周期共振 + 结构位 + 盈亏比） */}
+          {!isFullscreen && <StrategySignalCard />}
+
+          {/* 多周期趋势卡片（15m/1h/4h/1d 趋势一览，点击标题栏折叠） */}
           {!isFullscreen && <MultiTrendCard />}
 
           {/* 底部声明 */}
