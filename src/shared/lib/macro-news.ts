@@ -456,10 +456,10 @@ type FredData = Partial<Record<FredKey, FredPoint[]>>;
 let fredCache: { at: number; data: FredData } | null = null;
 const FRED_CACHE_MS = 2 * 60 * 60 * 1000;
 
-/** 拉取单个 FRED 序列 CSV（2024 年起，足够算同比） */
+/** 拉取单个 FRED 序列 CSV（2024 年起，足够算同比）；4s 超时——Vercel 出口被 Akamai 拦截时快速失败 */
 async function fetchFredCsv(id: string): Promise<FredPoint[]> {
   const res = await fetch(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=${id}&cosd=2024-01-01`, {
-    signal: AbortSignal.timeout(10000),
+    signal: AbortSignal.timeout(4000),
     headers: {
       'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       Accept: 'text/csv',
@@ -493,6 +493,33 @@ export async function fetchFredSeries(): Promise<FredData | null> {
   } catch {
     return null;
   }
+}
+
+// ==================== Bundled 宏观数据（GitHub Actions 每日更新）====================
+
+/**
+ * 打包进构建产物的 FRED 快照。
+ * 背景：FRED（Akamai）在网络层丢弃 Vercel 出口 IP 的连接，运行时直连永远超时；
+ * GitHub Actions runner 可正常访问 FRED，每日定时抓取并提交本文件 → 触发 Vercel 部署。
+ * 优先级：运行时直连 FRED > 本快照 > 内置静态值
+ */
+import macroLiveJson from '@/data/macro-live.json';
+
+const macroLive = macroLiveJson as {
+  fetchedAt: string;
+  series?: Partial<Record<FredKey, FredPoint[]>>;
+};
+
+/** 读取 bundled FRED 快照（真实数据，至多 24h 前抓取） */
+function bundledFred(): FredData | null {
+  const s = macroLive.series;
+  if (!s) return null;
+  const data: FredData = {};
+  for (const key of Object.keys(FRED_IDS) as FredKey[]) {
+    const pts = s[key];
+    if (Array.isArray(pts) && pts.length > 0) data[key] = pts;
+  }
+  return Object.keys(data).length > 0 ? data : null;
 }
 
 /** FRED 工具：取序列最新 N 个点 */
@@ -752,20 +779,23 @@ export interface MacroNewsResult {
 }
 
 /**
- * 获取消息面全量数据（优先实时 API，失败降级内置数据）
+ * 获取消息面全量数据（优先实时 API，失败降级 bundled 快照，再降级内置数据）
  * 数据源：
  * - 恐慌贪婪指数：alternative.me 官方 API（实时）
- * - 非农/CPI/PCE/失业率/初请：FRED 圣路易斯联储官方 CSV（实时，缓存 2h）
+ * - 非农/CPI/PCE/失业率/初请：FRED 运行时直连 → bundled 快照（GitHub Actions 每日提交）
  * - BTC 行情：Binance（实时，与 K 线同源）
  */
 export async function fetchMacroNews(): Promise<MacroNewsResult> {
-  const [macroNews, cryptoNews, fgLive, fred, btcLive] = await Promise.all([
+  const [macroNews, cryptoNews, fgLive, fredRuntime, btcLive] = await Promise.all([
     fetchFeed('macro', '美联储 OR FOMC OR 加息 OR 降息 OR 非农 OR CPI OR PCE OR 通胀 OR 失业金'),
     fetchFeed('crypto', '比特币 OR 以太坊 OR 加密货币'),
     fetchFearGreedLive(),
     fetchFredSeries(),
     fetchBtcTicker(),
   ]);
+
+  // 数据优先级：运行时 FRED > bundled 快照（GH Actions 每日更新）> null（用内置静态）
+  const fred = fredRuntime ?? bundledFred();
 
   // 内置降级值
   const nfpFallback = nextNfp();

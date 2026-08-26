@@ -1,0 +1,41 @@
+name: Update macro data
+
+# 每天自动拉取美联储 FRED 宏观数据 → 提交到仓库 → Vercel 自动部署
+# 背景：FRED（Akamai CDN）在网络层丢弃 Vercel 出口 IP 的连接，
+#       GitHub Actions runner（Azure IP）可正常访问，故用定时任务中转
+on:
+  schedule:
+    - cron: '30 13 * * *' # 每天 13:30 UTC = 21:30 北京时间（美东 9:30，当日数据已发布）
+  workflow_dispatch: # 支持手动触发
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macro-update
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Fetch FRED data
+        run: node scripts/update-macro.mjs
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/data/macro-live.json
+          if git diff --cached --quiet; then
+            echo "数据无变化，跳过提交"
+          else
+            git commit -m "chore(data): 自动更新宏观数据（FRED）"
+            git push
+          fi
