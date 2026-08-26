@@ -79,12 +79,12 @@ interface FearGreedData {
   updatedAt: string;
 }
 
-interface EtfFlowData {
-  dailyFlow: number;
-  weeklyFlow: number;
-  monthlyFlow: number;
-  totalAum: number;
-  details: { name: string; flow: number; aum: number }[];
+interface BtcTicker {
+  price: number;
+  change24h: number;
+  volumeUsd: number;
+  high24h: number;
+  low24h: number;
   updatedAt: string;
 }
 
@@ -96,10 +96,31 @@ interface MacroNewsData {
   pce: { next: PceReport | null; previous: PceReport | null; daysUntil: number; upcoming: PceReport[] };
   jobless: { latest: JoblessClaimsReport | null; next: JoblessClaimsReport | null; daysUntil: number; recent: JoblessClaimsReport[] };
   fearGreed: FearGreedData;
-  etfFlows: EtfFlowData;
+  btc: BtcTicker | null;
+  source: {
+    fearGreed: 'live' | 'static';
+    nfp: 'live' | 'static';
+    cpi: 'live' | 'static';
+    jobless: 'live' | 'static';
+    btc: 'live' | 'static';
+  };
   macroNews: NewsItem[];
   cryptoNews: NewsItem[];
   digest: string;
+}
+
+/** 实时数据源徽章 */
+function LiveBadge({ isLive }: { isLive: boolean }) {
+  return isLive ? (
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium border text-green-400 bg-green-500/10 border-green-500/30">
+      <span className="w-1 h-1 rounded-full bg-green-400 animate-pulse" />
+      实时
+    </span>
+  ) : (
+    <span className="px-1.5 py-0.5 rounded text-[9px] font-medium border text-dark-500 bg-dark-800/60 border-dark-700">
+      离线参考
+    </span>
+  );
 }
 
 type Tab = 'macro' | 'crypto';
@@ -145,9 +166,9 @@ export default function MacroNewsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 5 分钟自动刷新（新闻缓存 10 分钟，无需更频繁）
+  // 60 秒自动刷新（BTC 行情实时 / 恐慌贪婪每日 / BLS 缓存 2h / 新闻缓存 10min）
   useEffect(() => {
-    const t = setInterval(load, 5 * 60_000);
+    const t = setInterval(load, 60_000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -192,7 +213,7 @@ export default function MacroNewsPage() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-xl font-bold text-white">消息面</h1>
-            <p className="text-xs text-dark-500 mt-1">宏观数据 · 加密情绪 · 实时新闻</p>
+            <p className="text-xs text-dark-500 mt-1">实时宏观数据 · 加密情绪 · 每 60 秒自动刷新</p>
           </div>
           <div className="flex items-center gap-3">
             <button onClick={load} disabled={loading} className="text-xs text-dark-400 hover:text-white transition-colors">
@@ -270,7 +291,10 @@ export default function MacroNewsPage() {
             {data && data.nfp.previous && (
               <div className="glass-card p-4">
                 <div className="flex items-center justify-between mb-3">
-                  <div className="text-dark-500 text-xs">非农就业（NFP）</div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-dark-500 text-xs">非农就业（NFP）</span>
+                    <LiveBadge isLive={data.source.nfp === 'live'} />
+                  </div>
                   {data.nfp.previous.actual !== null && data.nfp.previous.forecast !== null && (
                     <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
                       data.nfp.previous.actual > data.nfp.previous.forecast
@@ -313,7 +337,10 @@ export default function MacroNewsPage() {
             {data && data.cpi.previous && (
               <div className="glass-card p-4">
                 <div className="flex items-center justify-between mb-3">
-                  <div className="text-dark-500 text-xs">CPI 消费者物价指数</div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-dark-500 text-xs">CPI 消费者物价指数</span>
+                    <LiveBadge isLive={data.source.cpi === 'live'} />
+                  </div>
                   {data.cpi.previous.yoy !== null && data.cpi.previous.forecastYoy !== null && (
                     <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
                       data.cpi.previous.yoy > data.cpi.previous.forecastYoy
@@ -367,7 +394,10 @@ export default function MacroNewsPage() {
             {data && data.pce.previous && (
               <div className="glass-card p-4">
                 <div className="flex items-center justify-between mb-3">
-                  <div className="text-dark-500 text-xs">核心 PCE<span className="text-dark-600 ml-1">· 美联储首选</span></div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-dark-500 text-xs">核心 PCE<span className="text-dark-600 ml-1">· 美联储首选</span></span>
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-medium border text-dark-500 bg-dark-800/60 border-dark-700">离线参考</span>
+                  </div>
                   {data.pce.previous.coreYoy !== null && data.pce.previous.forecastCoreYoy !== null && (
                     <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
                       data.pce.previous.coreYoy > data.pce.previous.forecastCoreYoy
@@ -411,7 +441,10 @@ export default function MacroNewsPage() {
             {data && data.jobless.latest && (
               <div className="glass-card p-4">
                 <div className="flex items-center justify-between mb-3">
-                  <div className="text-dark-500 text-xs">初请失业金<span className="text-dark-600 ml-1">· 每周</span></div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-dark-500 text-xs">初请失业金<span className="text-dark-600 ml-1">· 每周</span></span>
+                    <LiveBadge isLive={data.source.jobless === 'live'} />
+                  </div>
                   {data.jobless.latest.actual !== null && data.jobless.latest.forecast !== null && (
                     <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
                       data.jobless.latest.actual < data.jobless.latest.forecast
@@ -465,7 +498,10 @@ export default function MacroNewsPage() {
             {data && (
               <div className="glass-card p-4">
                 <div className="flex items-center justify-between mb-3">
-                  <div className="text-dark-500 text-xs">恐慌贪婪指数</div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-dark-500 text-xs">恐慌贪婪指数</span>
+                    <LiveBadge isLive={data.source.fearGreed === 'live'} />
+                  </div>
                   <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
                     data.fearGreed.value >= 75
                       ? 'text-red-400 bg-red-500/10 border-red-500/30'
@@ -517,53 +553,41 @@ export default function MacroNewsPage() {
               </div>
             )}
 
-            {/* BTC ETF 资金流向 */}
-            {data && (
+            {/* BTC 实时行情 */}
+            {data && data.btc && (
               <div className="glass-card p-4">
                 <div className="flex items-center justify-between mb-3">
-                  <div className="text-dark-500 text-xs">BTC ETF 资金流向</div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-dark-500 text-xs">BTC / USDT</span>
+                    <LiveBadge isLive={data.source.btc === 'live'} />
+                  </div>
                   <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
-                    data.etfFlows.dailyFlow > 0
-                      ? 'text-green-400 bg-green-500/10 border-green-500/30'
-                      : data.etfFlows.dailyFlow < 0
+                    data.btc.change24h > 0
                       ? 'text-red-400 bg-red-500/10 border-red-500/30'
+                      : data.btc.change24h < 0
+                      ? 'text-green-400 bg-green-500/10 border-green-500/30'
                       : 'text-dark-400 bg-dark-800/80 border-dark-700'
                   }`}>
-                    {data.etfFlows.dailyFlow > 0 ? '净流入（利好）' : data.etfFlows.dailyFlow < 0 ? '净流出（利空）' : '持平'}
+                    24h {data.btc.change24h >= 0 ? '+' : ''}{data.btc.change24h}%
                   </span>
                 </div>
-                <div className="text-2xl font-bold leading-none">
-                  <span className={data.etfFlows.dailyFlow >= 0 ? 'text-green-400' : 'text-red-400'}>
-                    {data.etfFlows.dailyFlow >= 0 ? '+' : ''}{data.etfFlows.dailyFlow}
-                  </span>
-                  <span className="text-base ml-1 text-dark-400">亿美元</span>
-                  <span className="text-dark-500 text-xs ml-2">今日</span>
+                <div className="text-2xl font-bold text-white leading-none font-mono">
+                  ${data.btc.price.toLocaleString('en-US', { maximumFractionDigits: 0 })}
                 </div>
-                <div className="text-dark-500 text-[11px] mt-1.5">总规模 {data.etfFlows.totalAum} 亿美元</div>
-                <div className="flex justify-between mt-3 pt-3 border-t border-dark-800">
-                  <div className="flex-1 text-center">
-                    <div className="text-dark-600 text-[10px]">本周</div>
-                    <div className={`text-xs font-medium ${data.etfFlows.weeklyFlow >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      {data.etfFlows.weeklyFlow >= 0 ? '+' : ''}{data.etfFlows.weeklyFlow} 亿
-                    </div>
+                <div className="text-dark-500 text-[11px] mt-1.5">Binance 现货 · {new Date(data.btc.updatedAt).toLocaleTimeString('zh-CN', { hour12: false })}</div>
+                <div className="grid grid-cols-3 gap-2 mt-3 pt-3 border-t border-dark-800 text-center">
+                  <div>
+                    <div className="text-dark-600 text-[10px]">24h 最高</div>
+                    <div className="text-dark-300 text-xs font-medium font-mono">{data.btc.high24h.toLocaleString('en-US', { maximumFractionDigits: 0 })}</div>
                   </div>
-                  <div className="flex-1 text-center border-l border-dark-800">
-                    <div className="text-dark-600 text-[10px]">本月</div>
-                    <div className={`text-xs font-medium ${data.etfFlows.monthlyFlow >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      {data.etfFlows.monthlyFlow >= 0 ? '+' : ''}{data.etfFlows.monthlyFlow} 亿
-                    </div>
+                  <div className="border-l border-dark-800">
+                    <div className="text-dark-600 text-[10px]">24h 最低</div>
+                    <div className="text-dark-300 text-xs font-medium font-mono">{data.btc.low24h.toLocaleString('en-US', { maximumFractionDigits: 0 })}</div>
                   </div>
-                </div>
-                {/* ETF 明细 */}
-                <div className="mt-3 pt-3 border-t border-dark-800 space-y-1.5">
-                  {data.etfFlows.details.map((d, i) => (
-                    <div key={i} className="flex items-center justify-between text-[11px]">
-                      <span className="text-dark-400">{d.name}</span>
-                      <span className={d.flow >= 0 ? 'text-green-400 font-medium' : 'text-red-400 font-medium'}>
-                        {d.flow >= 0 ? '+' : ''}{d.flow} 亿
-                      </span>
-                    </div>
-                  ))}
+                  <div className="border-l border-dark-800">
+                    <div className="text-dark-600 text-[10px]">24h 成交</div>
+                    <div className="text-dark-300 text-xs font-medium font-mono">{data.btc.volumeUsd}亿$</div>
+                  </div>
                 </div>
               </div>
             )}
@@ -660,7 +684,7 @@ export default function MacroNewsPage() {
               {copied ? '✓ 已复制今日要闻' : '📋 一键复制今日要闻'}
             </button>
             <p className="text-center text-[11px] text-dark-600 mt-3">
-              新闻来自 Google News 公开源 · 宏观数据为历史参考 · 不构成投资建议
+              非农/CPI/初请来自美国劳工统计局（BLS）· 恐慌贪婪来自 alternative.me · BTC 行情来自 Binance · PCE 为内置参考
             </p>
           </div>
         )}

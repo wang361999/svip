@@ -316,8 +316,47 @@ export interface FearGreedData {
 }
 
 /**
- * 恐慌贪婪指数（模拟数据，基于当前时间做平滑波动）
- * 后续可接入 alternative.me 官方 API
+ * 恐慌贪婪指数（实时，alternative.me 官方 API，免费无 key）
+ * 失败时返回 null，由调用方降级到内置估算
+ */
+export async function fetchFearGreedLive(): Promise<FearGreedData | null> {
+  try {
+    const res = await fetch('https://api.alternative.me/fng/?limit=32', {
+      signal: AbortSignal.timeout(8000),
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+    });
+    if (!res.ok) return null;
+    const j = await res.json();
+    const data = j?.data as { value: string; value_classification: string; timestamp: string }[] | undefined;
+    if (!Array.isArray(data) || data.length === 0) return null;
+
+    const mapCls = (c: string): FearGreedData['classification'] => {
+      const m: Record<string, FearGreedData['classification']> = {
+        'Extreme Fear': '极度恐惧',
+        Fear: '恐惧',
+        Neutral: '中性',
+        Greed: '贪婪',
+        'Extreme Greed': '极度贪婪',
+      };
+      return m[c] || '中性';
+    };
+
+    const today = data[0];
+    return {
+      value: Number(today.value),
+      classification: mapCls(today.value_classification),
+      yesterday: Number(data[1]?.value ?? today.value),
+      lastWeek: Number(data[7]?.value ?? today.value),
+      lastMonth: Number(data[30]?.value ?? today.value),
+      updatedAt: new Date(Number(today.timestamp) * 1000).toISOString().slice(0, 10),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 恐慌贪婪指数（估算降级，仅在实时 API 失败时使用）
  */
 export function getFearGreedIndex(now = new Date()): FearGreedData {
   // 用日期做种子，产生缓慢变化的数值（55-75 区间，当前为牛市后期偏贪婪）
@@ -344,48 +383,218 @@ export function getFearGreedIndex(now = new Date()): FearGreedData {
   };
 }
 
-// ==================== BTC ETF 资金流向 ====================
+// ==================== BTC 实时行情（Binance）====================
 
-export interface EtfFlowData {
-  /** 今日净流入（亿美元，正=流入，负=流出） */
-  dailyFlow: number;
-  /** 本周累计净流入（亿美元） */
-  weeklyFlow: number;
-  /** 本月累计净流入（亿美元） */
-  monthlyFlow: number;
-  /** 总资产管理规模（亿美元） */
-  totalAum: number;
-  /** 主要 ETF 明细 */
-  details: { name: string; flow: number; aum: number }[];
-  /** 更新时间 */
+export interface BtcTicker {
+  /** 最新价（USDT） */
+  price: number;
+  /** 24h 涨跌幅（%） */
+  change24h: number;
+  /** 24h 成交额（亿美元） */
+  volumeUsd: number;
+  /** 24h 最高 */
+  high24h: number;
+  /** 24h 最低 */
+  low24h: number;
   updatedAt: string;
 }
 
 /**
- * BTC ETF 资金流向（模拟数据，基于近期趋势）
- * 后续可接入 farside.co.uk 或 BitMEX 等数据源
+ * BTC 实时行情（Binance 24hr ticker，与项目 K 线同源）
+ * 失败时返回 null
  */
-export function getBtcEtfFlows(now = new Date()): EtfFlowData {
-  const dayOfYear = Math.floor((now.getTime() - new Date(now.getFullYear(), 0, 0).getTime()) / 86_400_000);
-  const dailyBase = 1.2 + Math.sin(dayOfYear / 5.5) * 0.8; // 日均约 1.2 亿流入
-  const dailyFlow = Math.round(dailyBase * 100) / 100;
-  const weeklyFlow = Math.round(dailyFlow * 5 * 100) / 100;
-  const monthlyFlow = Math.round(dailyFlow * 22 * 100) / 100;
-  const totalAum = 1380 + dailyFlow * (dayOfYear % 30); // 约 1380 亿总规模
+export async function fetchBtcTicker(): Promise<BtcTicker | null> {
+  try {
+    const res = await fetch('https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT', {
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const j = await res.json();
+    const price = Number(j.lastPrice);
+    if (!Number.isFinite(price) || price <= 0) return null;
+    return {
+      price,
+      change24h: Number(j.priceChangePercent),
+      volumeUsd: Math.round((Number(j.quoteVolume) / 1e8) * 10) / 10,
+      high24h: Number(j.highPrice),
+      low24h: Number(j.lowPrice),
+      updatedAt: new Date().toISOString(),
+    };
+  } catch {
+    return null;
+  }
+}
 
-  return {
-    dailyFlow,
-    weeklyFlow,
-    monthlyFlow,
-    totalAum: Math.round(totalAum * 10) / 10,
-    details: [
-      { name: 'IBIT（贝莱德）', flow: Math.round(dailyFlow * 0.45 * 100) / 100, aum: 520 },
-      { name: 'FBTC（富达）', flow: Math.round(dailyFlow * 0.25 * 100) / 100, aum: 310 },
-      { name: 'BITO（ProShares）', flow: Math.round(dailyFlow * 0.12 * 100) / 100, aum: 180 },
-      { name: '其他 7 只', flow: Math.round(dailyFlow * 0.18 * 100) / 100, aum: 370 },
-    ],
-    updatedAt: now.toISOString().slice(0, 10),
+// ==================== BLS 官方 API（非农/CPI/失业率/初请，实时）====================
+
+export interface BlsPoint {
+  year: string;
+  /** 如 'M07'（月度）或 'M13'（周度） */
+  period: string;
+  value: string;
+}
+
+/** BLS 序列号：非农总就业/失业率/CPI-U季调/核心CPI/初请失业金 */
+const BLS_SERIES = {
+  payroll: 'CES0000000001', // Total Nonfarm Employment（千人，存量）
+  unemployment: 'LNS14000000', // 失业率（%）
+  cpi: 'CUSR0000SA0', // CPI-U 季调指数
+  coreCpi: 'CUSR0000SA0L1E', // 核心 CPI（剔除食品能源）
+  claims: 'ICSA', // 初请失业金（周度，人数）
+} as const;
+
+/** BLS 匿名限流 25 次/天 → 模块级缓存 2 小时 */
+let blsCache: { at: number; data: Record<string, BlsPoint[]> } | null = null;
+const BLS_CACHE_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * 拉取 BLS 官方时间序列（免费无 key，匿名 25 次/天，缓存 2 小时）
+ * 失败返回 null
+ */
+export async function fetchBlsSeries(): Promise<Record<string, BlsPoint[]> | null> {
+  const now = Date.now();
+  if (blsCache && now - blsCache.at < BLS_CACHE_MS) return blsCache.data;
+
+  try {
+    const startYear = new Date().getFullYear() - 1;
+    const res = await fetch('https://api.bls.gov/publicAPI/v2/timeseries/data/', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+      signal: AbortSignal.timeout(10000),
+      body: JSON.stringify({
+        seriesid: Object.values(BLS_SERIES),
+        startyear: String(startYear),
+        endyear: String(new Date().getFullYear()),
+      }),
+    });
+    if (!res.ok) return null;
+    const j = await res.json();
+    if (j?.status !== 'OK' || !Array.isArray(j?.Results?.series)) return null;
+
+    const out: Record<string, BlsPoint[]> = {};
+    for (const s of j.Results.series) {
+      if (Array.isArray(s?.data) && s.data.length > 0) out[s.seriesID] = s.data;
+    }
+    if (Object.keys(out).length === 0) return null;
+
+    blsCache = { at: now, data: out };
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+/** BLS 点位工具：按 periodName 排序取最新 N 个月度点 */
+function blsMonthlyLatest(points: BlsPoint[], count: number): BlsPoint[] {
+  const monthly = points
+    .filter((p) => /^M\d{2}$/.test(p.period))
+    .sort((a, b) => (a.year + a.period).localeCompare(b.year + b.period));
+  return monthly.slice(-count);
+}
+
+/**
+ * 解析 BLS 数据 → 非农报告（真实值）
+ * CES0000000001 为就业存量（千人），月度增量 = 本月 - 上月
+ */
+function parseNfpFromBls(bls: Record<string, BlsPoint[]>, fallback: { next: NfpReport | null; previous: NfpReport | null; daysUntil: number; upcoming: NfpReport[] }): { next: NfpReport | null; previous: NfpReport | null; daysUntil: number; upcoming: NfpReport[] } {
+  const pts = bls[BLS_SERIES.payroll];
+  const unPts = bls[BLS_SERIES.unemployment];
+  if (!pts || pts.length < 2) return fallback;
+
+  const latest = blsMonthlyLatest(pts, 2);
+  if (latest.length < 2) return fallback;
+
+  const cur = latest[latest.length - 1];
+  const prev = latest[latest.length - 2];
+  const monthIdx = Number(cur.period.slice(1)) - 1;
+  const label = `${cur.year}年${monthIdx + 1}月`;
+  const actual = Math.round(((Number(cur.value) - Number(prev.value)) / 10) * 10) / 10; // 千人 → 万人
+
+  // 失业率取同月
+  let unemployment: number | null = null;
+  if (unPts) {
+    const unLatest = blsMonthlyLatest(unPts, 1);
+    if (unLatest.length === 1) unemployment = Number(unLatest[0].value);
+  }
+
+  const previous: NfpReport = {
+    releaseDate: `${cur.year}-${String(monthIdx + 1).padStart(2, '0')}-01`,
+    label,
+    actual,
+    forecast: fallback.previous?.forecast ?? null,
+    previous: null,
+    unemploymentRate: unemployment,
+    status: 'released',
   };
+  return { ...fallback, previous };
+}
+
+/**
+ * 解析 BLS 数据 → CPI 报告（真实值，同比用 12 个月前对比计算）
+ */
+function parseCpiFromBls(bls: Record<string, BlsPoint[]>, fallback: { next: CpiReport | null; previous: CpiReport | null; daysUntil: number; upcoming: CpiReport[] }): { next: CpiReport | null; previous: CpiReport | null; daysUntil: number; upcoming: CpiReport[] } {
+  const pts = bls[BLS_SERIES.cpi];
+  const corePts = bls[BLS_SERIES.coreCpi];
+  if (!pts) return fallback;
+
+  const latest13 = blsMonthlyLatest(pts, 13);
+  if (latest13.length < 13) return fallback;
+
+  const cur = latest13[latest13.length - 1];
+  const yearAgo = latest13[latest13.length - 13];
+  const prev = latest13[latest13.length - 2];
+  const monthIdx = Number(cur.period.slice(1)) - 1;
+
+  let coreYoy: number | null = null;
+  if (corePts) {
+    const core13 = blsMonthlyLatest(corePts, 13);
+    if (core13.length === 13) {
+      coreYoy = Math.round(((Number(core13[12].value) / Number(core13[0].value)) - 1) * 1000) / 10;
+    }
+  }
+
+  const yoy = Math.round(((Number(cur.value) / Number(yearAgo.value)) - 1) * 1000) / 10;
+  const mom = Math.round(((Number(cur.value) / Number(prev.value)) - 1) * 1000) / 10;
+
+  const previous: CpiReport = {
+    releaseDate: `${cur.year}-${String(monthIdx + 1).padStart(2, '0')}-01`,
+    label: `${cur.year}年${monthIdx + 1}月`,
+    yoy,
+    mom,
+    coreYoy,
+    forecastYoy: fallback.previous?.forecastYoy ?? null,
+    previousYoy: null,
+    status: 'released',
+  };
+  return { ...fallback, previous };
+}
+
+/**
+ * 解析 BLS 数据 → 初请失业金（真实值，ICSA 周度序列）
+ */
+function parseClaimsFromBls(bls: Record<string, BlsPoint[]>, fallback: ReturnType<typeof getJoblessClaims>): ReturnType<typeof getJoblessClaims> {
+  const pts = bls[BLS_SERIES.claims];
+  if (!pts || pts.length === 0) return fallback;
+
+  // ICSA 返回按时间正序的周度数据，取最新两周
+  const sorted = [...pts].sort((a, b) => (a.year + a.period).localeCompare(b.year + b.period));
+  const recentPts = sorted.filter((p) => p.period !== 'M13').slice(-4);
+  if (recentPts.length < 2) return fallback;
+
+  const cur = recentPts[recentPts.length - 1];
+  const prev = recentPts[recentPts.length - 2];
+  const latest = {
+    releaseDate: `${cur.year}-${cur.period}`,
+    actual: Math.round((Number(cur.value) / 10000) * 10) / 10, // 人数 → 万人
+    forecast: fallback.latest?.forecast ?? null,
+    previous: Math.round((Number(prev.value) / 10000) * 10) / 10,
+    status: 'released' as const,
+  };
+  return { ...fallback, latest };
 }
 
 // ==================== Google News RSS 新闻抓取 ====================
@@ -524,29 +733,67 @@ export interface MacroNewsResult {
   jobless: ReturnType<typeof getJoblessClaims>;
   /** 恐慌贪婪指数 */
   fearGreed: FearGreedData;
-  /** BTC ETF 资金流向 */
-  etfFlows: EtfFlowData;
+  /** BTC 实时行情 */
+  btc: BtcTicker | null;
+  /** 数据源标记：live = 实时 API / static = 内置估算（降级） */
+  source: {
+    fearGreed: 'live' | 'static';
+    nfp: 'live' | 'static';
+    cpi: 'live' | 'static';
+    jobless: 'live' | 'static';
+    btc: 'live' | 'static';
+  };
   /** 宏观·加息降息新闻 */
   macroNews: MacroNewsItem[];
   /** 加密市场新闻 */
   cryptoNews: MacroNewsItem[];
 }
 
-/** 获取消息面全量数据 */
+/**
+ * 获取消息面全量数据（优先实时 API，失败降级内置数据）
+ * 数据源：
+ * - 恐慌贪婪指数：alternative.me 官方 API（实时）
+ * - 非农/CPI/失业率/初请：BLS 美国劳工统计局官方 API（实时，缓存 2h）
+ * - BTC 行情：Binance（实时，与 K 线同源）
+ */
 export async function fetchMacroNews(): Promise<MacroNewsResult> {
-  const [macroNews, cryptoNews] = await Promise.all([
+  const [macroNews, cryptoNews, fgLive, bls, btcLive] = await Promise.all([
     fetchFeed('macro', '美联储 OR FOMC OR 加息 OR 降息 OR 非农 OR 非农就业 OR CPI OR PCE OR 通胀 OR 失业金'),
     fetchFeed('crypto', '比特币 OR 以太坊 OR 加密货币 OR BTC ETF'),
+    fetchFearGreedLive(),
+    fetchBlsSeries(),
+    fetchBtcTicker(),
   ]);
+
+  // 内置降级值
+  const nfpFallback = nextNfp();
+  const cpiFallback = nextCpi();
+  const joblessFallback = getJoblessClaims();
+  const fgFallback = getFearGreedIndex();
+
+  // BLS 实时数据合并（拉不到则用内置）
+  const nfp = bls ? parseNfpFromBls(bls, nfpFallback) : nfpFallback;
+  const cpi = bls ? parseCpiFromBls(bls, cpiFallback) : cpiFallback;
+  const jobless = bls ? parseClaimsFromBls(bls, joblessFallback) : joblessFallback;
+
+  const source = {
+    fearGreed: (fgLive ? 'live' : 'static') as 'live' | 'static',
+    nfp: (bls && bls[BLS_SERIES.payroll] ? 'live' : 'static') as 'live' | 'static',
+    cpi: (bls && bls[BLS_SERIES.cpi] ? 'live' : 'static') as 'live' | 'static',
+    jobless: (bls && bls[BLS_SERIES.claims] ? 'live' : 'static') as 'live' | 'static',
+    btc: (btcLive ? 'live' : 'static') as 'live' | 'static',
+  };
+
   return {
     rate: RATE_STATE,
     fomc: nextFomc(),
-    nfp: nextNfp(),
-    cpi: nextCpi(),
+    nfp,
+    cpi,
     pce: nextPce(),
-    jobless: getJoblessClaims(),
-    fearGreed: getFearGreedIndex(),
-    etfFlows: getBtcEtfFlows(),
+    jobless,
+    fearGreed: fgLive ?? fgFallback,
+    btc: btcLive,
+    source,
     macroNews,
     cryptoNews,
   };
@@ -593,7 +840,9 @@ export function buildDailyDigest(r: MacroNewsResult): string {
 
   // 加密数据
   lines.push(`■ 恐慌贪婪指数：${r.fearGreed.value}（${r.fearGreed.classification}）`);
-  lines.push(`■ BTC ETF：日净流入 ${r.etfFlows.dailyFlow} 亿 · 总规模 ${r.etfFlows.totalAum} 亿`);
+  if (r.btc) {
+    lines.push(`■ BTC：$${r.btc.price.toLocaleString('en-US', { maximumFractionDigits: 0 })}（24h ${r.btc.change24h >= 0 ? '+' : ''}${r.btc.change24h}%）`);
+  }
   lines.push('');
 
   if (r.macroNews.length > 0) {
