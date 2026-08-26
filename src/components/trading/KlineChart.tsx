@@ -1248,7 +1248,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             </div>
           </div>
         )}
-        <div className="relative w-full" style={{ height: isFullscreen ? 'calc(100vh - 40px)' : '520px' }}>
+        <div className="relative w-full" style={{ height: isFullscreen ? 'calc(100vh - 40px)' : '620px' }}>
           <div
             ref={mainChartRef}
             className="w-full h-full"
