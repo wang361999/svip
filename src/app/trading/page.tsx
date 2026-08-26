@@ -8,6 +8,7 @@ import Footer from '@/components/layout/Footer';
 import PriceTicker from '@/components/trading/PriceTicker';
 import MultiTrendCard from '@/components/trading/MultiTrendCard';
 import StrategySignalCard from '@/components/trading/StrategySignalCard';
+import AiAnalysisCard from '@/components/trading/AiAnalysisCard';
 import useAuthStore from '@/store/authStore';
 import { apiGet } from '@/shared/api/client';
 
@@ -129,6 +130,9 @@ export default function TradingPage() {
 
           {/* 策略信号卡片（三周期共振 + 结构位 + 盈亏比） */}
           {!isFullscreen && <StrategySignalCard />}
+
+          {/* AI 结构分析卡片（规则引擎算数 + DeepSeek 写解读） */}
+          {!isFullscreen && <AiAnalysisCard />}
 
           {/* 多周期趋势卡片（15m/1h/4h/1d 趋势一览，点击标题栏折叠） */}
           {!isFullscreen && <MultiTrendCard />}
