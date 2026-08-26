@@ -7,8 +7,6 @@ import {
   calcRSIArray,
   calcAB9Lines,
   calcFibonacci,
-  type AB9Analysis,
-  type FibonacciAnalysis,
 } from '@/shared/lib/indicators';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
@@ -175,9 +173,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // 测算透明框画布（叠加在K线上层，pointer-events: none 不挡交互）
   const zoneCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const drawZonesRef = useRef<() => void>(() => {});
-  // AB9 / 斐波那契计算结果（画法改为画布锚定射线：从B点向右延伸，见 drawZones）
-  const ab9DataRef = useRef<AB9Analysis | null>(null);
-  const fibDataRef = useRef<FibonacciAnalysis | null>(null);
 
   // 指标显示开关：前台徽章直接管控（localStorage 持久化，后台不再干预）
   const [indicators, setIndicators] = useState(loadIndicatorPrefs);
@@ -409,11 +404,60 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     }
     profitLinesRef.current = [];
 
-    // —— AB9线 + 斐波那契 ——
-    // 画法升级：不再画满宽水平价格线，改为 drawZones 里的锚定射线
-    // （从波段 B 点向右延伸 + A/B 锚点圆点），历史K线区不再被横线贯穿
-    ab9DataRef.current = showAutoAB9 && isMember ? calcAB9Lines(klines) : null;
-    fibDataRef.current = showFibonacci && isMember ? calcFibonacci(klines) : null;
+    // —— AB9线（原生满宽价格线，价格轴可读数；应反馈恢复原画法） ——
+    if (showAutoAB9 && isMember) {
+      const ab9 = calcAB9Lines(klines);
+      if (ab9) {
+        for (const line of ab9.lines) {
+          const color = AB9_COLORS[line.lineNo];
+          if (!color) continue;
+          try {
+            const pl = series.createPriceLine({
+              price: line.price,
+              color: color.replace(/[\d.]+\)$/, '0.85)'),
+              lineWidth: 1,
+              lineStyle: 2,
+              axisLabelVisible: true,
+              title: ` ${line.lineNo}线`,
+            });
+            autoPriceLinesRef.current.push(pl);
+          } catch {}
+        }
+      }
+    }
+
+    // —— 斐波那契回调线（原生满宽价格线，价格轴可读数；应反馈恢复原画法） ——
+    if (showFibonacci && isMember) {
+      const fib = calcFibonacci(klines);
+      if (fib) {
+        const fibColors: Record<string, string> = {
+          '0.0': 'rgba(239, 68, 68, 0.85)',
+          '23.6': 'rgba(249, 115, 22, 0.75)',
+          '38.2': 'rgba(245, 158, 11, 0.75)',
+          '50.0': 'rgba(234, 179, 8, 0.85)',
+          '61.8': 'rgba(34, 197, 94, 0.75)',
+          '78.6': 'rgba(20, 184, 166, 0.75)',
+          '100.0': 'rgba(59, 130, 246, 0.85)',
+          '161.8': 'rgba(168, 85, 247, 0.75)',
+          '261.8': 'rgba(236, 72, 153, 0.75)',
+        };
+        for (const level of fib.levels) {
+          const color = fibColors[level.label] || 'rgba(148, 163, 184, 0.6)';
+          const lineWidth = level.ratio === 0.5 || level.ratio === 0.618 ? 2 : 1;
+          try {
+            const pl = series.createPriceLine({
+              price: level.price,
+              color: color.replace(/[\d.]+\)$/, '0.85)'),
+              lineWidth,
+              lineStyle: level.type === 'extension' ? 3 : 2,
+              axisLabelVisible: true,
+              title: ` FIB ${level.label}%`,
+            });
+            fibPriceLinesRef.current.push(pl);
+          } catch {}
+        }
+      }
+    }
 
     // —— 利润测算画线（结构分析：预案 / 汇流止盈区 / 目标位） + 微观结构位（池/FVG，独立开关） ——
     const pdata = profitDataRef.current;
@@ -442,9 +486,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       };
 
       // ===== 止盈组（受「止盈」徽章控制） =====
-      // 画法分层：仅方案A四条保留原生满宽价格线（带价格轴精确读数，核心预案）；
-      // 方案B / 汇流区 / 延伸档 / 灰色目标位 / 池 / FVG 改由 drawZones 用
-      // 锚定射线、两点连线、边线等不同画法呈现
+      // 仅方案A四条画原生满宽价格线（价格轴精确读数）；
+      // 区域/池/FVG 由 drawZones 画布层呈现，候选位射线按反馈隐藏
       if (showProfit) {
         const pa = pdata.plans.find((p) => p.id === 'A');
         if (pa) {
@@ -462,13 +505,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     drawZonesRef.current();
   }, [showAutoAB9, showFibonacci, showProfit, showMicro, isMember, symbol]);
 
-  // === 测算与结构画线（多层画法：锚定射线 / 两点连线 / 渐变区 / 边线 / 芯片标签） ===
-  // 画法分层原则（对齐专业交易终端）：
-  //   方案A四条 → 原生满宽价格线（价格轴精确读数，核心预案）
-  //   AB9/FIB → 锚定射线：从波段B点向右延伸 + A/B锚点圆标记（历史K线区不被贯穿）
-  //   流动性池 → 等高/等低两点连线 + 端点圆 + 细虚线延伸（EQH/EQL 经典标法）
-  //   方案B/目标位/延伸档/FVG CE → 细虚/点线射线，从最新K线向右
-  //   风险/盈利/汇流/FVG 区 → 渐变面 + 边线 + 右侧芯片（精确百分比）
+  // === 测算与结构画线（画布层：渐变区 / 两点连线 / 芯片标签） ===
+  // 画法原则（按用户反馈收敛）：
+  //   AB9/FIB/方案A → 原生满宽价格线（价格轴精确读数，经典画法）
+  //   流动性池 → 等高/等低两点连线 + 端点圆（EQH/EQL 经典标法）
+  //   风险/盈利/汇流/FVG 区 → 渐变面 + 右侧芯片（精确百分比）
+  //   其余候选位射线（B方案/延伸档/目标位/FVG CE/池延伸）→ 已隐藏，数据在AI卡片呈现
   const drawZones = useCallback(() => {
     const canvas = zoneCanvasRef.current;
     const chart = mainChart.current;
@@ -492,11 +534,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
     const pdata = profitDataRef.current;
     const pd = isMember && pdata && pdata.symbol === symbol ? pdata : null;
-    const ab9 = showAutoAB9 ? ab9DataRef.current : null;
-    const fib = showFibonacci ? fibDataRef.current : null;
     if (!isMember) return;
-    if (!ab9 && !fib && !pd) return;
-    if (!ab9 && !fib && !showProfit && !showMicro) return;
+    if (!pd || (!showProfit && !showMicro)) return;
 
     // 可绘制区域 = 容器剔除右侧价格轴 + 底部时间轴
     let paneW = w;
@@ -556,14 +595,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       ctx.lineTo(xEnd, Math.round(y) + 0.5);
       ctx.stroke();
       ctx.restore();
-    };
-    // 锚定射线：价格水平线，从锚定时间延伸到右缘；锚点在可视区左侧则从 0 开始
-    const ray = (price: number, fromTime: number | null | undefined, color: string, width: number, dash: number[]): { y: number; x0: number } | null => {
-      const y = yOf(price);
-      if (y == null || y < -2 || y > paneH + 2) return null;
-      const x0 = anchorX(fromTime) ?? 0;
-      hline(y, Math.max(0, x0), color, width, dash);
-      return { y, x0: Math.max(0, x0) };
     };
     // 统一标签槽位：芯片与射线标签共用（阈值 13px ≈ 标签框高，保证互不压字）
     const occupiedY: number[] = [];
@@ -667,7 +698,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         // 锚点：最后一根K线往左约 18 根（覆盖近期K线 + 右侧未来空间）
         const xLast = xOf(klines[klines.length - 1].time);
         const xPrev = xOf(klines[klines.length - 2].time);
-        const lastTime = klines[klines.length - 1].time;
         if (xLast != null && xPrev != null) {
           const step = Math.max(1, Math.abs(xLast - xPrev));
           const projX0 = Math.max(0, xLast - step * 18);
@@ -697,60 +727,24 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
               chip((yh + yl) / 2, `汇流区 ${c.probabilityPct}%`, '#fbbf24', 'rgba(245, 158, 11, 0.5)');
             }
           }
-          // ===== 画法三：方案B 触发射线（细虚线，从最新K线向右，预案属性弱化呈现） =====
-          const pb = pd.plans.find((p) => p.id === 'B');
-          if (pb) {
-            const bRays: [number, string, string][] = [
-              [pb.entry, 'rgba(59, 130, 246, 0.55)', `B触发`],
-              [pb.stop, 'rgba(239, 68, 68, 0.45)', `B止损`],
-              [pb.tp1, 'rgba(34, 197, 94, 0.4)', `B·TP1`],
-              [pb.tp2, 'rgba(34, 197, 94, 0.45)', `B·TP2 rr${pb.rrTp2}`],
-            ];
-            for (const [price, color, label] of bRays) {
-              if (isDupPrice(price)) continue;
-              const r = ray(price, lastTime, color, 1, [5, 4]);
-              if (r) rayLabel(r.x0 + 3, r.y, label, color);
-            }
-          }
-          // ===== 画法三：延伸档 + 候选目标位（收敛显示） =====
-          // 8 个方法候选不全画：落在汇流区内 / 延伸档附近(±0.5%)的跳过（区/线已呈现），
-          // 其余按离现价距离取最近 3 条 —— 避免一排平行点线 + 标签堆叠
-          if (pd.extendedTarget && !isDupPrice(pd.extendedTarget.price)) {
-            const r = ray(pd.extendedTarget.price, lastTime, 'rgba(168, 85, 247, 0.65)', 1, [2, 3]);
-            if (r) rayLabel(r.x0 + 3, r.y, `延伸 ${pd.extendedTarget.probabilityPct}%`, 'rgba(192, 132, 252, 0.9)');
-          }
-          const cf = pd.confluence;
-          const inZone = (p: number) =>
-            !!cf && p >= Math.min(cf.low, cf.high) - refPrice * 0.003 && p <= Math.max(cf.low, cf.high) + refPrice * 0.003;
-          const nearExt = (p: number) =>
-            !!pd.extendedTarget && Math.abs(p - pd.extendedTarget.price) / refPrice < 0.005;
-          const targets = (pd.profitTargets || [])
-            .filter((t) => !isDupPrice(t.price) && !inZone(t.price) && !nearExt(t.price))
-            .sort((a, b) => Math.abs(a.price - refPrice) - Math.abs(b.price - refPrice))
-            .slice(0, 3);
-          for (const t of targets) {
-            const r = ray(t.price, lastTime, 'rgba(148, 163, 184, 0.5)', 1, [2, 3]);
-            if (r) rayLabel(r.x0 + 3, r.y, `${t.label} ${t.probabilityPct}%`, 'rgba(203, 213, 225, 0.85)');
-          }
+          // ===== 汇流止盈区之后的候选位射线已按反馈隐藏 =====
+          // （B方案射线 / 延伸档 / 8个方法候选目标位不再画线；
+          //   数据仍在 AI 分析卡片中完整呈现，图表只保留方案A + 汇流区）
         }
       }
     }
 
     if (showMicro) {
-      // ===== 画法四：FVG 缺口（渐变面 + CE 点线射线） =====
+      // ===== FVG 缺口（仅渐变面；CE 50% 射线按反馈隐藏） =====
       for (const f of pd.fairValueGaps || []) {
         let x0: number | null;
         if (f.formedAt == null) x0 = null;
         else x0 = anchorX(f.formedAt);
         if (x0 == null) continue;
         zoneFill(yOf(f.high), yOf(f.low), Math.max(0, x0), '99, 102, 241', 0.13);
-        if (!isDupPrice(f.ce)) {
-          const r = ray(f.ce, f.formedAt, 'rgba(129, 140, 248, 0.7)', 1, [2, 3]);
-          if (r) rayLabel(r.x0 + 3, r.y, `FVG·50%`, 'rgba(165, 180, 252, 0.9)');
-        }
       }
-      // ===== 画法五：流动性池（等高/等低两点连线 + 端点圆 + 细线延伸） =====
-      // 交易员标注 EQH/EQL 的经典画法：连线直观呈现"两个等高点"，右侧细线提示延伸目标
+      // ===== 流动性池（等高/等低两点连线 + 端点圆；右延伸线按反馈隐藏） =====
+      // 交易员标注 EQH/EQL 的经典画法：连线直观呈现"两个等高点"
       for (const p of pd.liquidityPools || []) {
         if (isDupPrice(p.price)) continue;
         const y = yOf(p.price);
@@ -772,54 +766,13 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           // 端点小圆：两个等高/等低点
           dot(x1, y, color, 2.5);
           dot(x2, y, color, 2.5);
+          // 标签贴在形成点右侧
+          rayLabel(x2 + 4, y, `流动性池·${p.side === 'high' ? '等高' : '等低'}`, 'rgba(103, 232, 249, 0.95)');
         }
-        // 形成点向右的细虚线延伸（提示目标位方向）
-        if (x2 != null) hline(y, x2, 'rgba(6, 182, 212, 0.35)', 1, [3, 4]);
-        // 标签贴在形成点右侧
-        if (x2 != null) rayLabel(x2 + 4, y, `流动性池·${p.side === 'high' ? '等高' : '等低'}`, 'rgba(103, 232, 249, 0.95)');
       }
     }
     } // ===== 第一层结束 =====
-
-    // ===== 第二层：AB9 锚定射线（从波段 B 点向右，历史区干净；标签避让上方槽位） =====
-    if (ab9) {
-      for (const line of ab9.lines) {
-        const color = AB9_COLORS[line.lineNo];
-        if (!color) continue;
-        const r = ray(line.price, ab9.timeB, color.replace(/0\.85\)$/, '0.7)'), 1, [5, 4]);
-        if (r) rayLabel(r.x0 + 3, r.y, `${line.lineNo}线`, color);
-      }
-      // A/B 波段锚点（空心圆 + 字母），射线起点直观可见
-      const ax = xOf(ab9.timeA);
-      const bx = xOf(ab9.timeB);
-      const ay = yOf(ab9.pointA);
-      const by = yOf(ab9.pointB);
-      if (ax != null && ay != null && ay >= 0 && ay <= paneH) dot(ax, ay, 'rgba(148, 163, 184, 0.9)', 3.5, 'A');
-      if (bx != null && by != null && by >= 0 && by <= paneH) dot(bx, by, 'rgba(226, 232, 240, 0.95)', 3.5, 'B');
-    }
-
-    // ===== 第二层：斐波那契锚定射线（与 AB9 同一 B 点锚定） =====
-    if (fib) {
-      const fibColors: Record<string, string> = {
-        '0.0': 'rgba(239, 68, 68, 0.7)',
-        '23.6': 'rgba(249, 115, 22, 0.6)',
-        '38.2': 'rgba(245, 158, 11, 0.6)',
-        '50.0': 'rgba(234, 179, 8, 0.7)',
-        '61.8': 'rgba(34, 197, 94, 0.6)',
-        '78.6': 'rgba(20, 184, 166, 0.6)',
-        '100.0': 'rgba(59, 130, 246, 0.7)',
-        '161.8': 'rgba(168, 85, 247, 0.6)',
-        '261.8': 'rgba(236, 72, 153, 0.6)',
-      };
-      for (const level of fib.levels) {
-        if (isDupPrice(level.price)) continue;
-        const color = fibColors[level.label] || 'rgba(148, 163, 184, 0.5)';
-        const key = level.ratio === 0.5 || level.ratio === 0.618 ? 1.5 : 1;
-        const r = ray(level.price, fib.timeB, color, key, [2, 3]);
-        if (r) rayLabel(r.x0 + 3, r.y, `FIB ${level.label}`, color);
-      }
-    }
-  }, [showAutoAB9, showFibonacci, showProfit, showMicro, isMember, symbol]);
+  }, [showProfit, showMicro, isMember, symbol]);
   drawZonesRef.current = drawZones;
 
   // 更新K线数据
