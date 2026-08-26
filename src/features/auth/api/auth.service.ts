@@ -33,7 +33,6 @@ function sanitize(user: {
   membership: string;
   membershipExpires: string | null;
   prefAB9: string;
-  prefAutoFib: string;
   prefAB9Labels: string;
   createdAt: Date;
 }): AuthUser {
@@ -45,7 +44,6 @@ function sanitize(user: {
     membership: user.membership,
     membershipExpires: user.membershipExpires,
     prefAB9: user.prefAB9,
-    prefAutoFib: user.prefAutoFib,
     prefAB9Labels: user.prefAB9Labels,
     createdAt: user.createdAt,
   };

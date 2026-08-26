@@ -9,6 +9,5 @@ export type AuthUser = Pick<
   'id' | 'email' | 'username' | 'role' | 'membership' | 'membershipExpires' | 'createdAt'
 > & {
   prefAB9?: string;
-  prefAutoFib?: string;
   prefAB9Labels?: string;
 };

@@ -49,7 +49,6 @@ const CREATE_TABLE_STATEMENTS: { label: string; sql: string }[] = [
       "membershipExpires" TEXT,
       "strategyConfig" TEXT,
       "prefAB9" TEXT NOT NULL DEFAULT 'true',
-      "prefAutoFib" TEXT NOT NULL DEFAULT 'false',
       "prefAB9Labels" TEXT NOT NULL DEFAULT 'true',
       "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
       "updatedAt" TIMESTAMP(3) NOT NULL,
@@ -152,16 +151,11 @@ const CREATE_TABLE_STATEMENTS: { label: string; sql: string }[] = [
       "siteLogo" TEXT NOT NULL DEFAULT '/logo.svg',
       "footerText" TEXT NOT NULL DEFAULT '© 2024 ETH Trading Tool. All rights reserved.',
       "primaryColor" TEXT NOT NULL DEFAULT '#3b82f6',
-      "indicatorMA" TEXT NOT NULL DEFAULT 'true',
       "indicatorEMA" TEXT NOT NULL DEFAULT 'false',
       "indicatorBOLL" TEXT NOT NULL DEFAULT 'true',
       "indicatorMACD" TEXT NOT NULL DEFAULT 'true',
       "indicatorRSI" TEXT NOT NULL DEFAULT 'false',
       "indicatorATR" TEXT NOT NULL DEFAULT 'false',
-      "indicatorFIB" TEXT NOT NULL DEFAULT 'false',
-      "indicatorTDSequential" TEXT NOT NULL DEFAULT 'false',
-      "indicatorNAKED" TEXT NOT NULL DEFAULT 'false',
-      "maPeriod" TEXT NOT NULL DEFAULT '50',
       "emaPeriod" TEXT NOT NULL DEFAULT '20',
       "bollPeriod" TEXT NOT NULL DEFAULT '20',
       "rsiPeriod" TEXT NOT NULL DEFAULT '14',
@@ -170,15 +164,6 @@ const CREATE_TABLE_STATEMENTS: { label: string; sql: string }[] = [
       "macdSlow" TEXT NOT NULL DEFAULT '26',
       "macdSignal" TEXT NOT NULL DEFAULT '9',
       "showPriceCard" TEXT NOT NULL DEFAULT 'true',
-      "showFibPanel" TEXT NOT NULL DEFAULT 'true',
-      "showMarketStructure" TEXT NOT NULL DEFAULT 'true',
-      "showEntrySignal" TEXT NOT NULL DEFAULT 'true',
-      "showExitSignal" TEXT NOT NULL DEFAULT 'true',
-      "showGannAngle" TEXT NOT NULL DEFAULT 'true',
-      "showNakedBullBear" TEXT NOT NULL DEFAULT 'true',
-      "showFibDraw" TEXT NOT NULL DEFAULT 'true',
-      "fibLabeled" TEXT NOT NULL DEFAULT 'true',
-      "fibUnlabeled" TEXT NOT NULL DEFAULT 'true',
       "enableRegistration" TEXT NOT NULL DEFAULT 'true',
       "smtpHost" TEXT DEFAULT 'smtp.qq.com',
       "smtpPort" TEXT DEFAULT '465',
@@ -350,8 +335,8 @@ async function ensureAdmin(sql: SqlFn): Promise<DataResult> {
     const id = genId();
     const now = new Date().toISOString();
     await sql`
-      INSERT INTO "User" ("id", "email", "username", "password", "role", "membership", "prefAB9", "prefAutoFib", "prefAB9Labels", "createdAt", "updatedAt")
-      VALUES (${id}, 'admin@ethtrading.com', 'admin', ${password}, 'admin', 'vip', 'true', 'false', 'true', ${now}, ${now})
+      INSERT INTO "User" ("id", "email", "username", "password", "role", "membership", "prefAB9", "prefAB9Labels", "createdAt", "updatedAt")
+      VALUES (${id}, 'admin@ethtrading.com', 'admin', ${password}, 'admin', 'vip', 'true', 'true', ${now}, ${now})
     `;
     return { step: 'admin', ok: true, message: '管理员账户创建成功 (admin@ethtrading.com / admin)', durationMs: Date.now() - t0 };
   } catch (err) {

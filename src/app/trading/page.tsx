@@ -6,6 +6,7 @@ import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
 import PriceTicker from '@/components/trading/PriceTicker';
 import KlineChart from '@/components/trading/KlineChart';
+import TrendPanel from '@/components/trading/TrendPanel';
 import useAuthStore from '@/store/authStore';
 import { apiGet } from '@/shared/api/client';
 
@@ -111,8 +112,11 @@ export default function TradingPage() {
           {/* 实时价格卡片（根据后台配置显示/隐藏） */}
           {!isFullscreen && showPriceCard && <PriceTicker />}
 
-          {/* K线图（含 MACD 副图 + 布林带 + 斐波那契 + MA） */}
+          {/* K线图（含 MACD 副图 + 布林带 + EMA） */}
           <KlineChart isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen} />
+
+          {/* 多周期多空面板 */}
+          {!isFullscreen && <TrendPanel />}
 
           {/* 底部声明 */}
           {!isFullscreen && (

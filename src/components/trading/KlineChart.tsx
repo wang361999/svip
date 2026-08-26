@@ -3,13 +3,10 @@
 import {
   calcBollinger,
   calcMACD,
-  calcFibonacci,
-  calcSMAArray,
   calcEMAArray,
   calcRSIArray,
   calcATRArray,
   calcAB9Lines,
-  calcTDSequential,
   AB9Analysis,
 } from '@/shared/lib/indicators';
 
@@ -36,37 +33,6 @@ import useChartStore from '@/store/chartStore';
 import { apiGet, apiPut } from '@/shared/api/client';
 import SymbolSelector from './SymbolSelector';
 
-const FIB_COLORS: Record<number, string> = {
-  0: 'rgba(148, 163, 184, 0.8)',
-  236: 'rgba(56, 189, 248, 0.85)',
-  382: 'rgba(34, 197, 94, 0.95)',
-  50: 'rgba(251, 191, 36, 0.9)',
-  618: 'rgba(249, 115, 22, 1.0)',
-  786: 'rgba(239, 68, 68, 0.85)',
-  100: 'rgba(168, 85, 247, 0.85)',
-  1272: 'rgba(236, 72, 153, 0.75)',
-  1618: 'rgba(20, 184, 166, 0.75)',
-};
-
-const FIB_LABELS: Record<number, string> = {
-  0: '0', 236: '0.236', 382: '0.382', 50: '0.5',
-  618: '0.618', 786: '0.786', 100: '1', 1272: 'E1.272', 1618: 'E1.618',
-};
-
-const FIB_LINE_STYLES: Record<number, number> = {
-  0: 0, 236: 0, 382: 0, 50: 0,
-  618: 0, 786: 0, 100: 0, 1272: 2, 1618: 2, // 扩展位用虚线(2)
-};
-
-// 手动斐波那契多组颜色
-const FIB_GROUP_PALETTES = [
-  { name: '琥珀', border: '#f59e0b', color: 'rgba(251, 191, 36, %OP%)' },
-  { name: '青色', border: '#06b6d4', color: 'rgba(6, 182, 212, %OP%)' },
-  { name: '绿色', border: '#22c55e', color: 'rgba(34, 197, 94, %OP%)' },
-  { name: '玫红', border: '#f43f5e', color: 'rgba(244, 63, 94, %OP%)' },
-  { name: '紫色', border: '#a855f7', color: 'rgba(168, 85, 247, %OP%)' },
-];
-
 interface KlineChartProps {
   isFullscreen?: boolean;
   onToggleFullscreen?: () => void;
@@ -81,7 +47,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const rsiChart = useRef<IChartApi | null>(null);
   const candleSeries = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volumeSeries = useRef<ISeriesApi<'Histogram'> | null>(null);
-  const maSeries = useRef<ISeriesApi<'Line'> | null>(null);
   const emaSeries = useRef<ISeriesApi<'Line'> | null>(null);
   const bbUpper = useRef<ISeriesApi<'Line'> | null>(null);
   const bbMiddle = useRef<ISeriesApi<'Line'> | null>(null);
@@ -92,51 +57,29 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const rsiLine = useRef<ISeriesApi<'Line'> | null>(null);
   const rsiOverbought = useRef<ISeriesApi<'Line'> | null>(null);
   const rsiOversold = useRef<ISeriesApi<'Line'> | null>(null);
-  const fibLinesRef = useRef<ISeriesApi<'Line'>[]>([]);
-  const manualFibRef = useRef<ISeriesApi<'Line'>[]>([]);
-  const manualFibGroupsRef = useRef<{ series: ISeriesApi<'Line'>[]; colorIdx: number }[]>([]);
-  const fibDrawPointsRef = useRef<{ price: number; time: number }[]>([]);
-
-  const [markers, setMarkers] = useState<{ id: number; x: number; y: number }[]>([]);
 
   const allKlinesRef = useRef<KlineData[]>([]);
   const pendingTickRef = useRef<number | null>(null);
   const rAFRef = useRef<number | null>(null);
   const lastTickAtRef = useRef<number>(0);
 
-  // 手动画斐波那契状态
-  const [fibDrawMode, setFibDrawMode] = useState(false);
-  const [fibDrawStep, setFibDrawStep] = useState(0); // 0: 未开始, 1: 等第二点, 2: 已完成
-  const [fibDrawPoints, setFibDrawPoints] = useState<{ price: number; time: number }[]>([]);
-  const [showFibDraw, setShowFibDraw] = useState(true);
-  const [fibGroupCount, setFibGroupCount] = useState(0);
-
-  // 自动画线（斐波那契 + AB9线）— 默认 AB9开、斐波那契关，避免两种画线同时显示
-  const [showAutoFib, setShowAutoFib] = useState(false);
+  // 自动画线（AB9线）— 默认 AB9开
   const [showAutoAB9, setShowAutoAB9] = useState(true);
   const [showAB9Labels, setShowAB9Labels] = useState(true);
   const [prefsLoaded, setPrefsLoaded] = useState(false);
-  // 斐波那契线显示开关（从后台加载）
-  const [fibLabeled, setFibLabeled] = useState(true);
-  const [fibUnlabeled, setFibUnlabeled] = useState(true);
   const autoLinesRef = useRef<ISeriesApi<'Line'>[]>([]);
   const autoPriceLinesRef = useRef<any[]>([]);
 
 
   const [indicators, setIndicators] = useState({
-    MA: true,
     EMA: false,
     BOLL: true,
     MACD: true,
     RSI: false,
     ATR: false,
-    TD: false,
-    FIB: false,
-    NAKED: false,
   });
   // 指标周期参数（从后台加载）
   const [periods, setPeriods] = useState({
-    maPeriod: 50,
     emaPeriod: 20,
     bollPeriod: 20,
     rsiPeriod: 14,
@@ -198,19 +141,14 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     apiGet<Record<string, string>>('/api/settings')
       .then((data) => {
         setIndicators({
-          MA: data.indicatorMA === 'true',
           EMA: data.indicatorEMA === 'true',
           BOLL: data.indicatorBOLL === 'true',
           MACD: data.indicatorMACD === 'true',
           RSI: data.indicatorRSI === 'true',
           ATR: data.indicatorATR === 'true',
-          TD: data.indicatorTDSequential === 'true',
-          FIB: data.indicatorFIB === 'true',
-          NAKED: data.indicatorNAKED === 'true',
         });
         // 加载指标周期参数
         setPeriods({
-          maPeriod: parseInt(data.maPeriod || '50', 10) || 50,
           emaPeriod: parseInt(data.emaPeriod || '20', 10) || 20,
           bollPeriod: parseInt(data.bollPeriod || '20', 10) || 20,
           rsiPeriod: parseInt(data.rsiPeriod || '14', 10) || 14,
@@ -219,9 +157,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           macdSlow: parseInt(data.macdSlow || '26', 10) || 26,
           macdSignal: parseInt(data.macdSignal || '9', 10) || 9,
         });
-        setShowFibDraw(data.showFibDraw === 'true');
-        setFibLabeled((data.fibLabeled ?? 'true') === 'true');
-        setFibUnlabeled((data.fibUnlabeled ?? 'true') === 'true');
         // 加载 AB9 线颜色配置
         setAb9Colors({
           1: data.ab9Line1Color || 'rgba(100, 116, 139, 0.3)',
@@ -244,10 +179,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       setPrefsLoaded(true);
       return;
     }
-    apiGet<{ prefAB9?: boolean; prefAutoFib?: boolean; prefAB9Labels?: boolean }>('/api/user/preferences')
+    apiGet<{ prefAB9?: boolean; prefAB9Labels?: boolean }>('/api/user/preferences')
       .then((data) => {
         if (data.prefAB9 !== undefined) setShowAutoAB9(data.prefAB9);
-        if (data.prefAutoFib !== undefined) setShowAutoFib(data.prefAutoFib);
         if (data.prefAB9Labels !== undefined) setShowAB9Labels(data.prefAB9Labels);
         setPrefsLoaded(true);
       })
@@ -264,36 +198,14 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     const klines = allKlinesRef.current;
     if (!klines.length || !mainChart.current) return;
 
-    // 清除旧的斐波那契线
-    fibLinesRef.current.forEach((s) => {
-      try { mainChart.current?.removeSeries(s); } catch {}
-    });
-    fibLinesRef.current = [];
-
     // 清除旧的布林带
-    [bbUpper.current, bbMiddle.current, bbLower.current, maSeries.current, emaSeries.current].forEach((s) => {
+    [bbUpper.current, bbMiddle.current, bbLower.current, emaSeries.current].forEach((s) => {
       if (s) { try { mainChart.current?.removeSeries(s); } catch {} }
     });
-    bbUpper.current = bbMiddle.current = bbLower.current = maSeries.current = emaSeries.current = null;
+    bbUpper.current = bbMiddle.current = bbLower.current = emaSeries.current = null;
 
     const from = klines[0].time;
     const to = klines[klines.length - 1].time;
-
-    // MA 均线
-    if (indicators.MA) {
-      maSeries.current = mainChart.current.addLineSeries({
-        color: 'rgba(168, 85, 247, 0.85)',
-        lineWidth: 2,
-        priceLineVisible: false,
-        lastValueVisible: false,
-      });
-      const sma = calcSMAArray(klines, periods.maPeriod);
-      const maData: LineData[] = [];
-      sma.forEach((v, i) => {
-        if (v !== null) maData.push({ time: klines[i].time as Time, value: v });
-      });
-      maSeries.current.setData(maData);
-    }
 
     // EMA 均线
     if (indicators.EMA) {
@@ -328,63 +240,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         bbUpper.current.setData(bb.upperSeries.map((d) => ({ time: d.time as Time, value: d.value })));
         bbMiddle.current.setData(bb.middleSeries.map((d) => ({ time: d.time as Time, value: d.value })));
         bbLower.current.setData(bb.lowerSeries.map((d) => ({ time: d.time as Time, value: d.value })));
-      }
-    }
-
-    // 斐波那契（仅会员可用，带标签）
-    if (indicators.FIB && isMember && fibLabeled) {
-      const fib = calcFibonacci(klines);
-      if (fib) {
-        // 黄金区域高亮（0.382 ~ 0.618）
-        if (fib.levels[382] && fib.levels[618]) {
-          const goldenZone = mainChart.current!.addLineSeries({
-            color: 'rgba(251, 191, 36, 0.08)',
-            lineWidth: 1 as any,
-            lineStyle: 0,
-            priceLineVisible: false,
-            lastValueVisible: false,
-            title: '',
-            crosshairMarkerVisible: false,
-          });
-          goldenZone.setData([
-            { time: from as Time, value: fib.levels[382] },
-            { time: to as Time, value: fib.levels[382] },
-          ]);
-          // 上边界线
-          const goldenTop = mainChart.current!.addLineSeries({
-            color: 'rgba(251, 191, 36, 0.2)',
-            lineWidth: 1,
-            lineStyle: 2,
-            priceLineVisible: false,
-            lastValueVisible: false,
-            title: '',
-            crosshairMarkerVisible: false,
-          });
-          goldenTop.setData([
-            { time: from as Time, value: fib.levels[382] },
-            { time: to as Time, value: fib.levels[382] },
-          ]);
-          fibLinesRef.current.push(goldenZone, goldenTop);
-        }
-
-        // 各级别斐波那契线
-        [0, 236, 382, 50, 618, 786, 100, 1272, 1618].forEach((k) => {
-          if (fib.levels[k] !== undefined) {
-            const s = mainChart.current!.addLineSeries({
-              color: FIB_COLORS[k] || 'rgba(244, 114, 182, 0.55)',
-              lineWidth: 1,
-              lineStyle: FIB_LINE_STYLES[k] || 0,
-              priceLineVisible: false,
-              lastValueVisible: true,
-              title: FIB_LABELS[k] || String(k),
-            });
-            s.setData([
-              { time: from as Time, value: fib.levels[k] },
-              { time: to as Time, value: fib.levels[k] },
-            ]);
-            fibLinesRef.current.push(s);
-          }
-        });
       }
     }
 
@@ -434,7 +289,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       if (rsiOverbought.current) rsiOverbought.current.setData(overboughtData);
       if (rsiOversold.current) rsiOversold.current.setData(oversoldData);
     }
-  }, [indicators, fibLabeled, periods]);
+  }, [indicators, periods]);
 
   // 更新K线数据
   const updateChart = useCallback((klines: KlineData[]) => {
@@ -459,7 +314,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
     updateIndicators();
 
-    // === 自动画线：斐波那契 + AB9线 ===
+    // === 自动画线：AB9线 ===
     if (mainChart.current) {
       // 先清除旧的自动画线
       for (const s of autoLinesRef.current) {
@@ -476,38 +331,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
       const firstTime = klines[0].time as Time;
       const lastTime = klines[klines.length - 1].time as Time;
-
-      // 斐波那契自动画线（虚线，低饱和度，不显示标签，不干扰）
-      if (showAutoFib && fibUnlabeled) {
-        const fib = calcFibonacci(klines);
-        if (fib) {
-          const fibLevels = [
-            { key: 236, color: 'rgba(56, 189, 248, 0.3)' },
-            { key: 382, color: 'rgba(34, 197, 94, 0.35)' },
-            { key: 50, color: 'rgba(251, 191, 36, 0.35)' },
-            { key: 618, color: 'rgba(249, 115, 22, 0.45)' },
-            { key: 786, color: 'rgba(239, 68, 68, 0.3)' },
-          ];
-          for (const lv of fibLevels) {
-            const price = fib.levels[lv.key];
-            if (!price) continue;
-            const s = mainChart.current!.addLineSeries({
-              color: lv.color,
-              lineWidth: 1,
-              lineStyle: 2,
-              priceLineVisible: false,
-              lastValueVisible: false,
-              crosshairMarkerVisible: false,
-              title: '',
-            });
-            s.setData([
-              { time: firstTime, value: price },
-              { time: lastTime, value: price },
-            ]);
-            autoLinesRef.current.push(s);
-          }
-        }
-      }
 
       // AB9线自动画线（虚线，标签放左侧用 priceLine）
       if (showAutoAB9 && isMember) {
@@ -563,23 +386,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       }
     }
 
-    // TD Sequential 九转标注（1-9数字）
-    if (indicators.TD && candleSeries.current) {
-      const tdPoints = calcTDSequential(klines);
-      const tdMarkers = tdPoints.map((p) => {
-        const isBuy = p.type === 'buy';
-        const isNine = p.num === 9;
-        return {
-          time: p.time as Time,
-          position: isBuy ? 'belowBar' as 'belowBar' : 'aboveBar' as 'aboveBar',
-          color: isBuy ? '#22c55e' : '#ef4444',
-          shape: 'circle' as 'circle',
-          text: String(p.num),
-          size: isNine ? 2 : 0,
-        };
-      });
-      candleSeries.current.setMarkers(tdMarkers);
-    } else if (candleSeries.current) {
+    if (candleSeries.current) {
       candleSeries.current.setMarkers([]);
     }
 
@@ -591,14 +398,14 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       const fromIdx = Math.max(0, toIdx - bars + 1);
       mainChart.current.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx + 4 });
     }
-  }, [updateIndicators, showAutoFib, showAutoAB9, showAB9Labels, ab9Colors, fibUnlabeled]);
+  }, [updateIndicators, showAutoAB9, showAB9Labels, ab9Colors]);
 
   // 切换自动画线开关时重新绘制
   useEffect(() => {
     if (allKlinesRef.current.length > 0) {
       updateChart(allKlinesRef.current);
     }
-  }, [showAutoFib, showAutoAB9, showAB9Labels, updateChart]);
+  }, [showAutoAB9, showAB9Labels, updateChart]);
 
   // Tick 实时更新（rAF + 50ms 节流，和 v24 一致）
   const flushTick = useCallback(() => {
@@ -851,158 +658,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     return () => clearTimeout(timer);
   }, [isFullscreen]);
 
-  // 手动画斐波那契
-  const markerIdRef = useRef(0);
-  const fibColorIdxRef = useRef(0);
-
-  const clearAllManualFib = useCallback(() => {
-    manualFibGroupsRef.current.forEach((g) => {
-      g.series.forEach((s) => { try { mainChart.current?.removeSeries(s); } catch {} });
-    });
-    manualFibGroupsRef.current = [];
-    fibDrawPointsRef.current = [];
-    setMarkers([]);
-    setFibDrawStep(0);
-    setFibDrawPoints([]);
-    setFibDrawMode(false);
-    setFibGroupCount(0);
-    fibColorIdxRef.current = 0;
-  }, []);
-
-  const clearLastManualFib = useCallback(() => {
-    if (manualFibGroupsRef.current.length === 0) return;
-    const last = manualFibGroupsRef.current.pop()!;
-    last.series.forEach((s) => { try { mainChart.current?.removeSeries(s); } catch {} });
-    setFibGroupCount(manualFibGroupsRef.current.length);
-    setFibDrawStep(0);
-    setFibDrawPoints([]);
-    setMarkers([]);
-  }, []);
-
-  // 吸附到最近的K线针尖（high 或 low，取距离点击位置更近的）
-  const snapToWick = useCallback((clickTime: number, clickPrice: number): { price: number; time: number } | null => {
-    const klines = allKlinesRef.current;
-    if (klines.length === 0) return null;
-
-    // 找时间最近的K线
-    let closestIdx = 0;
-    let minDist = Infinity;
-    for (let i = 0; i < klines.length; i++) {
-      const dist = Math.abs(klines[i].time - clickTime);
-      if (dist < minDist) {
-        minDist = dist;
-        closestIdx = i;
-      }
-    }
-
-    const k = klines[closestIdx];
-    // 选距离点击价格更近的针尖（high 或 low）
-    const distHigh = Math.abs(k.high - clickPrice);
-    const distLow = Math.abs(k.low - clickPrice);
-
-    return {
-      price: distHigh <= distLow ? k.high : k.low,
-      time: k.time,
-    };
-  }, []);
-
-  const drawManualFib = useCallback((p1: { price: number; time: number }, p2: { price: number; time: number }) => {
-    if (!mainChart.current) return;
-
-    const from = p1.time < p2.time ? p1.time : p2.time;
-    const to = p1.time < p2.time ? p2.time : p1.time;
-    const startPrice = p1.time < p2.time ? p1.price : p2.price;
-    const endPrice = p1.time < p2.time ? p2.price : p1.price;
-    const isDown = endPrice < startPrice;
-    const range = Math.abs(endPrice - startPrice);
-
-    const palette = FIB_GROUP_PALETTES[fibColorIdxRef.current % FIB_GROUP_PALETTES.length];
-    const colorIdx = fibColorIdxRef.current;
-    const groupSeries: ISeriesApi<'Line'>[] = [];
-
-    const levels = [
-      { ratio: 0, key: 0 },
-      { ratio: 0.236, key: 236 },
-      { ratio: 0.382, key: 382 },
-      { ratio: 0.5, key: 50 },
-      { ratio: 0.618, key: 618 },
-      { ratio: 0.786, key: 786 },
-      { ratio: 1, key: 100 },
-    ];
-
-    levels.forEach(({ ratio, key }) => {
-      const value = isDown ? startPrice - range * ratio : startPrice + range * ratio;
-      const opacity = key === 618 ? 0.9 : 0.6;
-      const color = palette.color.replace('%OP%', String(opacity));
-      const s = mainChart.current!.addLineSeries({
-        color,
-        lineWidth: key === 618 ? 2 : 1,
-        lineStyle: 0,
-        priceLineVisible: false,
-        lastValueVisible: true,
-        title: `${palette.name} ${FIB_LABELS[key]}`,
-      });
-      s.setData([
-        { time: from as Time, value },
-        { time: to as Time, value },
-      ]);
-      groupSeries.push(s);
-    });
-
-    manualFibGroupsRef.current.push({ series: groupSeries, colorIdx });
-    fibColorIdxRef.current++;
-    setFibGroupCount(manualFibGroupsRef.current.length);
-    setFibDrawStep(0);
-    setFibDrawPoints([]);
-    setMarkers([]);
-    setFibDrawMode(false);
-  }, []);
-
-  // 图表点击事件（手动画斐波那契）
-  useEffect(() => {
-    const chart = mainChart.current;
-    if (!chart) return;
-
-    const handler = (param: any) => {
-      if (!fibDrawMode || !param || !param.time || fibDrawStep >= 2) return;
-
-      // 获取点击位置的价格
-      const price = param.pointY !== undefined ? (chart.priceScale('right') as any).coordinateToPrice(param.pointY) : 0;
-      if (!price || price <= 0) return;
-
-      // 吸附到K线针尖
-      const snapped = snapToWick(param.time as number, price);
-      if (!snapped) return;
-
-      if (fibDrawStep === 0) {
-        // 第一个点 — 吸附 + 画标记小圈
-        fibDrawPointsRef.current = [snapped];
-        setFibDrawPoints([snapped]);
-        setFibDrawStep(1);
-
-        // 用 HTML overlay 画小圆圈
-        const chartApi = mainChart.current!;
-        const x = (chartApi as any).timeScale().timeToCoordinate(snapped.time as Time);
-        const y = (chartApi.priceScale('right') as any).priceToCoordinate(snapped.price);
-        if (x !== undefined && y !== undefined) {
-          markerIdRef.current++;
-          setMarkers([{ id: markerIdRef.current, x: Math.round(x), y: Math.round(y) }]);
-        }
-      } else if (fibDrawStep === 1) {
-        // 第二个点 — 从 ref 取第一个点（避免闭包问题）
-        const p1 = fibDrawPointsRef.current[0];
-        if (p1) {
-          fibDrawPointsRef.current = [];
-          setFibDrawPoints([]);
-          drawManualFib(p1, snapped);
-        }
-      }
-    };
-
-    chart.subscribeClick(handler);
-    return () => chart.unsubscribeClick(handler);
-  }, [fibDrawMode, fibDrawStep, drawManualFib, snapToWick]);
-
   // 加载数据 + 连接 WebSocket
   useEffect(() => {
     loadKlines(interval);
@@ -1065,35 +720,22 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           }`}>
             {dataStatus}
           </span>
-          {(['MA', 'EMA', 'BOLL', 'MACD', 'RSI', 'ATR', 'TD', 'FIB', 'NAKED'] as const).map((ind) => {
-            const isFibLocked = ind === 'FIB' && !isMember;
-            return (
-              <span
-                key={ind}
-                className={`px-2.5 py-1 text-xs font-medium cursor-default select-none transition-all ${
-                  isFibLocked
-                    ? 'text-dark-600 line-through'
-                    : indicators[ind]
-                    ? 'text-blue-300 border-b-2 border-blue-400 pb-0.5'
-                    : 'text-dark-600 line-through'
-                }`}
-                title={isFibLocked ? 'VIP会员专属' : undefined}
-              >
-                {ind}{isFibLocked && <span className="ml-0.5 text-[10px]">&#128274;</span>}
-              </span>
-            );
-          })}
+          {(['EMA', 'BOLL', 'MACD', 'RSI', 'ATR'] as const).map((ind) => (
+            <span
+              key={ind}
+              className={`px-2.5 py-1 text-xs font-medium cursor-default select-none transition-all ${
+                indicators[ind]
+                ? 'text-blue-300 border-b-2 border-blue-400 pb-0.5'
+                : 'text-dark-600 line-through'
+              }`}
+            >
+              {ind}
+            </span>
+          ))}
           {/* 自动画线开关 */}
           {isMember && (
             <>
               <div className="w-px h-4 bg-dark-700" />
-              <button
-                onClick={() => { const v = !showAutoFib; setShowAutoFib(v); saveUserPref('prefAutoFib', v); }}
-                className={`px-2 py-1 text-xs font-medium rounded transition-all ${showAutoFib ? 'text-sky-400' : 'text-dark-600'}`}
-                title="自动斐波那契线"
-              >
-                Fib
-              </button>
               <button
                 onClick={() => { const v = !showAutoAB9; setShowAutoAB9(v); saveUserPref('prefAB9', v); }}
                 className={`px-2 py-1 text-xs font-medium rounded transition-all ${showAutoAB9 ? 'text-cyan-400' : 'text-dark-600'}`}
@@ -1108,44 +750,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
               >
                 标
               </button>
-            </>
-          )}
-          {/* 手动画斐波那契按钮 */}
-          {showFibDraw && isMember && (
-            <>
-              <div className="w-px h-4 bg-dark-700" />
-              {fibDrawStep === 0 ? (
-                <button
-                  onClick={() => { setFibDrawMode(!fibDrawMode); if (fibDrawMode) { setFibDrawPoints([]); setMarkers([]); } }}
-                  className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${
-                    fibDrawMode ? 'bg-amber-600 text-white' : 'text-dark-400 hover:text-amber-400 hover:bg-dark-700/50'
-                  }`}
-                >
-                  画线
-                </button>
-              ) : fibDrawStep === 1 ? (
-                <span className="px-2.5 py-1 text-xs font-medium text-amber-400 animate-pulse">
-                  点击第二点...
-                </span>
-              ) : null}
-              {fibGroupCount > 0 && !fibDrawMode && (
-                <>
-                  <button
-                    onClick={clearLastManualFib}
-                    className="px-2 py-1 text-xs font-medium text-yellow-400 hover:bg-yellow-500/10 rounded transition-all"
-                    title="撤回上一组"
-                  >
-                    撤回
-                  </button>
-                  <button
-                    onClick={clearAllManualFib}
-                    className="px-2 py-1 text-xs font-medium text-red-400 hover:bg-red-500/10 rounded transition-all"
-                    title="清除全部手动画线"
-                  >
-                    清除{fibGroupCount > 1 ? `(${fibGroupCount})` : ''}
-                  </button>
-                </>
-              )}
             </>
           )}
 
@@ -1196,16 +800,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           <div
             ref={mainChartRef}
             className="w-full h-full"
-            style={{ cursor: fibDrawMode ? 'crosshair' : 'default' }}
+            style={{ cursor: 'default' }}
           />
-          {/* 手动画斐波那契 - 小圆圈标记 */}
-          {markers.map((m) => (
-            <div
-              key={m.id}
-              className="absolute w-4 h-4 -ml-2 -mt-2 rounded-full border-2 border-amber-400 bg-amber-400/20 pointer-events-none"
-              style={{ left: m.x, top: m.y }}
-            />
-          ))}
         </div>
       </div>
 

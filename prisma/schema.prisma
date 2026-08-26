@@ -18,7 +18,6 @@ model User {
   strategyConfig   String?
   // 用户画线偏好
   prefAB9          String        @default("true")
-  prefAutoFib      String        @default("false")
   prefAB9Labels    String        @default("true")
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
@@ -104,17 +103,12 @@ model SiteSetting {
   footerText             String   @default("© 2024 ETH Trading Tool. All rights reserved.")
   primaryColor           String   @default("#3b82f6")
   // 指标开关
-  indicatorMA            String   @default("true")
   indicatorEMA           String   @default("false")
   indicatorBOLL          String   @default("true")
   indicatorMACD          String   @default("true")
   indicatorRSI           String   @default("false")
   indicatorATR           String   @default("false")
-  indicatorFIB           String   @default("false")
-  indicatorTDSequential  String   @default("false")
-  indicatorNAKED         String   @default("false")
   // 指标周期参数
-  maPeriod               String   @default("50")
   emaPeriod              String   @default("20")
   bollPeriod             String   @default("20")
   rsiPeriod              String   @default("14")
@@ -124,15 +118,6 @@ model SiteSetting {
   macdSignal             String   @default("9")
   // 显示控制
   showPriceCard          String   @default("true")
-  showFibPanel           String   @default("true")
-  showMarketStructure    String   @default("true")
-  showEntrySignal        String   @default("true")
-  showExitSignal         String   @default("true")
-  showGannAngle          String   @default("true")
-  showNakedBullBear      String   @default("true")
-  showFibDraw            String   @default("true")
-  fibLabeled             String   @default("true")
-  fibUnlabeled           String   @default("true")
   enableRegistration     String   @default("true")
   // SMTP 邮箱配置
   smtpHost               String?  @default("smtp.qq.com")

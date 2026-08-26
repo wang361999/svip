@@ -78,7 +78,6 @@ CREATE INDEX IF NOT EXISTS "RedeemCode_code_idx" ON "RedeemCode"("code");
 CREATE INDEX IF NOT EXISTS "RedeemCode_used_idx" ON "RedeemCode"("used");
 
 -- 6. SiteSetting 表：补齐全部缺失列
-ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "indicatorMA" TEXT DEFAULT 'true';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "indicatorEMA" TEXT DEFAULT 'false';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "indicatorBOLL" TEXT DEFAULT 'true';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "indicatorMACD" TEXT DEFAULT 'true';
@@ -87,7 +86,6 @@ ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "indicatorATR" TEXT DEFAULT '
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "indicatorFIB" TEXT DEFAULT 'false';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "indicatorTDSequential" TEXT DEFAULT 'false';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "indicatorNAKED" TEXT DEFAULT 'false';
-ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "maPeriod" TEXT DEFAULT '50';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "emaPeriod" TEXT DEFAULT '20';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "bollPeriod" TEXT DEFAULT '20';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "rsiPeriod" TEXT DEFAULT '14';

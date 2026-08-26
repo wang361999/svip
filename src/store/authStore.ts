@@ -9,7 +9,6 @@ export interface AuthState {
     membership: string;
     membershipExpires?: string | null;
     prefAB9?: boolean | string;
-    prefAutoFib?: boolean | string;
     prefAB9Labels?: boolean | string;
   } | null;
   isAuthenticated: boolean;
@@ -40,7 +39,6 @@ const useAuthStore = create<AuthState>((set) => ({
         membership: isVip ? membership : 'free',
         // 将数据库中的字符串 'true'/'false' 转换为布尔值
         prefAB9: user.prefAB9 === true || user.prefAB9 === 'true',
-        prefAutoFib: user.prefAutoFib === true || user.prefAutoFib === 'true',
         prefAB9Labels: user.prefAB9Labels === true || user.prefAB9Labels === 'true',
       } : null,
       isAuthenticated: !!user,

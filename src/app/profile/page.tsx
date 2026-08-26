@@ -10,7 +10,6 @@ import { apiGet, apiPost, apiPut } from '@/shared/api/client';
 
 // 平台全部功能列表
 const FEATURES = [
-  '斐波那契自动画线',
   '分型出场信号',
   '江恩角度线',
   '三合一入场信号',
@@ -36,7 +35,6 @@ export default function ProfilePage() {
 
   // 画线偏好设置状态
   const [prefAB9, setPrefAB9] = useState(true);
-  const [prefAutoFib, setPrefAutoFib] = useState(false);
   const [prefAB9Labels, setPrefAB9Labels] = useState(true);
   const [prefsLoaded, setPrefsLoaded] = useState(false);
 
@@ -70,10 +68,9 @@ export default function ProfilePage() {
     let cancelled = false;
     (async () => {
       try {
-        const prefs = await apiGet<{ prefAB9: boolean; prefAutoFib: boolean; prefAB9Labels: boolean }>('/api/user/preferences');
+        const prefs = await apiGet<{ prefAB9: boolean; prefAB9Labels: boolean }>('/api/user/preferences');
         if (cancelled) return;
         if (prefs.prefAB9 !== undefined) setPrefAB9(prefs.prefAB9);
-        if (prefs.prefAutoFib !== undefined) setPrefAutoFib(prefs.prefAutoFib);
         if (prefs.prefAB9Labels !== undefined) setPrefAB9Labels(prefs.prefAB9Labels);
         setPrefsLoaded(true);
       } catch {
@@ -84,10 +81,9 @@ export default function ProfilePage() {
   }, [isVip]);
 
   // 切换画线偏好并持久化
-  const togglePref = async (key: 'prefAB9' | 'prefAutoFib' | 'prefAB9Labels', value: boolean) => {
+  const togglePref = async (key: 'prefAB9' | 'prefAB9Labels', value: boolean) => {
     // 本地立即更新
     if (key === 'prefAB9') setPrefAB9(value);
-    if (key === 'prefAutoFib') setPrefAutoFib(value);
     if (key === 'prefAB9Labels') setPrefAB9Labels(value);
     // 同步到后端
     try {
@@ -323,37 +319,6 @@ export default function ProfilePage() {
                       />
                     </button>
                   </div>
-
-                  {/* 分隔线 */}
-                  <div className="border-t border-dark-700/50 pt-4">
-                    {/* 自动斐波那契线开关 */}
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="text-sm text-white font-medium">自动斐波那契线</div>
-                        <div className="text-xs text-dark-400 mt-0.5">自动绘制斐波那契回调线</div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => togglePref('prefAutoFib', !prefAutoFib)}
-                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                          prefAutoFib ? 'bg-sky-500' : 'bg-dark-600'
-                        }`}
-                      >
-                        <span
-                          className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                            prefAutoFib ? 'translate-x-6' : 'translate-x-1'
-                          }`}
-                        />
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* 同时开启时的提示 */}
-                  {prefAB9 && prefAutoFib && (
-                    <div className="p-2.5 rounded-lg bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 text-xs">
-                      两种画线同时开启，图表上会显示两组画线，建议只保留一种。
-                    </div>
-                  )}
                 </div>
               </div>
             )}

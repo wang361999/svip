@@ -14,17 +14,12 @@ export const updateSettingsSchema = z.object({
   footerText: z.string().optional(),
   primaryColor: z.string().optional(),
   // 指标开关
-  indicatorMA: z.string().optional(),
   indicatorEMA: z.string().optional(),
   indicatorBOLL: z.string().optional(),
   indicatorMACD: z.string().optional(),
   indicatorRSI: z.string().optional(),
   indicatorATR: z.string().optional(),
-  indicatorFIB: z.string().optional(),
-  indicatorTDSequential: z.string().optional(),
-  indicatorNAKED: z.string().optional(),
   // 指标周期参数
-  maPeriod: z.string().optional(),
   emaPeriod: z.string().optional(),
   bollPeriod: z.string().optional(),
   rsiPeriod: z.string().optional(),
@@ -34,15 +29,6 @@ export const updateSettingsSchema = z.object({
   macdSignal: z.string().optional(),
   // 显示控制
   showPriceCard: z.string().optional(),
-  showFibPanel: z.string().optional(),
-  showMarketStructure: z.string().optional(),
-  showEntrySignal: z.string().optional(),
-  showExitSignal: z.string().optional(),
-  showGannAngle: z.string().optional(),
-  showNakedBullBear: z.string().optional(),
-  showFibDraw: z.string().optional(),
-  fibLabeled: z.string().optional(),
-  fibUnlabeled: z.string().optional(),
   enableRegistration: z.string().optional(),
   // SMTP 邮箱配置（允许空字符串）
   smtpHost: z.string().optional(),

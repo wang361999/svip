@@ -15,14 +15,13 @@ export const userService = {
   async getPreferences(userId: string): Promise<UserPreferences> {
     const record = await prisma.user.findUnique({
       where: { id: userId },
-      select: { prefAB9: true, prefAutoFib: true, prefAB9Labels: true },
+      select: { prefAB9: true, prefAB9Labels: true },
     });
     if (!record) {
       throw new NotFoundError('USER_NOT_FOUND', '用户不存在');
     }
     return {
       prefAB9: record.prefAB9 === 'true',
-      prefAutoFib: record.prefAutoFib === 'true',
       prefAB9Labels: record.prefAB9Labels === 'true',
     };
   },
@@ -38,9 +37,6 @@ export const userService = {
     if (input.prefAB9 !== undefined) {
       updateData.prefAB9 = input.prefAB9 ? 'true' : 'false';
     }
-    if (input.prefAutoFib !== undefined) {
-      updateData.prefAutoFib = input.prefAutoFib ? 'true' : 'false';
-    }
     if (input.prefAB9Labels !== undefined) {
       updateData.prefAB9Labels = input.prefAB9Labels ? 'true' : 'false';
     }
@@ -48,12 +44,11 @@ export const userService = {
     const record = await prisma.user.update({
       where: { id: userId },
       data: updateData,
-      select: { prefAB9: true, prefAutoFib: true, prefAB9Labels: true },
+      select: { prefAB9: true, prefAB9Labels: true },
     });
 
     return {
       prefAB9: record.prefAB9 === 'true',
-      prefAutoFib: record.prefAutoFib === 'true',
       prefAB9Labels: record.prefAB9Labels === 'true',
     };
   },
