@@ -14,8 +14,9 @@ ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "membership" TEXT NOT NULL DEFAULT '
 ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "membershipExpires" TEXT;
 ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "strategyConfig" TEXT;
 ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "prefAB9" TEXT DEFAULT 'true';
-ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "prefAutoFib" TEXT DEFAULT 'false';
 ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "prefAB9Labels" TEXT DEFAULT 'true';
+-- 清理已废弃的用户偏好列
+ALTER TABLE "User" DROP COLUMN IF EXISTS "prefAutoFib";
 CREATE INDEX IF NOT EXISTS "User_email_idx" ON "User"("email");
 CREATE INDEX IF NOT EXISTS "User_username_idx" ON "User"("username");
 
@@ -82,27 +83,13 @@ ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "indicatorEMA" TEXT DEFAULT '
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "indicatorBOLL" TEXT DEFAULT 'true';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "indicatorMACD" TEXT DEFAULT 'true';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "indicatorRSI" TEXT DEFAULT 'false';
-ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "indicatorATR" TEXT DEFAULT 'false';
-ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "indicatorFIB" TEXT DEFAULT 'false';
-ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "indicatorTDSequential" TEXT DEFAULT 'false';
-ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "indicatorNAKED" TEXT DEFAULT 'false';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "emaPeriod" TEXT DEFAULT '20';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "bollPeriod" TEXT DEFAULT '20';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "rsiPeriod" TEXT DEFAULT '14';
-ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "atrPeriod" TEXT DEFAULT '14';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "macdFast" TEXT DEFAULT '12';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "macdSlow" TEXT DEFAULT '26';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "macdSignal" TEXT DEFAULT '9';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "showPriceCard" TEXT DEFAULT 'true';
-ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "showFibPanel" TEXT DEFAULT 'true';
-ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "showMarketStructure" TEXT DEFAULT 'true';
-ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "showEntrySignal" TEXT DEFAULT 'true';
-ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "showExitSignal" TEXT DEFAULT 'true';
-ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "showGannAngle" TEXT DEFAULT 'true';
-ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "showNakedBullBear" TEXT DEFAULT 'true';
-ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "showFibDraw" TEXT DEFAULT 'true';
-ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "fibLabeled" TEXT DEFAULT 'true';
-ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "fibUnlabeled" TEXT DEFAULT 'true';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "enableRegistration" TEXT DEFAULT 'true';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "smtpHost" TEXT DEFAULT 'smtp.qq.com';
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "smtpPort" TEXT DEFAULT '465';
@@ -110,6 +97,21 @@ ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "smtpSecure" TEXT DEFAULT 'tr
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "smtpUser" TEXT;
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "smtpPass" TEXT;
 ALTER TABLE "SiteSetting" ADD COLUMN IF NOT EXISTS "smtpFrom" TEXT;
+-- 清理已废弃的指标列（FIB/TD/NAKED/ATR 等，已从代码中移除）
+ALTER TABLE "SiteSetting" DROP COLUMN IF EXISTS "indicatorATR";
+ALTER TABLE "SiteSetting" DROP COLUMN IF EXISTS "atrPeriod";
+ALTER TABLE "SiteSetting" DROP COLUMN IF EXISTS "indicatorFIB";
+ALTER TABLE "SiteSetting" DROP COLUMN IF EXISTS "indicatorTDSequential";
+ALTER TABLE "SiteSetting" DROP COLUMN IF EXISTS "indicatorNAKED";
+ALTER TABLE "SiteSetting" DROP COLUMN IF EXISTS "showFibPanel";
+ALTER TABLE "SiteSetting" DROP COLUMN IF EXISTS "showMarketStructure";
+ALTER TABLE "SiteSetting" DROP COLUMN IF EXISTS "showEntrySignal";
+ALTER TABLE "SiteSetting" DROP COLUMN IF EXISTS "showExitSignal";
+ALTER TABLE "SiteSetting" DROP COLUMN IF EXISTS "showGannAngle";
+ALTER TABLE "SiteSetting" DROP COLUMN IF EXISTS "showNakedBullBear";
+ALTER TABLE "SiteSetting" DROP COLUMN IF EXISTS "showFibDraw";
+ALTER TABLE "SiteSetting" DROP COLUMN IF EXISTS "fibLabeled";
+ALTER TABLE "SiteSetting" DROP COLUMN IF EXISTS "fibUnlabeled";
 
 -- 11. AiAnalysis 表：AI 预测反馈闭环（复盘结果字段）
 -- 若表不存在则创建（列清单与 schema.prisma 保持一致）

@@ -10,11 +10,9 @@ interface IndicatorSettings {
   indicatorBOLL: string;
   indicatorMACD: string;
   indicatorRSI: string;
-  indicatorATR: string;
   emaPeriod: string;
   bollPeriod: string;
   rsiPeriod: string;
-  atrPeriod: string;
   macdFast: string;
   macdSlow: string;
   macdSignal: string;
@@ -26,7 +24,6 @@ const INDICATOR_LIST = [
   { key: 'indicatorBOLL' as const, label: 'BOLL 布林带', desc: '上轨/中轨/下轨，青色+黄色，可配置周期' },
   { key: 'indicatorMACD' as const, label: 'MACD', desc: 'DIF/DEA/柱状图，独立副图显示，可配置快慢周期' },
   { key: 'indicatorRSI' as const, label: 'RSI 相对强弱', desc: '0-100超买超卖指标，独立副图，30/70参考线' },
-  { key: 'indicatorATR' as const, label: 'ATR 平均波幅', desc: '平均真实波幅，衡量市场波动率' },
 ];
 
 const DISPLAY_LIST = [
@@ -41,11 +38,9 @@ export default function AdminIndicatorsPage() {
     indicatorBOLL: 'true',
     indicatorMACD: 'true',
     indicatorRSI: 'false',
-    indicatorATR: 'false',
     emaPeriod: '20',
     bollPeriod: '20',
     rsiPeriod: '14',
-    atrPeriod: '14',
     macdFast: '12',
     macdSlow: '26',
     macdSignal: '9',
@@ -76,11 +71,9 @@ export default function AdminIndicatorsPage() {
             indicatorBOLL: data.indicatorBOLL || 'true',
             indicatorMACD: data.indicatorMACD || 'true',
             indicatorRSI: data.indicatorRSI || 'false',
-            indicatorATR: data.indicatorATR || 'false',
             emaPeriod: data.emaPeriod || '20',
             bollPeriod: data.bollPeriod || '20',
             rsiPeriod: data.rsiPeriod || '14',
-            atrPeriod: data.atrPeriod || '14',
             macdFast: data.macdFast || '12',
             macdSlow: data.macdSlow || '26',
             macdSignal: data.macdSignal || '9',
@@ -193,7 +186,6 @@ export default function AdminIndicatorsPage() {
                     { key: 'emaPeriod' as const, label: 'EMA 周期', desc: '指数移动平均线周期', min: 5, max: 200 },
                     { key: 'bollPeriod' as const, label: 'BOLL 周期', desc: '布林带计算周期', min: 5, max: 100 },
                     { key: 'rsiPeriod' as const, label: 'RSI 周期', desc: '相对强弱指标周期', min: 3, max: 50 },
-                    { key: 'atrPeriod' as const, label: 'ATR 周期', desc: '平均真实波幅周期', min: 3, max: 50 },
                     { key: 'macdFast' as const, label: 'MACD 快线', desc: '快速EMA周期', min: 3, max: 50 },
                     { key: 'macdSlow' as const, label: 'MACD 慢线', desc: '慢速EMA周期', min: 5, max: 100 },
                     { key: 'macdSignal' as const, label: 'MACD 信号线', desc: 'DEA信号线周期', min: 3, max: 30 },

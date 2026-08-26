@@ -107,12 +107,10 @@ model SiteSetting {
   indicatorBOLL          String   @default("true")
   indicatorMACD          String   @default("true")
   indicatorRSI           String   @default("false")
-  indicatorATR           String   @default("false")
   // 指标周期参数
   emaPeriod              String   @default("20")
   bollPeriod             String   @default("20")
   rsiPeriod              String   @default("14")
-  atrPeriod              String   @default("14")
   macdFast               String   @default("12")
   macdSlow               String   @default("26")
   macdSignal             String   @default("9")

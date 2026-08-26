@@ -5,9 +5,7 @@ import {
   calcMACD,
   calcEMAArray,
   calcRSIArray,
-  calcATRArray,
   calcAB9Lines,
-  AB9Analysis,
 } from '@/shared/lib/indicators';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
@@ -89,14 +87,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     BOLL: true,
     MACD: true,
     RSI: false,
-    ATR: false,
   });
   // 指标周期参数（从后台加载）
   const [periods, setPeriods] = useState({
     emaPeriod: 20,
     bollPeriod: 20,
     rsiPeriod: 14,
-    atrPeriod: 14,
     macdFast: 12,
     macdSlow: 26,
     macdSignal: 9,
@@ -153,13 +149,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           BOLL: data.indicatorBOLL === 'true',
           MACD: data.indicatorMACD === 'true',
           RSI: data.indicatorRSI === 'true',
-          ATR: data.indicatorATR === 'true',
         });
         setPeriods({
           emaPeriod: parseInt(data.emaPeriod || '20', 10) || 20,
           bollPeriod: parseInt(data.bollPeriod || '20', 10) || 20,
           rsiPeriod: parseInt(data.rsiPeriod || '14', 10) || 14,
-          atrPeriod: parseInt(data.atrPeriod || '14', 10) || 14,
           macdFast: parseInt(data.macdFast || '12', 10) || 12,
           macdSlow: parseInt(data.macdSlow || '26', 10) || 26,
           macdSignal: parseInt(data.macdSignal || '9', 10) || 9,
@@ -709,7 +703,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           }`}>
             {dataStatus}
           </span>
-          {(['EMA', 'BOLL', 'MACD', 'RSI', 'ATR'] as const).map((ind) => (
+          {(['EMA', 'BOLL', 'MACD', 'RSI'] as const).map((ind) => (
             <span
               key={ind}
               className={`px-2.5 py-1 text-xs font-medium cursor-default select-none transition-all ${

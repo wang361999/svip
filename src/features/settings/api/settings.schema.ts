@@ -18,12 +18,10 @@ export const updateSettingsSchema = z.object({
   indicatorBOLL: z.string().optional(),
   indicatorMACD: z.string().optional(),
   indicatorRSI: z.string().optional(),
-  indicatorATR: z.string().optional(),
   // 指标周期参数
   emaPeriod: z.string().optional(),
   bollPeriod: z.string().optional(),
   rsiPeriod: z.string().optional(),
-  atrPeriod: z.string().optional(),
   macdFast: z.string().optional(),
   macdSlow: z.string().optional(),
   macdSignal: z.string().optional(),
