@@ -270,6 +270,18 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         macdDif.current.setData(difData);
         macdDea.current.setData(deaData);
       }
+      // 显示 MACD 副图
+      if (macdChartRef.current?.parentElement) {
+        macdChartRef.current.parentElement.classList.remove('hidden');
+      }
+    } else {
+      // 关闭 MACD：清空数据并隐藏副图面板
+      if (macdHist.current) macdHist.current.setData([]);
+      if (macdDif.current) macdDif.current.setData([]);
+      if (macdDea.current) macdDea.current.setData([]);
+      if (macdChartRef.current?.parentElement) {
+        macdChartRef.current.parentElement.classList.add('hidden');
+      }
     }
 
     // RSI 副图
@@ -289,8 +301,28 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       rsiLine.current.setData(lineData);
       if (rsiOverbought.current) rsiOverbought.current.setData(overboughtData);
       if (rsiOversold.current) rsiOversold.current.setData(oversoldData);
+      // 显示 RSI 副图
+      if (rsiChartRef.current?.parentElement) {
+        rsiChartRef.current.parentElement.classList.remove('hidden');
+      }
+    } else {
+      // 关闭 RSI：清空数据并隐藏副图面板
+      if (rsiLine.current) rsiLine.current.setData([]);
+      if (rsiOverbought.current) rsiOverbought.current.setData([]);
+      if (rsiOversold.current) rsiOversold.current.setData([]);
+      if (rsiChartRef.current?.parentElement) {
+        rsiChartRef.current.parentElement.classList.add('hidden');
+      }
     }
   }, [indicators, periods]);
+
+  // 徽章切换指标时立即重绘
+  // 修复：此前徽章只改 state 不触发重绘，必须等K线收盘或刷新页面才生效
+  useEffect(() => {
+    if (allKlinesRef.current.length > 0 && mainChart.current) {
+      updateIndicators();
+    }
+  }, [indicators, updateIndicators]);
 
   // === AB9线 + 斐波那契回调线重绘 ===
   // 数据加载、开关切换、K线收盘（isFinal）时调用，统一走这一个入口
@@ -736,7 +768,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             <button
               key={ind}
               onClick={() => {
-                // 前台徽章直接管控：点击即切换并持久化到浏览器本地，后台不参与
+                // 前台徽章直接管控：点击即切换并持久化到浏览器本地
+                // indicators 变化会被下方 useEffect 捕获并自动重绘，无需手动调用
                 setIndicators((prev) => {
                   const next = { ...prev, [ind]: !prev[ind] };
                   saveIndicatorPrefs(next);
