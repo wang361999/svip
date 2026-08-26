@@ -448,10 +448,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       if (showProfit) {
         const pa = pdata.plans.find((p) => p.id === 'A');
         if (pa) {
-          addLine(pa.entry, 'rgba(59, 130, 246, 0.95)', 2, 0, ` 方案A入场`);
-          addLine(pa.stop, 'rgba(239, 68, 68, 0.95)', 2, 0, ` 方案A止损`);
-          addLine(pa.tp1, 'rgba(34, 197, 94, 0.85)', 1, 2, ` TP1 ${pa.tp1ProbabilityPct != null ? pa.tp1ProbabilityPct + '%' : ''}`);
-          addLine(pa.tp2, 'rgba(34, 197, 94, 0.95)', 2, 2, ` TP2 ${pa.tp2ProbabilityPct != null ? pa.tp2ProbabilityPct + '%' : ''}`);
+          // 原生线只留纯名称：概率并入画布芯片（TP1 +x%·y%），
+          // 避免「TP1 75%(概率)」与「TP1 +2.8%(涨幅)」双百分比混淆
+          addLine(pa.entry, 'rgba(59, 130, 246, 0.95)', 2, 0, ` 入场`);
+          addLine(pa.stop, 'rgba(239, 68, 68, 0.95)', 2, 0, ` 止损`);
+          addLine(pa.tp1, 'rgba(34, 197, 94, 0.85)', 1, 2, ` TP1`);
+          addLine(pa.tp2, 'rgba(34, 197, 94, 0.95)', 2, 2, ` TP2`);
         }
       }
     }
@@ -563,20 +565,28 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       hline(y, Math.max(0, x0), color, width, dash);
       return { y, x0: Math.max(0, x0) };
     };
-    // 射线起点小标签（深底彩字，与K线区隔离）；纵向槽位去重，AB9 与 FIB 同价时只留一个
-    const rayLabelSlots: number[] = [];
+    // 统一标签槽位：芯片与射线标签共用（阈值 13px ≈ 标签框高，保证互不压字）
+    const occupiedY: number[] = [];
+    // 射线起点小标签（深底彩字）；与已占槽位冲突时上/下让位 13px，仍冲突则丢弃
     const rayLabel = (x: number, y: number, text: string, color: string) => {
-      if (rayLabelSlots.some((sy) => Math.abs(sy - y) < 11)) return;
-      rayLabelSlots.push(y);
+      let yy = y;
+      if (occupiedY.some((sy) => Math.abs(sy - yy) < 13)) {
+        yy = y - 13;
+        if (occupiedY.some((sy) => Math.abs(sy - yy) < 13)) {
+          yy = y + 13;
+          if (occupiedY.some((sy) => Math.abs(sy - yy) < 13)) return;
+        }
+      }
+      occupiedY.push(yy);
       ctx.font = '10px -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif';
       const tw = ctx.measureText(text).width;
       const bx = Math.min(Math.max(x, 2), paneW - tw - 8);
       ctx.fillStyle = 'rgba(10, 14, 23, 0.75)';
-      ctx.fillRect(bx, y - 7, tw + 6, 14);
+      ctx.fillRect(bx, yy - 7, tw + 6, 14);
       ctx.fillStyle = color;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(text, bx + 3, y + 0.5);
+      ctx.fillText(text, bx + 3, yy + 0.5);
     };
     // 锚点圆标记（A/B 波段端点、等高/等低端点）
     const dot = (x: number, y: number, color: string, r = 3, text?: string) => {
@@ -593,62 +603,22 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       }
     };
 
-    // ===== 画法一：AB9 锚定射线（从波段 B 点向右，历史区干净） =====
-    if (ab9) {
-      for (const line of ab9.lines) {
-        const color = AB9_COLORS[line.lineNo];
-        if (!color) continue;
-        const r = ray(line.price, ab9.timeB, color.replace(/0\.85\)$/, '0.7)'), 1, [5, 4]);
-        if (r) rayLabel(r.x0 + 3, r.y, `${line.lineNo}线`, color);
-      }
-      // A/B 波段锚点（空心圆 + 字母），射线起点直观可见
-      const ax = xOf(ab9.timeA);
-      const bx = xOf(ab9.timeB);
-      const ay = yOf(ab9.pointA);
-      const by = yOf(ab9.pointB);
-      if (ax != null && ay != null && ay >= 0 && ay <= paneH) dot(ax, ay, 'rgba(148, 163, 184, 0.9)', 3.5, 'A');
-      if (bx != null && by != null && by >= 0 && by <= paneH) dot(bx, by, 'rgba(226, 232, 240, 0.95)', 3.5, 'B');
-    }
-
-    // ===== 画法一：斐波那契锚定射线（与 AB9 同一 B 点锚定） =====
-    if (fib) {
-      const fibColors: Record<string, string> = {
-        '0.0': 'rgba(239, 68, 68, 0.7)',
-        '23.6': 'rgba(249, 115, 22, 0.6)',
-        '38.2': 'rgba(245, 158, 11, 0.6)',
-        '50.0': 'rgba(234, 179, 8, 0.7)',
-        '61.8': 'rgba(34, 197, 94, 0.6)',
-        '78.6': 'rgba(20, 184, 166, 0.6)',
-        '100.0': 'rgba(59, 130, 246, 0.7)',
-        '161.8': 'rgba(168, 85, 247, 0.6)',
-        '261.8': 'rgba(236, 72, 153, 0.6)',
-      };
-      for (const level of fib.levels) {
-        if (isDupPrice(level.price)) continue;
-        const color = fibColors[level.label] || 'rgba(148, 163, 184, 0.5)';
-        const key = level.ratio === 0.5 || level.ratio === 0.618 ? 1.5 : 1;
-        const r = ray(level.price, fib.timeB, color, key, [2, 3]);
-        if (r) rayLabel(r.x0 + 3, r.y, `FIB ${level.label}`, color);
-      }
-    }
-
-    // ===== 以下为利润测算 / 微构（需结构分析数据） =====
-    if (!pd || (!showProfit && !showMicro)) return;
+    // ===== 第一层：利润测算 / 微构（区域 + 芯片优先占槽位，核心信息不让位） =====
+    if (pd && (showProfit || showMicro)) {
 
     // 右侧标签芯片：深底 + 彩字 + 细描边的圆角胶囊，贴价格轴一侧；
-    // 记录已占用纵向槽位，重叠时丢弃（如汇流区与 TP2 同价时不叠字）
-    const chipSlots: { top: number; bottom: number }[] = [];
-    ctx.textBaseline = 'middle';
-    ctx.textAlign = 'center';
-    const chip = (yMid: number, text: string, color: string, border: string) => {
-      ctx.font = '600 10px -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif';
-      const cw = ctx.measureText(text).width + 14;
-      const ch = 17;
-      const cx = paneW - cw - 8;
-      const cy = Math.round(yMid - ch / 2);
-      if (cx < 8 || cy < 3 || cy + ch > paneH - 3) return;
-      if (chipSlots.some((s) => cy < s.bottom + 3 && cy + ch > s.top - 3)) return;
-      chipSlots.push({ top: cy, bottom: cy + ch });
+      // 槽位写入统一 occupiedY（芯片高度 17px，间隔阈值 15px），射线标签后续避让
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
+      const chip = (yMid: number, text: string, color: string, border: string) => {
+        ctx.font = '600 10px -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif';
+        const cw = ctx.measureText(text).width + 14;
+        const ch = 17;
+        const cx = paneW - cw - 8;
+        const cy = Math.round(yMid - ch / 2);
+        if (cx < 8 || cy < 3 || cy + ch > paneH - 3) return;
+        if (occupiedY.some((sy) => Math.abs(sy - (cy + ch / 2)) < 15)) return;
+        occupiedY.push(cy + ch / 2);
       const r = 3.5;
       ctx.beginPath();
       ctx.moveTo(cx + r, cy);
@@ -704,15 +674,16 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           const pa = pd.plans.find((p) => p.id === 'A');
           if (pa) {
             const dist = (a: number, b: number) => ((Math.abs(a - b) / pa.entry) * 100).toFixed(1);
+            // 芯片同时承载涨幅+概率（原生线只剩纯名称），一处读全两个维度
             // 风险区（入场↔止损，红渐变）
             const rz = zoneFill(yOf(pa.entry), yOf(pa.stop), projX0, '239, 68, 68', 0.13);
-            if (rz && rz.h >= 17) chip(rz.mid, `风险 −${dist(pa.stop, pa.entry)}%`, '#f87171', 'rgba(239, 68, 68, 0.45)');
+            if (rz && rz.h >= 17) chip(rz.mid, `止损 −${dist(pa.stop, pa.entry)}%`, '#f87171', 'rgba(239, 68, 68, 0.45)');
             // 盈利区①（入场↔TP1，浅绿）
             const z1 = zoneFill(yOf(pa.entry), yOf(pa.tp1), projX0, '34, 197, 94', 0.10);
-            if (z1 && z1.h >= 17) chip(z1.mid, `TP1 +${dist(pa.tp1, pa.entry)}%`, '#4ade80', 'rgba(34, 197, 94, 0.45)');
+            if (z1 && z1.h >= 17) chip(z1.mid, `TP1 +${dist(pa.tp1, pa.entry)}%${pa.tp1ProbabilityPct != null ? `·${pa.tp1ProbabilityPct}%` : ''}`, '#4ade80', 'rgba(34, 197, 94, 0.45)');
             // 盈利区②（TP1↔TP2，绿加深一档：越远的目标颜色越实）
             const z2 = zoneFill(yOf(pa.tp1), yOf(pa.tp2), projX0, '34, 197, 94', 0.17);
-            if (z2 && z2.h >= 17) chip(z2.mid, `TP2 +${dist(pa.tp2, pa.entry)}%`, '#4ade80', 'rgba(34, 197, 94, 0.45)');
+            if (z2 && z2.h >= 17) chip(z2.mid, `TP2 +${dist(pa.tp2, pa.entry)}%${pa.tp2ProbabilityPct != null ? `·${pa.tp2ProbabilityPct}%` : ''}`, '#4ade80', 'rgba(34, 197, 94, 0.45)');
           }
           // ===== 画法二：汇流止盈区（渐变面 + 上下沿边线，中值线取消） =====
           if (pd.confluence) {
@@ -730,7 +701,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           const pb = pd.plans.find((p) => p.id === 'B');
           if (pb) {
             const bRays: [number, string, string][] = [
-              [pb.entry, 'rgba(59, 130, 246, 0.55)', `B触发 ${pb.entry}`],
+              [pb.entry, 'rgba(59, 130, 246, 0.55)', `B触发`],
               [pb.stop, 'rgba(239, 68, 68, 0.45)', `B止损`],
               [pb.tp1, 'rgba(34, 197, 94, 0.4)', `B·TP1`],
               [pb.tp2, 'rgba(34, 197, 94, 0.45)', `B·TP2 rr${pb.rrTp2}`],
@@ -741,13 +712,23 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
               if (r) rayLabel(r.x0 + 3, r.y, label, color);
             }
           }
-          // ===== 画法三：延伸档 + 灰色候选目标位（细点线射线，从最新K线向右） =====
+          // ===== 画法三：延伸档 + 候选目标位（收敛显示） =====
+          // 8 个方法候选不全画：落在汇流区内 / 延伸档附近(±0.5%)的跳过（区/线已呈现），
+          // 其余按离现价距离取最近 3 条 —— 避免一排平行点线 + 标签堆叠
           if (pd.extendedTarget && !isDupPrice(pd.extendedTarget.price)) {
             const r = ray(pd.extendedTarget.price, lastTime, 'rgba(168, 85, 247, 0.65)', 1, [2, 3]);
             if (r) rayLabel(r.x0 + 3, r.y, `延伸 ${pd.extendedTarget.probabilityPct}%`, 'rgba(192, 132, 252, 0.9)');
           }
-          for (const t of pd.profitTargets || []) {
-            if (isDupPrice(t.price)) continue;
+          const cf = pd.confluence;
+          const inZone = (p: number) =>
+            !!cf && p >= Math.min(cf.low, cf.high) - refPrice * 0.003 && p <= Math.max(cf.low, cf.high) + refPrice * 0.003;
+          const nearExt = (p: number) =>
+            !!pd.extendedTarget && Math.abs(p - pd.extendedTarget.price) / refPrice < 0.005;
+          const targets = (pd.profitTargets || [])
+            .filter((t) => !isDupPrice(t.price) && !inZone(t.price) && !nearExt(t.price))
+            .sort((a, b) => Math.abs(a.price - refPrice) - Math.abs(b.price - refPrice))
+            .slice(0, 3);
+          for (const t of targets) {
             const r = ray(t.price, lastTime, 'rgba(148, 163, 184, 0.5)', 1, [2, 3]);
             if (r) rayLabel(r.x0 + 3, r.y, `${t.label} ${t.probabilityPct}%`, 'rgba(203, 213, 225, 0.85)');
           }
@@ -796,6 +777,46 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         if (x2 != null) hline(y, x2, 'rgba(6, 182, 212, 0.35)', 1, [3, 4]);
         // 标签贴在形成点右侧
         if (x2 != null) rayLabel(x2 + 4, y, `流动性池·${p.side === 'high' ? '等高' : '等低'}`, 'rgba(103, 232, 249, 0.95)');
+      }
+    }
+    } // ===== 第一层结束 =====
+
+    // ===== 第二层：AB9 锚定射线（从波段 B 点向右，历史区干净；标签避让上方槽位） =====
+    if (ab9) {
+      for (const line of ab9.lines) {
+        const color = AB9_COLORS[line.lineNo];
+        if (!color) continue;
+        const r = ray(line.price, ab9.timeB, color.replace(/0\.85\)$/, '0.7)'), 1, [5, 4]);
+        if (r) rayLabel(r.x0 + 3, r.y, `${line.lineNo}线`, color);
+      }
+      // A/B 波段锚点（空心圆 + 字母），射线起点直观可见
+      const ax = xOf(ab9.timeA);
+      const bx = xOf(ab9.timeB);
+      const ay = yOf(ab9.pointA);
+      const by = yOf(ab9.pointB);
+      if (ax != null && ay != null && ay >= 0 && ay <= paneH) dot(ax, ay, 'rgba(148, 163, 184, 0.9)', 3.5, 'A');
+      if (bx != null && by != null && by >= 0 && by <= paneH) dot(bx, by, 'rgba(226, 232, 240, 0.95)', 3.5, 'B');
+    }
+
+    // ===== 第二层：斐波那契锚定射线（与 AB9 同一 B 点锚定） =====
+    if (fib) {
+      const fibColors: Record<string, string> = {
+        '0.0': 'rgba(239, 68, 68, 0.7)',
+        '23.6': 'rgba(249, 115, 22, 0.6)',
+        '38.2': 'rgba(245, 158, 11, 0.6)',
+        '50.0': 'rgba(234, 179, 8, 0.7)',
+        '61.8': 'rgba(34, 197, 94, 0.6)',
+        '78.6': 'rgba(20, 184, 166, 0.6)',
+        '100.0': 'rgba(59, 130, 246, 0.7)',
+        '161.8': 'rgba(168, 85, 247, 0.6)',
+        '261.8': 'rgba(236, 72, 153, 0.6)',
+      };
+      for (const level of fib.levels) {
+        if (isDupPrice(level.price)) continue;
+        const color = fibColors[level.label] || 'rgba(148, 163, 184, 0.5)';
+        const key = level.ratio === 0.5 || level.ratio === 0.618 ? 1.5 : 1;
+        const r = ray(level.price, fib.timeB, color, key, [2, 3]);
+        if (r) rayLabel(r.x0 + 3, r.y, `FIB ${level.label}`, color);
       }
     }
   }, [showAutoAB9, showFibonacci, showProfit, showMicro, isMember, symbol]);
