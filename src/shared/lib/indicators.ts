@@ -654,3 +654,79 @@ export function calcAB9Lines(klines: KlineData[]): AB9Analysis | null {
     advice,
   };
 }
+
+// ========== 多周期趋势 ==========
+
+/** 趋势方向 */
+export type TrendDirection = 'bullish' | 'bearish' | 'neutral';
+
+/** 单周期趋势信号（多周期趋势卡片用） */
+export interface TrendSignal {
+  /** 趋势方向 */
+  direction: TrendDirection;
+  /** 强度评分：-3（极空）~ +3（极多），三重条件各记 ±1 */
+  score: number;
+  /** 评级标签：强多头 / 偏多 / 震荡 / 偏空 / 强空头 */
+  label: string;
+  /** 最新收盘价 */
+  price: number;
+  /** EMA20 最新值 */
+  ema20: number;
+  /** EMA60 最新值 */
+  ema60: number;
+  /** 最近一根K线的涨跌幅 %（相对前一收盘价） */
+  changePercent: number;
+}
+
+/**
+ * 单周期趋势判定：价格与 EMA20/EMA60 的三重位置关系打分
+ *   +1  当前价 > EMA20      -1  当前价 < EMA20
+ *   +1  EMA20  > EMA60      -1  EMA20  < EMA60
+ *   +1  当前价 > EMA60      -1  当前价 < EMA60
+ * score ≥ 2 强多头 / 1 偏多 / 0 震荡 / -1 偏空 / ≤ -2 强空头
+ *
+ * 比较带相对容差（1e-6）：完全横盘时 EMA 递推存在浮点噪声（~1e-14 相对误差），
+ * 不加容差会把"价格==均线"误判成多/空；真实行情的差异远大于容差，不受影响。
+ */
+export function calcTrendSignal(klines: KlineData[]): TrendSignal | null {
+  if (!klines || klines.length < 60) return null;
+
+  const last = klines.length - 1;
+  const price = klines[last].close;
+  const prevClose = klines[last - 1]?.close ?? price;
+  const changePercent = prevClose !== 0 ? ((price - prevClose) / prevClose) * 100 : 0;
+
+  const ema20Arr = calcEMAArray(klines, 20);
+  const ema60Arr = calcEMAArray(klines, 60);
+  const ema20 = ema20Arr[last];
+  const ema60 = ema60Arr[last];
+
+  // 相对容差：按价格量级缩放（ETH≈3000 时约 0.003 USDT，远小于任何有效差异）
+  const eps = Math.max(price, ema20, ema60, 1) * 1e-6;
+
+  let score = 0;
+  score += price > ema20 + eps ? 1 : price < ema20 - eps ? -1 : 0;
+  score += ema20 > ema60 + eps ? 1 : ema20 < ema60 - eps ? -1 : 0;
+  score += price > ema60 + eps ? 1 : price < ema60 - eps ? -1 : 0;
+
+  let direction: TrendDirection;
+  let label: string;
+  if (score >= 2) {
+    direction = 'bullish';
+    label = '强多头';
+  } else if (score === 1) {
+    direction = 'bullish';
+    label = '偏多';
+  } else if (score === 0) {
+    direction = 'neutral';
+    label = '震荡';
+  } else if (score === -1) {
+    direction = 'bearish';
+    label = '偏空';
+  } else {
+    direction = 'bearish';
+    label = '强空头';
+  }
+
+  return { direction, score, label, price, ema20, ema60, changePercent };
+}
