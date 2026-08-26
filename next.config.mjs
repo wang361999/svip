@@ -9,6 +9,12 @@ const nextConfig = {
   },
   // 隐藏 X-Powered-By 头（减少指纹信息）
   poweredByHeader: false,
+  // 启用 SWC 压缩（比 Babel 快，构建更快）
+  swcMinify: true,
+  // 实验性优化：按需导入常用库，减小初始包体积
+  experimental: {
+    optimizePackageImports: ['lightweight-charts', 'zustand', 'zod'],
+  },
   // 将构建版本号注入前端环境变量
   env: {
     NEXT_PUBLIC_BUILD_VERSION: BUILD_VERSION,

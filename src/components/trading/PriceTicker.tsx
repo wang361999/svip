@@ -44,7 +44,7 @@ export default function PriceTicker() {
     }, symbol, okxId);
     ws.connect();
 
-    // 兜底：每 3 秒用 REST 刷新一次 24h 统计
+    // 兜底：每 15 秒用 REST 刷新一次 24h 统计（WS 已实时推送价格，降低轮询频率）
     const statsTimer = setInterval(() => {
       fetch24hStats(symbol, okxId).then((stats) => {
         if (stats) {
@@ -57,7 +57,7 @@ export default function PriceTicker() {
           });
         }
       }).catch(() => {});
-    }, 3000);
+    }, 15000);
 
     return () => {
       ws.disconnect();

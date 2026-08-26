@@ -77,7 +77,7 @@ async function getBinanceKlinesDirect(symbol: string, interval: string, limit: n
   for (const base of BINANCE_REST) {
     try {
       const url = `${base}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
-      const res = await fetchWithTimeout(url, 5000);
+      const res = await fetchWithTimeout(url, 3500);
       if (!res.ok) continue;
       const data = await res.json();
       if (!Array.isArray(data) || data.length === 0) continue;
@@ -119,7 +119,7 @@ async function getOkxKlinesDirect(okxId: string, interval: string, limit: number
   }
 }
 
-export async function fetchKlines(symbol: string, okxId: string, interval: string, limit: number = 300): Promise<KlineData[]> {
+export async function fetchKlines(symbol: string, okxId: string, interval: string, limit: number = 200): Promise<KlineData[]> {
   // 0. 命中缓存直接返回（TTL 按周期分级，均远小于该周期一根蜡烛的更新时间）
   const key = `${symbol}|${interval}|${limit}`;
   const cached = klineCache.get(key);
@@ -253,7 +253,7 @@ export async function fetchPrice(symbol: string, okxId: string): Promise<number 
 export async function fetch24hStats(symbol: string, okxId: string) {
   for (const base of BINANCE_REST) {
     try {
-      const res = await fetchWithTimeout(`${base}/api/v3/ticker/24hr?symbol=${symbol}`, 5000);
+      const res = await fetchWithTimeout(`${base}/api/v3/ticker/24hr?symbol=${symbol}`, 3500);
       if (!res.ok) continue;
       const data = await res.json();
       return {
@@ -269,7 +269,7 @@ export async function fetch24hStats(symbol: string, okxId: string) {
 
   // OKX fallback
   try {
-    const res = await fetchWithTimeout(`https://www.okx.com/api/v5/market/ticker?instId=${okxId}`, 5000);
+    const res = await fetchWithTimeout(`https://www.okx.com/api/v5/market/ticker?instId=${okxId}`, 3500);
     if (res.ok) {
       const json = await res.json();
       const d = json?.data?.[0];
@@ -386,10 +386,8 @@ export function createMarketWS(callbacks: WSCallbacks, symbol: string, okxId: st
     }
 
     const baseUrl = BINANCE_WS[idx];
-    const extraStreams: string[] = [];
-    if (klineInterval !== '15m') extraStreams.push(`${streamPrefix}@kline_15m`);
-    if (klineInterval !== '4h') extraStreams.push(`${streamPrefix}@kline_4h`);
-    const streams = [`${streamPrefix}@trade`, `${streamPrefix}@kline_${klineInterval}`, ...extraStreams].join('/');
+    // 只订阅当前周期 K线 + 逐笔成交，去掉无用的 15m/4h 额外流
+    const streams = [`${streamPrefix}@trade`, `${streamPrefix}@kline_${klineInterval}`].join('/');
     const url = `${baseUrl}?streams=${streams}`;
 
     try {
@@ -467,10 +465,8 @@ export function createMarketWS(callbacks: WSCallbacks, symbol: string, okxId: st
       };
       const args: { channel: string; instId: string }[] = [
         { channel: 'tickers', instId: okxId },
+        { channel: okxKlineMap[klineInterval] || 'candle1H', instId: okxId },
       ];
-      args.push({ channel: okxKlineMap[klineInterval] || 'candle1H', instId: okxId });
-      if (klineInterval !== '15m') args.push({ channel: 'candle15m', instId: okxId });
-      if (klineInterval !== '4h') args.push({ channel: 'candle4H', instId: okxId });
       ws!.send(JSON.stringify({ op: 'subscribe', args }));
       source = 'okx';
       isConnecting = false;
@@ -521,7 +517,7 @@ export function createMarketWS(callbacks: WSCallbacks, symbol: string, okxId: st
     };
 
     poll();
-    restTimer = setInterval(poll, 1000);
+    restTimer = setInterval(poll, 3000);
 
     setTimeout(() => {
       if (source === 'rest' && !closed) {

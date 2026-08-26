@@ -136,10 +136,18 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     fetchSymbols();
   }, [fetchSymbols]);
 
-  // 从后台 API 加载指标配置
+  // 从后台 API 加载指标配置 + 用户偏好（并行请求，不阻塞K线加载）
   useEffect(() => {
-    apiGet<Record<string, string>>('/api/settings')
-      .then((data) => {
+    let cancelled = false;
+    // 同时发起 settings + preferences，不串行等待
+    const settingsPromise = apiGet<Record<string, string>>('/api/settings');
+    const prefsPromise = isMember
+      ? apiGet<{ prefAB9?: boolean; prefAB9Labels?: boolean }>('/api/user/preferences').catch(() => ({}) as { prefAB9?: boolean; prefAB9Labels?: boolean })
+      : Promise.resolve({} as { prefAB9?: boolean; prefAB9Labels?: boolean });
+
+    Promise.all([settingsPromise, prefsPromise])
+      .then(([data, prefs]) => {
+        if (cancelled) return;
         setIndicators({
           EMA: data.indicatorEMA === 'true',
           BOLL: data.indicatorBOLL === 'true',
@@ -147,7 +155,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           RSI: data.indicatorRSI === 'true',
           ATR: data.indicatorATR === 'true',
         });
-        // 加载指标周期参数
         setPeriods({
           emaPeriod: parseInt(data.emaPeriod || '20', 10) || 20,
           bollPeriod: parseInt(data.bollPeriod || '20', 10) || 20,
@@ -157,23 +164,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           macdSlow: parseInt(data.macdSlow || '26', 10) || 26,
           macdSignal: parseInt(data.macdSignal || '9', 10) || 9,
         });
+        if (prefs.prefAB9 !== undefined) setShowAutoAB9(prefs.prefAB9);
+        if (prefs.prefAB9Labels !== undefined) setShowAB9Labels(prefs.prefAB9Labels);
       })
-      .catch(() => {});
-  }, []);
-
-  // 从用户偏好 API 加载画线开关设置（VIP用户专属）
-  useEffect(() => {
-    if (!isMember) {
-      setPrefsLoaded(true);
-      return;
-    }
-    apiGet<{ prefAB9?: boolean; prefAB9Labels?: boolean }>('/api/user/preferences')
-      .then((data) => {
-        if (data.prefAB9 !== undefined) setShowAutoAB9(data.prefAB9);
-        if (data.prefAB9Labels !== undefined) setShowAB9Labels(data.prefAB9Labels);
-        setPrefsLoaded(true);
-      })
-      .catch(() => setPrefsLoaded(true));
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setPrefsLoaded(true); });
+    return () => { cancelled = true; };
   }, [isMember]);
 
   // 持久化画线开关偏好到后端
@@ -466,19 +462,24 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     }
   }, [updateIndicators]);
 
-  // 获取K线
+  // 获取K线 — 用 ref 引用最新的 updateChart，避免指标切换导致重新拉取K线和重连WS
+  const updateChartRef = useRef(updateChart);
+  updateChartRef.current = updateChart;
+  const updateLastKlineRef = useRef(updateLastKline);
+  updateLastKlineRef.current = updateLastKline;
+
   const loadKlines = useCallback(async (intv: string) => {
     setLoading(true);
     setError(null);
     try {
       const klines = await fetchKlinesApi(symbol, okxId, intv);
-      updateChart(klines);
+      updateChartRef.current(klines);
     } catch (err: any) {
       setError(err.message || '获取K线数据失败');
     } finally {
       setLoading(false);
     }
-  }, [updateChart, symbol, okxId]);
+  }, [symbol, okxId]);
 
   // 初始化图表
   useEffect(() => {
@@ -659,7 +660,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       },
       onKline: (intv, kline, isFinal) => {
         if (intv === interval) {
-          updateLastKline(kline, isFinal);
+          updateLastKlineRef.current(kline, isFinal);
         }
       },
       onConnect: (source) => {
@@ -672,7 +673,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     ws.connect();
 
     return () => ws.disconnect();
-  }, [interval, symbol, okxId, loadKlines, updateLastKline]);
+  }, [interval, symbol, okxId, loadKlines, updateTick]);
 
   return (
     <div className="glass-card overflow-hidden">

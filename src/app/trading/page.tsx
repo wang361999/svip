@@ -1,14 +1,26 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
 import PriceTicker from '@/components/trading/PriceTicker';
-import KlineChart from '@/components/trading/KlineChart';
 import TrendPanel from '@/components/trading/TrendPanel';
 import useAuthStore from '@/store/authStore';
 import { apiGet } from '@/shared/api/client';
+
+// 动态导入K线图组件 — lightweight-charts库(~100KB)单独分包，不阻塞首屏渲染
+const KlineChart = dynamic(() => import('@/components/trading/KlineChart'), {
+  ssr: false,
+  loading: () => (
+    <div className="glass-card overflow-hidden">
+      <div className="flex items-center justify-center" style={{ height: 520 }}>
+        <div className="w-10 h-10 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    </div>
+  ),
+});
 
 export default function TradingPage() {
   const router = useRouter();
@@ -20,28 +32,27 @@ export default function TradingPage() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      try {
-        const meData = await apiGet<{ user: any }>('/api/auth/me');
-        if (!cancelled) {
-          setUser(meData.user);
-        }
-      } catch {
-        if (!cancelled) {
-          router.push('/login');
-        }
-      } finally {
-        if (!cancelled) {
-          setChecking(false);
-        }
+      // 并行发起认证和配置请求 — 不再串行等待
+      const [meResult, settingsResult] = await Promise.allSettled([
+        apiGet<{ user: any }>('/api/auth/me'),
+        apiGet<Record<string, string>>('/api/settings'),
+      ]);
+
+      if (cancelled) return;
+
+      // 认证失败 → 跳转登录
+      if (meResult.status === 'rejected') {
+        router.push('/login');
+        return;
+      }
+      setUser(meResult.value.user);
+
+      // 配置（独立容错，不阻塞认证流程）
+      if (settingsResult.status === 'fulfilled') {
+        setShowPriceCard(settingsResult.value.showPriceCard !== 'false');
       }
 
-      // 加载显示配置（独立的 try/catch，不阻塞认证流程）
-      try {
-        const settings = await apiGet<Record<string, string>>('/api/settings');
-        if (!cancelled) {
-          setShowPriceCard(settings.showPriceCard !== 'false');
-        }
-      } catch {}
+      setChecking(false);
     })();
     return () => { cancelled = true; };
   }, [router, setUser]);

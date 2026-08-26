@@ -147,7 +147,7 @@ export default function TrendPanel() {
         Promise.all(
           TIMEFRAMES.map(async (tf) => {
             try {
-              const klines = await fetchKlines(symbol, okxId, tf, 200);
+              const klines = await fetchKlines(symbol, okxId, tf, 100);
               return [tf, analyzeTimeframe(klines, tf)] as const;
             } catch {
               return [tf, null] as const;
