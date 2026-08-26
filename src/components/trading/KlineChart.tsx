@@ -125,7 +125,7 @@ interface ProfitLineData {
   extendedTarget: { label: string; price: number; probabilityPct: number } | null;
   invalidation: { price: number; note: string } | null;
   liquidityPools?: { price: number; side: 'high' | 'low'; distancePct: number }[];
-  fairValueGaps?: { low: number; high: number; ce: number; dir: 'bull' | 'bear'; distancePct: number }[];
+  fairValueGaps?: { low: number; high: number; ce: number; dir: 'bull' | 'bear'; distancePct: number; formedAt?: number }[];
 }
 
 export default function KlineChart({ isFullscreen = false, onToggleFullscreen }: KlineChartProps) {
@@ -170,6 +170,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const profitLinesRef = useRef<any[]>([]);
   const profitDataRef = useRef<ProfitLineData | null>(null);
   const profitFetchStateRef = useRef<{ symbol: string; at: number } | null>(null);
+  // 测算透明框画布（叠加在K线上层，pointer-events: none 不挡交互）
+  const zoneCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const drawZonesRef = useRef<() => void>(() => {});
 
   // 指标显示开关：前台徽章直接管控（localStorage 持久化，后台不再干预）
   const [indicators, setIndicators] = useState(loadIndicatorPrefs);
@@ -527,7 +530,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
       // ===== 微构组（受「微构」徽章控制，独立于止盈） =====
       if (showMicro) {
-        // 7. 未扫流动性池（青色实线：等高/等低点止损簇，触及后反转率 62-86%）
+        // 7. 未扫流动性池（青色实线：等高/等低点止损簇，触及后反转率 62-86%；横向范围由透明框画）
         for (const p of pdata.liquidityPools || []) {
           addLine(
             p.price,
@@ -538,15 +541,148 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           );
         }
 
-        // 8. 未回补 FVG 缺口（靛蓝：上下沿虚线 + 50% CE 点线，回补率 80-88%）
+        // 8. 未回补 FVG 缺口（靛蓝 50% CE 线；缺口区间的上下沿改由透明框绘制，避免每缺口 3 条线的杂乱）
         for (const f of pdata.fairValueGaps || []) {
           addLine(f.ce, 'rgba(99, 102, 241, 0.75)', 1, 1, ` FVG·50% ${f.distancePct > 0 ? '+' : ''}${f.distancePct}%`);
-          addLine(f.high, 'rgba(99, 102, 241, 0.35)', 1, 3, '');
-          addLine(f.low, 'rgba(99, 102, 241, 0.35)', 1, 3, '');
         }
       }
     }
+
+    // 透明测算框（风险/盈利/汇流/FVG 区域化呈现，叠加画布绘制）
+    drawZonesRef.current();
   }, [showAutoAB9, showFibonacci, showProfit, showMicro, isMember, symbol]);
+
+  // === 测算透明框：把"线"升级为"面"（风险区红框 / 盈利区绿框 / 汇流区琥珀框 / FVG靛蓝框 / 池青色带） ===
+  // 画在覆盖K线的第二层 canvas 上：填充用 7%-13% 低透明度（不遮K线），边框 30% 左右勾出边界，
+  // 关键价位仍由价格线承担（右侧价格轴有精确读数），透明框负责"一眼看清盈亏结构"。
+  const drawZones = useCallback(() => {
+    const canvas = zoneCanvasRef.current;
+    const chart = mainChart.current;
+    const series = candleSeries.current;
+    if (!canvas || !chart || !series) return;
+    const parent = canvas.parentElement;
+    const ctx = canvas.getContext('2d');
+    if (!parent || !ctx) return;
+
+    // 画布尺寸与容器同步（含 devicePixelRatio，高分屏不糊）
+    const w = parent.clientWidth;
+    const h = parent.clientHeight;
+    if (w <= 0 || h <= 0) return;
+    const dpr = window.devicePixelRatio || 1;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const pdata = profitDataRef.current;
+    if (!isMember || !pdata || pdata.symbol !== symbol) return;
+    if (!showProfit && !showMicro) return;
+
+    // 可绘制区域 = 容器剔除右侧价格轴 + 底部时间轴
+    let paneW = w;
+    let paneH = h;
+    try {
+      paneW = w - chart.priceScale('right').width();
+      paneH = h - chart.timeScale().height();
+    } catch {}
+    if (paneW <= 10 || paneH <= 10) return;
+
+    const ts = chart.timeScale();
+    const yOf = (p: number): number | null => {
+      try {
+        const c = series.priceToCoordinate(p);
+        return c == null ? null : (c as number);
+      } catch { return null; }
+    };
+    const xOf = (t: number): number | null => {
+      try {
+        const c = ts.timeToCoordinate(t as Time);
+        return c == null ? null : (c as number);
+      } catch { return null; }
+    };
+
+    const klines = allKlinesRef.current;
+    const lastTime = klines.length ? klines[klines.length - 1].time : null;
+    const xEnd = paneW - 2;
+
+    // 通用画框：填充 + 1px 边框 + 左上角小标签（框太矮时省略标签避免叠字）
+    const box = (
+      y1: number | null, y2: number | null, x0: number, x1: number,
+      fill: string, border: string, label?: string,
+    ) => {
+      if (y1 == null || y2 == null || !Number.isFinite(y1) || !Number.isFinite(y2)) return;
+      const top = Math.max(0, Math.min(y1, y2));
+      const bot = Math.min(paneH, Math.max(y1, y2));
+      if (bot - top < 1 || x1 - x0 < 6) return;
+      ctx.fillStyle = fill;
+      ctx.fillRect(x0, top, x1 - x0, bot - top);
+      ctx.strokeStyle = border;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(Math.round(x0) + 0.5, Math.round(top) + 0.5, Math.round(x1 - x0) - 1, Math.round(bot - top) - 1);
+      if (label && bot - top >= 15 && x1 - x0 > 44) {
+        ctx.font = '11px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+        ctx.fillStyle = border;
+        ctx.textBaseline = 'top';
+        ctx.fillText(label, x0 + 5, top + 3);
+      }
+    };
+
+    // 投影框横向锚点：最后一根K线往前约 24 根 → 右边缘。
+    // 用户回看历史（最后一根K线不在可视区）时不画，避免色块盖在旧K线上造成误导。
+    let projX0: number | null = null;
+    if (lastTime != null && xOf(lastTime) != null) {
+      const anchor = klines[Math.max(0, klines.length - 24)];
+      const ax = anchor ? xOf(anchor.time) : null;
+      if (ax != null) projX0 = Math.max(0, ax);
+    }
+
+    if (showProfit && projX0 != null) {
+      const pa = pdata.plans.find((p) => p.id === 'A');
+      if (pa) {
+        // 风险区（入场↔止损，红）：面视化"亏多少"
+        box(yOf(pa.entry), yOf(pa.stop), projX0, xEnd,
+          'rgba(239, 68, 68, 0.08)', 'rgba(239, 68, 68, 0.32)', '风险区');
+        // 盈利区①（入场↔TP1，浅绿）
+        box(yOf(pa.entry), yOf(pa.tp1), projX0, xEnd,
+          'rgba(34, 197, 94, 0.07)', 'rgba(34, 197, 94, 0.30)', '盈利①');
+        // 盈利区②（TP1↔TP2，绿加深一档：越远的目标区颜色越实）
+        box(yOf(pa.tp1), yOf(pa.tp2), projX0, xEnd,
+          'rgba(34, 197, 94, 0.13)', 'rgba(34, 197, 94, 0.35)', '盈利②');
+      }
+      // 汇流止盈区（琥珀框）
+      if (pdata.confluence) {
+        box(yOf(pdata.confluence.high), yOf(pdata.confluence.low), projX0, xEnd,
+          'rgba(245, 158, 11, 0.10)', 'rgba(245, 158, 11, 0.40)', `汇流区 ${pdata.confluence.probabilityPct}%`);
+      }
+    }
+
+    if (showMicro) {
+      // FVG 缺口（靛蓝框）：从形成时间延伸到右缘；形成点在可视区左侧则从 0 开始
+      let visFrom: number | null = null;
+      try {
+        const vr = ts.getVisibleRange();
+        if (vr) visFrom = vr.from as unknown as number;
+      } catch {}
+      for (const f of pdata.fairValueGaps || []) {
+        if (f.formedAt == null) continue;
+        let x0: number | null;
+        if (visFrom != null && f.formedAt < visFrom) x0 = 0;
+        else x0 = xOf(f.formedAt);
+        if (x0 == null) continue;
+        box(yOf(f.high), yOf(f.low), Math.max(0, x0), xEnd,
+          'rgba(99, 102, 241, 0.12)', 'rgba(99, 102, 241, 0.38)', 'FVG');
+      }
+      // 流动性池（青色细带，全宽：池是"当前时点"的价位，不随K线滚动）
+      for (const p of pdata.liquidityPools || []) {
+        const half = p.price * 0.0012;
+        box(yOf(p.price + half), yOf(p.price - half), 0, xEnd,
+          'rgba(6, 182, 212, 0.10)', 'rgba(6, 182, 212, 0.32)');
+      }
+    }
+  }, [showProfit, showMicro, isMember, symbol]);
+  drawZonesRef.current = drawZones;
 
   // 更新K线数据
   const updateChart = useCallback((klines: KlineData[], intv?: string) => {
@@ -640,6 +776,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       time: last.time as Time,
       open: last.open, high: last.high, low: last.low, close: last.close,
     });
+
+    // 实时价可能推动价格刻度缩放，透明框的纵向坐标随之刷新（画几个矩形，开销可忽略）
+    drawZonesRef.current();
   }, []);
 
   const updateTick = useCallback((price: number) => {
@@ -812,9 +951,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       });
     }
 
-    // 主图和MACD联动
+    // 主图和MACD联动（平移/缩放同时刷新测算透明框的坐标）
     chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
       if (range) mChart.timeScale().setVisibleLogicalRange(range);
+      drawZonesRef.current();
     });
 
     mainChart.current = chart;
@@ -848,6 +988,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           height: rsiChartRef.current.clientHeight,
         });
       }
+      // 尺寸变化后图表重排，下一帧再画透明框（坐标才是新的）
+      requestAnimationFrame(() => drawZonesRef.current());
     };
     window.addEventListener('resize', handleResize);
     handleResize();
@@ -881,6 +1023,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           height: rsiChartRef.current.clientHeight,
         });
       }
+      drawZonesRef.current();
     }, 100);
     return () => clearTimeout(timer);
   }, [isFullscreen]);
@@ -1072,6 +1215,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             ref={mainChartRef}
             className="w-full h-full"
             style={{ cursor: 'default' }}
+          />
+          {/* 测算透明框层：风险/盈利/汇流/FVG 区域化呈现；pointer-events-none 不挡K线交互 */}
+          <canvas
+            ref={zoneCanvasRef}
+            className="absolute inset-0 w-full h-full pointer-events-none"
+            style={{ zIndex: 2 }}
           />
         </div>
       </div>
