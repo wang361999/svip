@@ -673,8 +673,6 @@ export function calcATR(klines: KlineData[], period: number = 14): number {
   return recentTR.reduce((s, v) => s + v, 0) / period;
 }
 
-// ========== 多周期趋势过滤 ==========
-
 // ========== FVG（公允价值缺口）识别 ==========
 
 export interface FVG {

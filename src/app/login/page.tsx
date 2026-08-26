@@ -18,7 +18,7 @@ export default function LoginPage() {
             <LoginForm />
             <div className="mt-5 pt-4 border-t border-dark-700/30 text-center">
               <p className="text-dark-500 text-xs">
-                注册即可查看实时K线，<span className="text-amber-400">开通VIP</span>解锁 AI 智能分析与模拟交易
+                注册即可查看实时K线，<span className="text-amber-400">开通VIP</span>解锁更多专业功能
               </p>
             </div>
           </div>

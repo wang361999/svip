@@ -20,18 +20,6 @@ export default function HomeClient({ title, subtitle }: HomeClientProps) {
       icon: 'M3 3v18h18M7 15l3-3 3 2 5-7',
     },
     {
-      title: 'AI 智能分析',
-      desc: '接入 AI 结合技术指标、多周期趋势与市场情绪自动研判行情，短线决策更有依据。',
-      color: 'cyan',
-      icon: 'M9 17v-6m4 6V7m4 10v-4M5 21h14',
-    },
-    {
-      title: '模拟盘风控验证',
-      desc: '用模拟资金验证交易表现，记录持仓、盈亏、手续费、滑点和胜率，先复盘再实盘。',
-      color: 'green',
-      icon: 'M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8V7m0 10v-1',
-    },
-    {
       title: '自动交易白名单',
       desc: '前台可显示很多币种，但自动开仓只允许后台勾选的币种，避免系统乱扫、乱开仓。',
       color: 'purple',
@@ -41,15 +29,12 @@ export default function HomeClient({ title, subtitle }: HomeClientProps) {
 
   const advantages = [
     { label: '行情来源', value: 'Binance / OKX', sub: '多源行情适配' },
-    { label: '交易模式', value: '模拟盘优先', sub: '先验证再决策' },
     { label: '风控配置', value: '杠杆 / 止损 / 仓位', sub: '参数可后台调整' },
     { label: '自动范围', value: '白名单控制', sub: '只交易允许币种' },
   ];
 
   const workflow = [
     '选择关注币种，查看实时K线与指标',
-    '查看 AI 分析与多周期趋势（15m / 1h / 4h / 1d）',
-    '在模拟盘验证开仓、止盈、止损表现',
     '后台设置自动交易白名单与风控参数',
   ];
 
@@ -67,16 +52,16 @@ export default function HomeClient({ title, subtitle }: HomeClientProps) {
               <div>
                 <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-300 text-xs font-semibold mb-5">
                   <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-                  多币种 AI 分析与模拟交易系统
+                  多币种实时行情交易系统
                 </div>
                 <h1 className="text-4xl sm:text-5xl lg:text-6xl font-black text-white tracking-tight leading-tight">
                   让交易决策先经过
                   <span className="block text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-cyan-300 to-green-300">
-                    数据、AI 与风控验证
+                    数据驱动与风控验证
                   </span>
                 </h1>
                 <p className="text-base sm:text-lg text-dark-300 mt-6 max-w-2xl leading-8">
-                  {title} 不只是行情页面，而是一套面向数字货币交易者的专业工具：实时行情、技术指标、AI 智能分析、模拟盘复盘和自动交易白名单集中在一个工作台。
+                  {title} 不只是行情页面，而是一套面向数字货币交易者的专业工具：实时行情、技术指标和自动交易白名单集中在一个工作台。
                 </p>
                 <p className="text-sm text-dark-500 mt-2">
                   {subtitle}
@@ -131,9 +116,9 @@ export default function HomeClient({ title, subtitle }: HomeClientProps) {
 
                   <div className="grid grid-cols-2 gap-3">
                     <div className="rounded-xl bg-dark-800/50 border border-dark-700/50 p-3">
-                      <div className="text-[10px] text-dark-500">AI 分析</div>
-                      <div className="text-sm font-bold text-cyan-300 mt-1">多周期趋势研判</div>
-                      <div className="text-[10px] text-dark-500 mt-1">15m / 1h / 4h / 1d</div>
+                      <div className="text-[10px] text-dark-500">行情监控</div>
+                      <div className="text-sm font-bold text-cyan-300 mt-1">实时K线与指标</div>
+                      <div className="text-[10px] text-dark-500 mt-1">多周期图表</div>
                     </div>
                     <div className="rounded-xl bg-dark-800/50 border border-dark-700/50 p-3">
                       <div className="text-[10px] text-dark-500">自动交易</div>
@@ -167,7 +152,7 @@ export default function HomeClient({ title, subtitle }: HomeClientProps) {
               </h2>
             </div>
             <p className="text-dark-400 max-w-xl leading-7">
-              从行情监控到 AI 研判验证，从手动观察到自动执行范围控制，每一步都围绕“减少随意交易、强化风控”设计。
+              从行情监控到风控验证，从手动观察到自动执行范围控制，每一步都围绕“减少随意交易、强化风控”设计。
             </p>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
@@ -230,10 +215,10 @@ export default function HomeClient({ title, subtitle }: HomeClientProps) {
             <div className="relative flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
               <div>
                 <h2 className="text-2xl sm:text-3xl font-black text-white mb-3">
-                  先用模拟盘验证，再决定是否执行
+                  数据驱动决策，风控先行
                 </h2>
                 <p className="text-dark-300 max-w-2xl leading-7">
-                  所有行情、AI 分析和模拟盘数据仅用于辅助分析，不构成投资建议。专业交易的第一步，是把风险控制在你能理解和接受的范围内。
+                  所有行情数据仅用于辅助分析，不构成投资建议。专业交易的第一步，是把风险控制在你能理解和接受的范围内。
                 </p>
               </div>
               <div className="flex flex-col sm:flex-row gap-3">

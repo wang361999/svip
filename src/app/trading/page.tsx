@@ -6,22 +6,14 @@ import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
 import PriceTicker from '@/components/trading/PriceTicker';
 import KlineChart from '@/components/trading/KlineChart';
-import TrendPanel from '@/components/trading/TrendPanel';
-import PaperTradingPanel from '@/components/trading/PaperTradingPanel';
-import AiAnalysisPanel from '@/components/trading/AiAnalysisPanel';
-import ErrorBoundary from '@/components/ErrorBoundary';
 import useAuthStore from '@/store/authStore';
-import useSymbolStore from '@/store/symbolStore';
-import { apiGet, apiPut } from '@/shared/api/client';
+import { apiGet } from '@/shared/api/client';
 
 export default function TradingPage() {
   const router = useRouter();
   const { isAuthenticated, setUser } = useAuthStore();
-  const { symbol } = useSymbolStore();
   const [checking, setChecking] = useState(true);
   const [showPriceCard, setShowPriceCard] = useState(true);
-  const [paperTradingEnabled, setPaperTradingEnabled] = useState(false);
-  const [aiEnabled, setAiEnabled] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   useEffect(() => {
@@ -47,20 +39,11 @@ export default function TradingPage() {
         const settings = await apiGet<Record<string, string>>('/api/settings');
         if (!cancelled) {
           setShowPriceCard(settings.showPriceCard !== 'false');
-          setPaperTradingEnabled(settings.paperTradingEnabled === 'true');
-          setAiEnabled(settings.aiEnabled === 'true');
         }
       } catch {}
     })();
     return () => { cancelled = true; };
   }, [router, setUser]);
-
-  // 把「当前选中币种」同步到服务端（引擎自动开仓只针对该币种）
-  useEffect(() => {
-    if (!isAuthenticated || !symbol) return;
-    // fire-and-forget：失败不影响页面，下次切换会再同步
-    apiPut('/api/paper/account', { currentSymbol: symbol }).catch(() => {});
-  }, [isAuthenticated, symbol]);
 
   // 全屏状态监听
   useEffect(() => {
@@ -130,27 +113,6 @@ export default function TradingPage() {
 
           {/* K线图（含 MACD 副图 + 布林带 + 斐波那契 + MA） */}
           <KlineChart isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen} />
-
-          {/* 多周期趋势面板（15分钟/1小时/4小时/1天 多空震荡判定） */}
-          {!isFullscreen && (
-            <ErrorBoundary>
-              <TrendPanel />
-            </ErrorBoundary>
-          )}
-
-          {/* AI 行情分析面板（后台开关控制） */}
-          {!isFullscreen && aiEnabled && (
-            <ErrorBoundary>
-              <AiAnalysisPanel />
-            </ErrorBoundary>
-          )}
-
-          {/* 模拟盘面板（后台开关控制） */}
-          {!isFullscreen && paperTradingEnabled && (
-            <ErrorBoundary>
-              <PaperTradingPanel />
-            </ErrorBoundary>
-          )}
 
           {/* 底部声明 */}
           {!isFullscreen && (

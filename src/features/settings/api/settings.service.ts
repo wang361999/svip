@@ -58,44 +58,9 @@ function safeSettings(fallback: Partial<SiteSetting> = {}): SiteSetting {
     ab9Line7Color: 'rgba(100, 116, 139, 0.45)',
     ab9Line8Color: 'rgba(148, 163, 184, 0.6)',
     ab9Line9Color: 'rgba(168, 85, 247, 0.6)',
-    paperTradingEnabled: 'false',
-    cronLoops: '1',
-    cronInterval: '0',
-    cronLogTtl: '1',
-    // AI 模型配置默认值（凭证由 PROVIDER_DEFAULTS 按 supplier 回退）
-    aiEnabled: 'true',
-    aiProvider: 'custom',
-    aiApiUrl: '',
-    aiApiKey: '',
-    aiModel: '',
-    aiTemperature: '0.3',
-    aiMaxTokens: '4000',
-    aiAnalysisInterval: '30',
-    aiAutoTrade: 'false',
     updatedAt: new Date(),
     ...fallback,
   };
-}
-
-/** AI 配置默认值 — 仅非凭证字段（凭证由 ai-analysis.ts 的 PROVIDER_DEFAULTS 处理） */
-const AI_DEFAULTS = {
-  aiEnabled: 'true',
-  aiProvider: 'custom',
-  aiTemperature: '0.3',
-  aiMaxTokens: '4000',
-  aiAnalysisInterval: '30',
-  aiAutoTrade: 'false',
-};
-
-/** 将数据库读取的设置与 AI 默认值合并（空字段回退到默认值） */
-function mergeAiDefaults(raw: Record<string, string | null | undefined>) {
-  const merged: Record<string, string | null | undefined> = { ...raw };
-  for (const [key, defaultVal] of Object.entries(AI_DEFAULTS)) {
-    if (merged[key] == null || merged[key] === '') {
-      merged[key] = defaultVal;
-    }
-  }
-  return merged;
 }
 
 export const settingsService = {
@@ -110,8 +75,7 @@ export const settingsService = {
         where: { id: 'main' },
       });
       if (existing) {
-        // 合并 AI 默认值（数据库字段为空时回退到预配置值）
-        return mergeAiDefaults(existing as unknown as Record<string, string | null>) as unknown as SiteSetting;
+        return existing;
       }
       return prisma.siteSetting.create({
         data: { id: 'main' },

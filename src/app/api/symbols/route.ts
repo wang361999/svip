@@ -9,7 +9,6 @@ import { createHandler } from '@/shared/api/handler';
 import { apiSuccess } from '@/shared/api/response';
 import { apiError } from '@/shared/api/response';
 import { prisma } from '@/shared/lib/prisma';
-import { fetchPrice } from '@/shared/lib/market-data';
 import { z } from 'zod';
 import { withZod } from '@/shared/api/validate';
 
@@ -76,39 +75,6 @@ function buildSymbolMeta(symbol: string, index: number, price?: number) {
   };
 }
 
-async function syncExistingTradeSymbols() {
-  const [positionSymbols, tradeSymbols] = await Promise.all([
-    prisma.paperPosition.findMany({
-      distinct: ['symbol'],
-      select: { symbol: true },
-    }),
-    prisma.paperTrade.findMany({
-      distinct: ['symbol'],
-      select: { symbol: true },
-    }),
-  ]);
-
-  const symbols = Array.from(new Set([
-    ...positionSymbols.map((p) => p.symbol),
-    ...tradeSymbols.map((t) => t.symbol),
-  ])).filter((s) => s && s.endsWith('USDT'));
-
-  let created = 0;
-  for (let index = 0; index < symbols.length; index++) {
-    const symbol = symbols[index];
-    const existing = await prisma.tradingSymbol.findUnique({ where: { symbol } });
-    if (existing) continue;
-    // 拉现价推断显示精度（低价币不会全建成精度2 — 建好后前端展示不截断）
-    const baseAsset = symbol.replace('USDT', '');
-    const price = (await fetchPrice(symbol, `${baseAsset}-USDT`).catch(() => null)) ?? 0;
-    await prisma.tradingSymbol.create({
-      data: buildSymbolMeta(symbol, 1000 + index, price),
-    });
-    created++;
-  }
-  return created;
-}
-
 /**
  * 热门币保障清单：交易页每次拉取 active 列表时幂等补建/标热门。
  * 精度参数取自 Binance exchangeInfo 实测（SNDKB tickSize 0.01 / stepSize 0.0001）。
@@ -152,11 +118,6 @@ export const GET = createHandler(async ({ req }) => {
   const { searchParams } = new URL(req.url);
   const activeOnly = searchParams.get('active') === 'true';
   const popularOnly = searchParams.get('popular') === 'true';
-
-  // 确保历史持仓/交易里已经出现过的币种，也能进入币种管理中心
-  if (!activeOnly && !popularOnly) {
-    await syncExistingTradeSymbols().catch(() => 0);
-  }
 
   // 交易页拉取 active 列表时，幂等保障热门清单齐全（如新上线的闪迪）
   if (activeOnly) {

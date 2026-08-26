@@ -61,21 +61,6 @@ export const updateSettingsSchema = z.object({
   ab9Line7Color: z.string().optional(),
   ab9Line8Color: z.string().optional(),
   ab9Line9Color: z.string().optional(),
-  paperTradingEnabled: z.string().optional(),
-  // Cron 引擎配置
-  cronLoops: z.string().optional(),
-  cronInterval: z.string().optional(),
-  cronLogTtl: z.string().optional(),
-  // AI 模型配置
-  aiEnabled: z.string().optional(),
-  aiProvider: z.string().optional(),
-  aiApiUrl: z.string().optional(),
-  aiApiKey: z.string().optional(),
-  aiModel: z.string().optional(),
-  aiTemperature: z.string().optional(),
-  aiMaxTokens: z.string().optional(),
-  aiAnalysisInterval: z.string().optional(),
-  aiAutoTrade: z.string().optional(),
 });
 
 export type UpdateSettingsInput = z.infer<typeof updateSettingsSchema>;

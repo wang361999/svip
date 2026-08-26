@@ -10,10 +10,8 @@ import { apiGet, apiPost, apiPut } from '@/shared/api/client';
 
 // 平台全部功能列表
 const FEATURES = [
-  'AI 智能分析',
   '斐波那契自动画线',
   '分型出场信号',
-  '多周期趋势',
   '江恩角度线',
   '三合一入场信号',
 ];
