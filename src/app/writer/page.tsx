@@ -101,6 +101,7 @@ interface MacroNewsData {
     fearGreed: 'live' | 'static';
     nfp: 'live' | 'static';
     cpi: 'live' | 'static';
+    pce: 'live' | 'static';
     jobless: 'live' | 'static';
     btc: 'live' | 'static';
   };
@@ -288,22 +289,25 @@ export default function MacroNewsPage() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* 非农就业 */}
-            {data && data.nfp.previous && (
+            {data && data.nfp.previous && (() => {
+              const nfpLive = data.source.nfp === 'live';
+              const nfpRef = nfpLive ? data.nfp.previous.previous : data.nfp.previous.forecast;
+              return (
               <div className="glass-card p-4">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-1.5">
                     <span className="text-dark-500 text-xs">非农就业（NFP）</span>
-                    <LiveBadge isLive={data.source.nfp === 'live'} />
+                    <LiveBadge isLive={nfpLive} />
                   </div>
-                  {data.nfp.previous.actual !== null && data.nfp.previous.forecast !== null && (
+                  {data.nfp.previous.actual !== null && nfpRef !== null && (
                     <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
-                      data.nfp.previous.actual > data.nfp.previous.forecast
+                      data.nfp.previous.actual > nfpRef
                         ? 'text-red-400 bg-red-500/10 border-red-500/30'
-                        : data.nfp.previous.actual < data.nfp.previous.forecast
+                        : data.nfp.previous.actual < nfpRef
                         ? 'text-green-400 bg-green-500/10 border-green-500/30'
                         : 'text-dark-400 bg-dark-800/80 border-dark-700'
                     }`}>
-                      {data.nfp.previous.actual > data.nfp.previous.forecast ? '利空' : data.nfp.previous.actual < data.nfp.previous.forecast ? '利好' : '中性'}
+                      {data.nfp.previous.actual > nfpRef ? '利空' : data.nfp.previous.actual < nfpRef ? '利好' : '中性'}
                     </span>
                   )}
                 </div>
@@ -318,8 +322,8 @@ export default function MacroNewsPage() {
                 <div className="text-dark-500 text-[11px] mt-1.5">{data.nfp.previous.label}</div>
                 <div className="flex gap-4 mt-3 pt-3 border-t border-dark-800">
                   <div>
-                    <div className="text-dark-600 text-[10px]">预期</div>
-                    <div className="text-dark-300 text-xs">{data.nfp.previous.forecast ?? '—'} 万</div>
+                    <div className="text-dark-600 text-[10px]">{nfpLive ? '前值' : '预期'}</div>
+                    <div className="text-dark-300 text-xs">{nfpRef ?? '—'} 万</div>
                   </div>
                   <div>
                     <div className="text-dark-600 text-[10px]">失业率</div>
@@ -331,25 +335,29 @@ export default function MacroNewsPage() {
                   </div>
                 </div>
               </div>
-            )}
+              );
+            })()}
 
             {/* CPI 通胀 */}
-            {data && data.cpi.previous && (
+            {data && data.cpi.previous && (() => {
+              const cpiLive = data.source.cpi === 'live';
+              const cpiRef = cpiLive ? data.cpi.previous.previousYoy : data.cpi.previous.forecastYoy;
+              return (
               <div className="glass-card p-4">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-1.5">
                     <span className="text-dark-500 text-xs">CPI 消费者物价指数</span>
-                    <LiveBadge isLive={data.source.cpi === 'live'} />
+                    <LiveBadge isLive={cpiLive} />
                   </div>
-                  {data.cpi.previous.yoy !== null && data.cpi.previous.forecastYoy !== null && (
+                  {data.cpi.previous.yoy !== null && cpiRef !== null && (
                     <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
-                      data.cpi.previous.yoy > data.cpi.previous.forecastYoy
+                      data.cpi.previous.yoy > cpiRef
                         ? 'text-red-400 bg-red-500/10 border-red-500/30'
-                        : data.cpi.previous.yoy < data.cpi.previous.forecastYoy
+                        : data.cpi.previous.yoy < cpiRef
                         ? 'text-green-400 bg-green-500/10 border-green-500/30'
                         : 'text-dark-400 bg-dark-800/80 border-dark-700'
                     }`}>
-                      {data.cpi.previous.yoy > data.cpi.previous.forecastYoy ? '利空（超预期）' : data.cpi.previous.yoy < data.cpi.previous.forecastYoy ? '利好（低于预期）' : '中性'}
+                      {data.cpi.previous.yoy > cpiRef ? `利空（高于${cpiLive ? '前值' : '预期'}）` : data.cpi.previous.yoy < cpiRef ? `利好（低于${cpiLive ? '前值' : '预期'}）` : '中性'}
                     </span>
                   )}
                 </div>
@@ -378,7 +386,8 @@ export default function MacroNewsPage() {
                   </div>
                 </div>
               </div>
-            )}
+              );
+            })()}
           </div>
         </div>
 
@@ -391,22 +400,25 @@ export default function MacroNewsPage() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* PCE 物价指数 */}
-            {data && data.pce.previous && (
+            {data && data.pce.previous && (() => {
+              const pceLive = data.source.pce === 'live';
+              const pceRef = pceLive ? data.pce.previous.previousCoreYoy : data.pce.previous.forecastCoreYoy;
+              return (
               <div className="glass-card p-4">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-1.5">
                     <span className="text-dark-500 text-xs">核心 PCE<span className="text-dark-600 ml-1">· 美联储首选</span></span>
-                    <span className="px-1.5 py-0.5 rounded text-[9px] font-medium border text-dark-500 bg-dark-800/60 border-dark-700">离线参考</span>
+                    <LiveBadge isLive={pceLive} />
                   </div>
-                  {data.pce.previous.coreYoy !== null && data.pce.previous.forecastCoreYoy !== null && (
+                  {data.pce.previous.coreYoy !== null && pceRef !== null && (
                     <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
-                      data.pce.previous.coreYoy > data.pce.previous.forecastCoreYoy
+                      data.pce.previous.coreYoy > pceRef
                         ? 'text-red-400 bg-red-500/10 border-red-500/30'
-                        : data.pce.previous.coreYoy < data.pce.previous.forecastCoreYoy
+                        : data.pce.previous.coreYoy < pceRef
                         ? 'text-green-400 bg-green-500/10 border-green-500/30'
                         : 'text-dark-400 bg-dark-800/80 border-dark-700'
                     }`}>
-                      {data.pce.previous.coreYoy > data.pce.previous.forecastCoreYoy ? '利空' : data.pce.previous.coreYoy < data.pce.previous.forecastCoreYoy ? '利好' : '中性'}
+                      {data.pce.previous.coreYoy > pceRef ? '利空' : data.pce.previous.coreYoy < pceRef ? '利好' : '中性'}
                     </span>
                   )}
                 </div>
@@ -426,8 +438,8 @@ export default function MacroNewsPage() {
                     <div className="text-dark-300 text-xs">{data.pce.previous.coreMom ?? '—'}%</div>
                   </div>
                   <div>
-                    <div className="text-dark-600 text-[10px]">预期</div>
-                    <div className="text-dark-300 text-xs">{data.pce.previous.forecastCoreYoy ?? '—'}%</div>
+                    <div className="text-dark-600 text-[10px]">{pceLive ? '前值' : '预期'}</div>
+                    <div className="text-dark-300 text-xs">{pceRef ?? '—'}%</div>
                   </div>
                   <div>
                     <div className="text-dark-600 text-[10px]">下次公布</div>
@@ -435,25 +447,29 @@ export default function MacroNewsPage() {
                   </div>
                 </div>
               </div>
-            )}
+              );
+            })()}
 
             {/* 初请失业金 */}
-            {data && data.jobless.latest && (
+            {data && data.jobless.latest && (() => {
+              const jobLive = data.source.jobless === 'live';
+              const jobRef = jobLive ? data.jobless.latest.previous : data.jobless.latest.forecast;
+              return (
               <div className="glass-card p-4">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-1.5">
                     <span className="text-dark-500 text-xs">初请失业金<span className="text-dark-600 ml-1">· 每周</span></span>
-                    <LiveBadge isLive={data.source.jobless === 'live'} />
+                    <LiveBadge isLive={jobLive} />
                   </div>
-                  {data.jobless.latest.actual !== null && data.jobless.latest.forecast !== null && (
+                  {data.jobless.latest.actual !== null && jobRef !== null && (
                     <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
-                      data.jobless.latest.actual < data.jobless.latest.forecast
+                      data.jobless.latest.actual < jobRef
                         ? 'text-red-400 bg-red-500/10 border-red-500/30'
-                        : data.jobless.latest.actual > data.jobless.latest.forecast
+                        : data.jobless.latest.actual > jobRef
                         ? 'text-green-400 bg-green-500/10 border-green-500/30'
                         : 'text-dark-400 bg-dark-800/80 border-dark-700'
                     }`}>
-                      {data.jobless.latest.actual < data.jobless.latest.forecast ? '利空' : data.jobless.latest.actual > data.jobless.latest.forecast ? '利好' : '中性'}
+                      {data.jobless.latest.actual < jobRef ? '利空' : data.jobless.latest.actual > jobRef ? '利好' : '中性'}
                     </span>
                   )}
                 </div>
@@ -469,12 +485,8 @@ export default function MacroNewsPage() {
                 <div className="text-dark-500 text-[11px] mt-1.5">{data.jobless.latest.releaseDate} 当周</div>
                 <div className="flex gap-4 mt-3 pt-3 border-t border-dark-800">
                   <div>
-                    <div className="text-dark-600 text-[10px]">预期</div>
-                    <div className="text-dark-300 text-xs">{data.jobless.latest.forecast ?? '—'} 万</div>
-                  </div>
-                  <div>
-                    <div className="text-dark-600 text-[10px]">前值</div>
-                    <div className="text-dark-300 text-xs">{data.jobless.latest.previous ?? '—'} 万</div>
+                    <div className="text-dark-600 text-[10px]">{jobLive ? '前周' : '预期'}</div>
+                    <div className="text-dark-300 text-xs">{jobRef ?? '—'} 万</div>
                   </div>
                   <div>
                     <div className="text-dark-600 text-[10px]">下次公布</div>
@@ -482,7 +494,8 @@ export default function MacroNewsPage() {
                   </div>
                 </div>
               </div>
-            )}
+              );
+            })()}
           </div>
         </div>
 
@@ -684,7 +697,7 @@ export default function MacroNewsPage() {
               {copied ? '✓ 已复制今日要闻' : '📋 一键复制今日要闻'}
             </button>
             <p className="text-center text-[11px] text-dark-600 mt-3">
-              非农/CPI/初请来自美国劳工统计局（BLS）· 恐慌贪婪来自 alternative.me · BTC 行情来自 Binance · PCE 为内置参考
+              非农/CPI/PCE/初请来自美联储 FRED 数据库 · 恐慌贪婪来自 alternative.me · BTC 行情来自 Binance · 每次公布后自动更新
             </p>
           </div>
         )}

@@ -425,174 +425,175 @@ export async function fetchBtcTicker(): Promise<BtcTicker | null> {
   }
 }
 
-// ==================== BLS 官方 API（非农/CPI/失业率/初请，实时）====================
+// ==================== FRED 官方数据（圣路易斯联储，免费无 key）====================
 
-export interface BlsPoint {
-  year: string;
-  /** 如 'M07'（月度）或 'M13'（周度） */
-  period: string;
-  value: string;
+/** FRED 数据点（CSV 格式：date,value） */
+export interface FredPoint {
+  date: string; // YYYY-MM-DD
+  value: number;
 }
 
-/** BLS 序列号：非农总就业/失业率/CPI-U季调/核心CPI/初请失业金 */
-const BLS_SERIES = {
-  payroll: 'CES0000000001', // Total Nonfarm Employment（千人，存量）
-  unemployment: 'LNS14000000', // 失业率（%）
-  cpi: 'CUSR0000SA0', // CPI-U 季调指数
-  coreCpi: 'CUSR0000SA0L1E', // 核心 CPI（剔除食品能源）
-  claims: 'ICSA', // 初请失业金（周度，人数）
+/** FRED 序列 ID */
+const FRED_IDS = {
+  /** 非农总就业（千人，月度）→ 增量即非农就业人数 */
+  payroll: 'PAYEMS',
+  /** 失业率（%，月度） */
+  unemployment: 'UNRATE',
+  /** CPI 指数（季调，月度） */
+  cpi: 'CPIAUCSL',
+  /** 核心 CPI 指数（剔除食品能源，月度） */
+  coreCpi: 'CPILFESL',
+  /** 初请失业金（周度，人数） */
+  claims: 'ICSA',
+  /** 核心 PCE 指数（月度） */
+  corePce: 'PCEPILFE',
 } as const;
 
-/** BLS 匿名限流 25 次/天 → 模块级缓存 2 小时 */
-let blsCache: { at: number; data: Record<string, BlsPoint[]> } | null = null;
-const BLS_CACHE_MS = 2 * 60 * 60 * 1000;
+type FredKey = keyof typeof FRED_IDS;
+type FredData = Partial<Record<FredKey, FredPoint[]>>;
 
-/**
- * 拉取 BLS 官方时间序列（免费无 key，匿名 25 次/天，缓存 2 小时）
- * 失败返回 null
- */
-export async function fetchBlsSeries(): Promise<Record<string, BlsPoint[]> | null> {
+/** 模块级缓存 2 小时（FRED 无硬性限流，礼貌性降频） */
+let fredCache: { at: number; data: FredData } | null = null;
+const FRED_CACHE_MS = 2 * 60 * 60 * 1000;
+
+/** 拉取单个 FRED 序列 CSV（2024 年起，足够算同比） */
+async function fetchFredCsv(id: string): Promise<FredPoint[]> {
+  const res = await fetch(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=${id}&cosd=2024-01-01`, {
+    signal: AbortSignal.timeout(10000),
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      Accept: 'text/csv',
+    },
+  });
+  if (!res.ok) return [];
+  const csv = await res.text();
+  const lines = csv.trim().split('\n').slice(1); // 跳过表头
+  const pts: FredPoint[] = [];
+  for (const line of lines) {
+    const [date, raw] = line.split(',');
+    const value = Number(raw);
+    if (!date || !raw || raw === '.' || !Number.isFinite(value)) continue;
+    pts.push({ date, value });
+  }
+  return pts; // 按日期升序
+}
+
+/** 拉取全部 FRED 序列（并行，缓存 2h），全部失败返回 null */
+export async function fetchFredSeries(): Promise<FredData | null> {
   const now = Date.now();
-  if (blsCache && now - blsCache.at < BLS_CACHE_MS) return blsCache.data;
-
+  if (fredCache && now - fredCache.at < FRED_CACHE_MS) return fredCache.data;
   try {
-    const startYear = new Date().getFullYear() - 1;
-    const res = await fetch('https://api.bls.gov/publicAPI/v2/timeseries/data/', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
-      signal: AbortSignal.timeout(10000),
-      body: JSON.stringify({
-        seriesid: Object.values(BLS_SERIES),
-        startyear: String(startYear),
-        endyear: String(new Date().getFullYear()),
-      }),
-    });
-    if (!res.ok) return null;
-    const j = await res.json();
-    if (j?.status !== 'OK' || !Array.isArray(j?.Results?.series)) return null;
-
-    const out: Record<string, BlsPoint[]> = {};
-    for (const s of j.Results.series) {
-      if (Array.isArray(s?.data) && s.data.length > 0) out[s.seriesID] = s.data;
-    }
-    if (Object.keys(out).length === 0) return null;
-
-    blsCache = { at: now, data: out };
-    return out;
+    const keys = Object.keys(FRED_IDS) as FredKey[];
+    const results = await Promise.all(keys.map(async (k) => [k, await fetchFredCsv(FRED_IDS[k])] as const));
+    const data = Object.fromEntries(results) as FredData;
+    const nonEmpty = Object.values(data).filter((v) => v && v.length > 0).length;
+    if (nonEmpty === 0) return null;
+    fredCache = { at: now, data };
+    return data;
   } catch {
     return null;
   }
 }
 
-/** BLS 点位工具：按 periodName 排序取最新 N 个月度点 */
-function blsMonthlyLatest(points: BlsPoint[], count: number): BlsPoint[] {
-  const monthly = points
-    .filter((p) => /^M\d{2}$/.test(p.period))
-    .sort((a, b) => (a.year + a.period).localeCompare(b.year + b.period));
-  return monthly.slice(-count);
+/** FRED 工具：取序列最新 N 个点 */
+function fredLatest(pts: FredPoint[], count: number): FredPoint[] {
+  return pts.slice(-count);
 }
 
-/**
- * 解析 BLS 数据 → 非农报告（真实值）
- * CES0000000001 为就业存量（千人），月度增量 = 本月 - 上月
- */
-function parseNfpFromBls(bls: Record<string, BlsPoint[]>, fallback: { next: NfpReport | null; previous: NfpReport | null; daysUntil: number; upcoming: NfpReport[] }): { next: NfpReport | null; previous: NfpReport | null; daysUntil: number; upcoming: NfpReport[] } {
-  const pts = bls[BLS_SERIES.payroll];
-  const unPts = bls[BLS_SERIES.unemployment];
-  if (!pts || pts.length < 2) return fallback;
+/** FRED 工具：date → 中文月份标签 "2026年7月" */
+function fredMonthLabel(date: string): string {
+  const [y, m] = date.split('-');
+  return `${y}年${Number(m)}月`;
+}
 
-  const latest = blsMonthlyLatest(pts, 2);
-  if (latest.length < 2) return fallback;
+/** FRED 工具：指数序列同比（%），需 13 个点 */
+function fredYoy(pts: FredPoint[]): number | null {
+  if (pts.length < 13) return null;
+  const cur = pts[pts.length - 1];
+  const yearAgo = pts[pts.length - 13];
+  return Math.round(((cur.value / yearAgo.value) - 1) * 1000) / 10;
+}
 
-  const cur = latest[latest.length - 1];
-  const prev = latest[latest.length - 2];
-  const monthIdx = Number(cur.period.slice(1)) - 1;
-  const label = `${cur.year}年${monthIdx + 1}月`;
-  const actual = Math.round(((Number(cur.value) - Number(prev.value)) / 10) * 10) / 10; // 千人 → 万人
+/** FRED 工具：指数序列环比（%） */
+function fredMom(pts: FredPoint[]): number | null {
+  if (pts.length < 2) return null;
+  const cur = pts[pts.length - 1];
+  const prev = pts[pts.length - 2];
+  return Math.round(((cur.value / prev.value) - 1) * 1000) / 10;
+}
 
-  // 失业率取同月
-  let unemployment: number | null = null;
-  if (unPts) {
-    const unLatest = blsMonthlyLatest(unPts, 1);
-    if (unLatest.length === 1) unemployment = Number(unLatest[0].value);
-  }
+/** 解析 FRED → 非农（真实值：PAYEMS 月度增量，千人 → 万人） */
+function parseNfpFromFred(fred: FredData, fallback: { next: NfpReport | null; previous: NfpReport | null; daysUntil: number; upcoming: NfpReport[] }): { next: NfpReport | null; previous: NfpReport | null; daysUntil: number; upcoming: NfpReport[] } {
+  const pts = fred.payroll;
+  if (!pts || pts.length < 3) return fallback;
+  const [p2, p1, p0] = fredLatest(pts, 3);
+  const actual = Math.round(((p0.value - p1.value) / 10) * 10) / 10; // 千人 → 万人
+  const prevActual = Math.round(((p1.value - p2.value) / 10) * 10) / 10; // 前月增量
+  const unPts = fred.unemployment;
+  const unemploymentRate = unPts && unPts.length > 0 ? fredLatest(unPts, 1)[0].value : null;
 
   const previous: NfpReport = {
-    releaseDate: `${cur.year}-${String(monthIdx + 1).padStart(2, '0')}-01`,
-    label,
+    releaseDate: p0.date,
+    label: fredMonthLabel(p0.date),
     actual,
-    forecast: fallback.previous?.forecast ?? null,
-    previous: null,
-    unemploymentRate: unemployment,
+    forecast: null, // 实时模式无机构预期，情绪对比前值
+    previous: prevActual,
+    unemploymentRate,
     status: 'released',
   };
   return { ...fallback, previous };
 }
 
-/**
- * 解析 BLS 数据 → CPI 报告（真实值，同比用 12 个月前对比计算）
- */
-function parseCpiFromBls(bls: Record<string, BlsPoint[]>, fallback: { next: CpiReport | null; previous: CpiReport | null; daysUntil: number; upcoming: CpiReport[] }): { next: CpiReport | null; previous: CpiReport | null; daysUntil: number; upcoming: CpiReport[] } {
-  const pts = bls[BLS_SERIES.cpi];
-  const corePts = bls[BLS_SERIES.coreCpi];
-  if (!pts) return fallback;
-
-  const latest13 = blsMonthlyLatest(pts, 13);
-  if (latest13.length < 13) return fallback;
-
-  const cur = latest13[latest13.length - 1];
-  const yearAgo = latest13[latest13.length - 13];
-  const prev = latest13[latest13.length - 2];
-  const monthIdx = Number(cur.period.slice(1)) - 1;
-
-  let coreYoy: number | null = null;
-  if (corePts) {
-    const core13 = blsMonthlyLatest(corePts, 13);
-    if (core13.length === 13) {
-      coreYoy = Math.round(((Number(core13[12].value) / Number(core13[0].value)) - 1) * 1000) / 10;
-    }
-  }
-
-  const yoy = Math.round(((Number(cur.value) / Number(yearAgo.value)) - 1) * 1000) / 10;
-  const mom = Math.round(((Number(cur.value) / Number(prev.value)) - 1) * 1000) / 10;
+/** 解析 FRED → CPI（真实值：CPIAUCSL 同比/环比 + 核心同比，前值取上月同比） */
+function parseCpiFromFred(fred: FredData, fallback: { next: CpiReport | null; previous: CpiReport | null; daysUntil: number; upcoming: CpiReport[] }): { next: CpiReport | null; previous: CpiReport | null; daysUntil: number; upcoming: CpiReport[] } {
+  const pts = fred.cpi;
+  if (!pts || pts.length < 14) return fallback;
+  const cur = fredLatest(pts, 1)[0];
+  const corePts = fred.coreCpi;
 
   const previous: CpiReport = {
-    releaseDate: `${cur.year}-${String(monthIdx + 1).padStart(2, '0')}-01`,
-    label: `${cur.year}年${monthIdx + 1}月`,
-    yoy,
-    mom,
-    coreYoy,
-    forecastYoy: fallback.previous?.forecastYoy ?? null,
-    previousYoy: null,
+    releaseDate: cur.date,
+    label: fredMonthLabel(cur.date),
+    yoy: fredYoy(pts),
+    mom: fredMom(pts),
+    coreYoy: corePts && corePts.length >= 13 ? fredYoy(corePts) : null,
+    forecastYoy: null, // 实时模式无机构预期，情绪对比前值
+    previousYoy: fredYoy(pts.slice(0, -1)),
     status: 'released',
   };
   return { ...fallback, previous };
 }
 
-/**
- * 解析 BLS 数据 → 初请失业金（真实值，ICSA 周度序列）
- */
-function parseClaimsFromBls(bls: Record<string, BlsPoint[]>, fallback: ReturnType<typeof getJoblessClaims>): ReturnType<typeof getJoblessClaims> {
-  const pts = bls[BLS_SERIES.claims];
-  if (!pts || pts.length === 0) return fallback;
+/** 解析 FRED → 核心 PCE（真实值：PCEPILFE 同比/环比，前值取上月同比） */
+function parsePceFromFred(fred: FredData, fallback: { next: PceReport | null; previous: PceReport | null; daysUntil: number; upcoming: PceReport[] }): { next: PceReport | null; previous: PceReport | null; daysUntil: number; upcoming: PceReport[] } {
+  const pts = fred.corePce;
+  if (!pts || pts.length < 14) return fallback;
+  const cur = fredLatest(pts, 1)[0];
 
-  // ICSA 返回按时间正序的周度数据，取最新两周
-  const sorted = [...pts].sort((a, b) => (a.year + a.period).localeCompare(b.year + b.period));
-  const recentPts = sorted.filter((p) => p.period !== 'M13').slice(-4);
-  if (recentPts.length < 2) return fallback;
+  const previous: PceReport = {
+    releaseDate: cur.date,
+    label: fredMonthLabel(cur.date),
+    coreYoy: fredYoy(pts),
+    coreMom: fredMom(pts),
+    forecastCoreYoy: null, // 实时模式无机构预期，情绪对比前值
+    previousCoreYoy: fredYoy(pts.slice(0, -1)),
+    status: 'released',
+  };
+  return { ...fallback, previous };
+}
 
-  const cur = recentPts[recentPts.length - 1];
-  const prev = recentPts[recentPts.length - 2];
-  const latest = {
-    releaseDate: `${cur.year}-${cur.period}`,
-    actual: Math.round((Number(cur.value) / 10000) * 10) / 10, // 人数 → 万人
-    forecast: fallback.latest?.forecast ?? null,
-    previous: Math.round((Number(prev.value) / 10000) * 10) / 10,
-    status: 'released' as const,
+/** 解析 FRED → 初请失业金（真实值：ICSA 周度，人数 → 万人，情绪对比前周） */
+function parseClaimsFromFred(fred: FredData, fallback: ReturnType<typeof getJoblessClaims>): ReturnType<typeof getJoblessClaims> {
+  const pts = fred.claims;
+  if (!pts || pts.length < 2) return fallback;
+  const [prev, cur] = fredLatest(pts, 2);
+
+  const latest: JoblessClaimsReport = {
+    releaseDate: cur.date,
+    actual: Math.round((cur.value / 10000) * 10) / 10, // 人数 → 万人
+    forecast: null, // 实时模式无机构预期，情绪对比前周
+    previous: Math.round((prev.value / 10000) * 10) / 10,
+    status: 'released',
   };
   return { ...fallback, latest };
 }
@@ -740,6 +741,7 @@ export interface MacroNewsResult {
     fearGreed: 'live' | 'static';
     nfp: 'live' | 'static';
     cpi: 'live' | 'static';
+    pce: 'live' | 'static';
     jobless: 'live' | 'static';
     btc: 'live' | 'static';
   };
@@ -753,34 +755,37 @@ export interface MacroNewsResult {
  * 获取消息面全量数据（优先实时 API，失败降级内置数据）
  * 数据源：
  * - 恐慌贪婪指数：alternative.me 官方 API（实时）
- * - 非农/CPI/失业率/初请：BLS 美国劳工统计局官方 API（实时，缓存 2h）
+ * - 非农/CPI/PCE/失业率/初请：FRED 圣路易斯联储官方 CSV（实时，缓存 2h）
  * - BTC 行情：Binance（实时，与 K 线同源）
  */
 export async function fetchMacroNews(): Promise<MacroNewsResult> {
-  const [macroNews, cryptoNews, fgLive, bls, btcLive] = await Promise.all([
-    fetchFeed('macro', '美联储 OR FOMC OR 加息 OR 降息 OR 非农 OR 非农就业 OR CPI OR PCE OR 通胀 OR 失业金'),
-    fetchFeed('crypto', '比特币 OR 以太坊 OR 加密货币 OR BTC ETF'),
+  const [macroNews, cryptoNews, fgLive, fred, btcLive] = await Promise.all([
+    fetchFeed('macro', '美联储 OR FOMC OR 加息 OR 降息 OR 非农 OR CPI OR PCE OR 通胀 OR 失业金'),
+    fetchFeed('crypto', '比特币 OR 以太坊 OR 加密货币 OR 比特币ETF'),
     fetchFearGreedLive(),
-    fetchBlsSeries(),
+    fetchFredSeries(),
     fetchBtcTicker(),
   ]);
 
   // 内置降级值
   const nfpFallback = nextNfp();
   const cpiFallback = nextCpi();
+  const pceFallback = nextPce();
   const joblessFallback = getJoblessClaims();
   const fgFallback = getFearGreedIndex();
 
-  // BLS 实时数据合并（拉不到则用内置）
-  const nfp = bls ? parseNfpFromBls(bls, nfpFallback) : nfpFallback;
-  const cpi = bls ? parseCpiFromBls(bls, cpiFallback) : cpiFallback;
-  const jobless = bls ? parseClaimsFromBls(bls, joblessFallback) : joblessFallback;
+  // FRED 实时数据合并（拉不到则用内置）
+  const nfp = fred ? parseNfpFromFred(fred, nfpFallback) : nfpFallback;
+  const cpi = fred ? parseCpiFromFred(fred, cpiFallback) : cpiFallback;
+  const pce = fred ? parsePceFromFred(fred, pceFallback) : pceFallback;
+  const jobless = fred ? parseClaimsFromFred(fred, joblessFallback) : joblessFallback;
 
   const source = {
     fearGreed: (fgLive ? 'live' : 'static') as 'live' | 'static',
-    nfp: (bls && bls[BLS_SERIES.payroll] ? 'live' : 'static') as 'live' | 'static',
-    cpi: (bls && bls[BLS_SERIES.cpi] ? 'live' : 'static') as 'live' | 'static',
-    jobless: (bls && bls[BLS_SERIES.claims] ? 'live' : 'static') as 'live' | 'static',
+    nfp: (fred && fred.payroll && fred.payroll.length > 0 ? 'live' : 'static') as 'live' | 'static',
+    cpi: (fred && fred.cpi && fred.cpi.length > 0 ? 'live' : 'static') as 'live' | 'static',
+    pce: (fred && fred.corePce && fred.corePce.length > 0 ? 'live' : 'static') as 'live' | 'static',
+    jobless: (fred && fred.claims && fred.claims.length > 0 ? 'live' : 'static') as 'live' | 'static',
     btc: (btcLive ? 'live' : 'static') as 'live' | 'static',
   };
 
@@ -789,7 +794,7 @@ export async function fetchMacroNews(): Promise<MacroNewsResult> {
     fomc: nextFomc(),
     nfp,
     cpi,
-    pce: nextPce(),
+    pce,
     jobless,
     fearGreed: fgLive ?? fgFallback,
     btc: btcLive,
@@ -820,21 +825,21 @@ export function buildDailyDigest(r: MacroNewsResult): string {
   // 非农数据
   if (r.nfp.next) {
     const nfpLine = r.nfp.previous && r.nfp.previous.actual !== null
-      ? `■ 非农就业：前值 ${r.nfp.previous.actual}万 · 下次 ${r.nfp.next.label}（${r.nfp.daysUntil} 天后）`
+      ? `■ 非农就业：${r.nfp.previous.label} ${r.nfp.previous.actual}万 · 下次 ${r.nfp.next.label}（${r.nfp.daysUntil} 天后）`
       : `■ 下次非农：${r.nfp.next.label}（${r.nfp.daysUntil} 天后）`;
     lines.push(nfpLine);
   }
   // CPI
   if (r.cpi.previous && r.cpi.previous.yoy !== null) {
-    lines.push(`■ CPI 通胀：同比 ${r.cpi.previous.yoy}% · 核心 ${r.cpi.previous.coreYoy}%${r.cpi.next ? ` · 下次（${r.cpi.daysUntil} 天后）` : ''}`);
+    lines.push(`■ CPI 通胀：${r.cpi.previous.label}同比 ${r.cpi.previous.yoy}% · 核心 ${r.cpi.previous.coreYoy}%${r.cpi.next ? ` · 下次（${r.cpi.daysUntil} 天后）` : ''}`);
   }
   // PCE
   if (r.pce.previous && r.pce.previous.coreYoy !== null) {
-    lines.push(`■ 核心 PCE：${r.pce.previous.coreYoy}%（美联储首选指标）${r.pce.next ? ` · 下次（${r.pce.daysUntil} 天后）` : ''}`);
+    lines.push(`■ 核心 PCE：${r.pce.previous.label} ${r.pce.previous.coreYoy}%（美联储首选指标）${r.pce.next ? ` · 下次（${r.pce.daysUntil} 天后）` : ''}`);
   }
   // 初请失业金
   if (r.jobless.latest && r.jobless.latest.actual !== null) {
-    lines.push(`■ 初请失业金：${r.jobless.latest.actual}万 · 下次（${r.jobless.daysUntil} 天后）`);
+    lines.push(`■ 初请失业金：${r.jobless.latest.releaseDate}当周 ${r.jobless.latest.actual}万 · 下次（${r.jobless.daysUntil} 天后）`);
   }
   lines.push('');
 
