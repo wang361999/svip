@@ -10,15 +10,24 @@ export interface IndicatorSignal {
   boll: Direction;
   macd: Direction;
   rsi: Direction;
-  atr: Direction;    // ATR 无方向，用价格动量替代
+  atr: Direction;      // ATR 无方向，用价格动量替代
+  vol: Direction;     // 成交量确认
 }
 
 export interface TimeframeResult {
   timeframe: string;
   signals: IndicatorSignal;
   overall: Direction;       // 综合多空
-  score: number;             // -5 ~ +5
+  score: number;             // -6 ~ +6
   lastPrice: number;
+  support: number | null;   // 最近支撑位
+  resistance: number | null;// 最近阻力位
+}
+
+export interface FundingRate {
+  rate: number;        // 原始费率，如 0.0001 = 0.01%
+  direction: Direction; // 反向信号：高正费率→空，高负费率→多
+  text: string;        // 描述文本
 }
 
 const TF_LABELS: Record<string, string> = {
@@ -59,13 +68,21 @@ export function analyzeTimeframe(klines: KlineData[], tf: string): TimeframeResu
   const atrArr = calcATRArray(klines, 14);
   const atrLast = atrArr[atrArr.length - 1];
   const atrMid = atrArr.length > 14 ? atrArr[atrArr.length - 14] : null;
-  const volExpanding = atrLast != null && atrMid != null && atrLast > atrMid;
-  const atr: Direction = !volExpanding ? '震荡' : close > prevClose ? '多' : '空';
+  const atrExpanding = atrLast != null && atrMid != null && atrLast > atrMid;
+  const atr: Direction = !atrExpanding ? '震荡' : close > prevClose ? '多' : '空';
 
-  const signals: IndicatorSignal = { ema, boll: bollDir, macd: macdDir, rsi, atr };
+  // --- 成交量确认 ---
+  const volLen = Math.min(20, klines.length - 1);
+  const volumes = klines.slice(-volLen).map((k) => k.volume);
+  const avgVol = volumes.reduce((s, v) => s + v, 0) / volLen;
+  const recentVol = klines[klines.length - 1].volume;
+  const volExpanding = recentVol > avgVol * 1.3;
+  const vol: Direction = !volExpanding ? '震荡' : close > prevClose ? '多' : '空';
 
-  // 综合评分
-  const score = [ema, bollDir, macdDir, rsi, atr].reduce((s, d) => {
+  const signals: IndicatorSignal = { ema, boll: bollDir, macd: macdDir, rsi, atr, vol };
+
+  // 综合评分（6个指标）
+  const score = [ema, bollDir, macdDir, rsi, atr, vol].reduce((s, d) => {
     if (d === '多') return s + 1;
     if (d === '空') return s - 1;
     return s;
@@ -76,11 +93,64 @@ export function analyzeTimeframe(klines: KlineData[], tf: string): TimeframeResu
   else if (score <= -3) overall = '空';
   else overall = '震荡';
 
+  // --- 关键价位（分形法找支撑/阻力）---
+  const strength = 3;
+  const fbStart = strength;
+  const fbEnd = klines.length - strength - 1;
+  const fractalHighs: number[] = [];
+  const fractalLows: number[] = [];
+  for (let i = fbStart; i <= fbEnd; i++) {
+    let isHigh = true, isLow = true;
+    for (let j = 1; j <= strength; j++) {
+      if (klines[i].high <= klines[i - j].high || klines[i].high <= klines[i + j].high) isHigh = false;
+      if (klines[i].low >= klines[i - j].low || klines[i].low >= klines[i + j].low) isLow = false;
+    }
+    if (isHigh) fractalHighs.push(klines[i].high);
+    if (isLow) fractalLows.push(klines[i].low);
+  }
+  // 最近的阻力（在当前价上方）和支撑（在当前价下方）
+  const resistance = fractalHighs.filter((h) => h > close).sort((a, b) => a - b)[0] || null;
+  const support = fractalLows.filter((l) => l < close).sort((a, b) => b - a)[0] || null;
+
   return {
     timeframe: TF_LABELS[tf] || tf,
     signals,
     overall,
     score,
     lastPrice: close,
+    support,
+    resistance,
   };
+}
+
+/**
+ * 解析资金费率（反向指标）
+ * @param rate 原始费率，如 0.0001 = 0.01%
+ */
+export function parseFundingRate(rate: number): FundingRate {
+  // 费率极端时是反向信号
+  // 正费率高 = 多头拥挤 → 看空
+  // 负费率低 = 空头拥挤 → 看多
+  const absRate = Math.abs(rate);
+  let direction: Direction;
+  let text: string;
+
+  if (rate > 0.0005) {
+    direction = '空';
+    text = `费率 ${(rate * 100).toFixed(3)}%，多头拥挤，反转风险`;
+  } else if (rate > 0.0001) {
+    direction = '空';
+    text = `费率 ${(rate * 100).toFixed(3)}%，偏多拥挤`;
+  } else if (rate < -0.0005) {
+    direction = '多';
+    text = `费率 ${(rate * 100).toFixed(3)}%，空头拥挤，反弹机会`;
+  } else if (rate < -0.0001) {
+    direction = '多';
+    text = `费率 ${(rate * 100).toFixed(3)}%，偏空拥挤`;
+  } else {
+    direction = '震荡';
+    text = `费率 ${(rate * 100).toFixed(3)}%，中性`;
+  }
+
+  return { rate, direction, text };
 }

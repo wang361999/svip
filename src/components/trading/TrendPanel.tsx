@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { fetchKlines } from '@/shared/lib/market-data';
-import { analyzeTimeframe, TimeframeResult, Direction } from '@/shared/lib/trend-analysis';
+import { analyzeTimeframe, parseFundingRate, TimeframeResult, Direction, FundingRate } from '@/shared/lib/trend-analysis';
+import { apiGet } from '@/shared/api/client';
 import useSymbolStore from '@/store/symbolStore';
 
 const TIMEFRAMES = ['15m', '1h', '4h', '1d'];
@@ -13,6 +14,7 @@ const INDICATORS: { key: keyof TimeframeResult['signals']; label: string }[] = [
   { key: 'macd', label: 'MACD' },
   { key: 'rsi', label: 'RSI' },
   { key: 'atr', label: 'ATR' },
+  { key: 'vol', label: 'VOL' },
 ];
 
 function dirColor(d: Direction) {
@@ -28,33 +30,38 @@ function dirBg(d: Direction) {
 }
 
 interface Suggestion {
-  action: string;       // 强烈做多 / 偏多 / 观望 / 偏空 / 强烈做空
-  advice: string;       // 具体建议
-  strength: string;     // 信号强度
+  action: string;
+  advice: string;
+  strength: string;
   weightedScore: number;
-  color: string;       // 边框/文字颜色
-  bg: string;           // 背景色
+  color: string;
+  bg: string;
 }
 
-function calcSuggestion(results: Record<string, TimeframeResult | null>): Suggestion | null {
+function calcSuggestion(
+  results: Record<string, TimeframeResult | null>,
+  funding: FundingRate | null
+): Suggestion | null {
   const valid = TIMEFRAMES.filter((tf) => results[tf]);
   if (valid.length === 0) return null;
 
-  // 加权评分：大周期权重高
   let weighted = 0;
-  let totalWeight = 0;
   for (const tf of valid) {
     const r = results[tf];
     if (!r) continue;
     const w = TF_WEIGHTS[tf] || 1;
-    totalWeight += w;
     if (r.overall === '多') weighted += w;
     else if (r.overall === '空') weighted -= w;
   }
-  // 归一化到 -7 ~ +7 范围（max totalWeight = 7）
-  const score = weighted;
 
-  // 大周期方向（1d + 4h）
+  // 资金费率反向修正（权重0.5，因为是反向指标）
+  let fundingAdj = 0;
+  if (funding) {
+    if (funding.direction === '多') fundingAdj = 0.5;
+    else if (funding.direction === '空') fundingAdj = -0.5;
+  }
+  const score = weighted + fundingAdj;
+
   const d1 = results['1d']?.overall;
   const d4 = results['4h']?.overall;
   const h1 = results['1h']?.overall;
@@ -105,7 +112,6 @@ function calcSuggestion(results: Record<string, TimeframeResult | null>): Sugges
     };
   }
 
-  // 观望
   let advice = '多空分歧较大，方向不明，建议观望等待信号一致';
   if (d1 && d4 && d1 !== d4) {
     advice = '日线和4小时方向不一致，等待大周期方向明确后再操作';
@@ -129,6 +135,7 @@ export default function TrendPanel() {
   const okxId = useSymbolStore((s) => s.okxId);
   const symbolLabel = useSymbolStore((s) => s.label);
   const [results, setResults] = useState<Record<string, TimeframeResult | null>>({});
+  const [funding, setFunding] = useState<FundingRate | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -136,19 +143,29 @@ export default function TrendPanel() {
     setLoading(true);
     setError(null);
     try {
-      const entries = await Promise.all(
-        TIMEFRAMES.map(async (tf) => {
-          try {
-            const klines = await fetchKlines(symbol, okxId, tf, 200);
-            return [tf, analyzeTimeframe(klines, tf)] as const;
-          } catch {
-            return [tf, null] as const;
-          }
-        })
-      );
+      const [klineEntries, fundingData] = await Promise.all([
+        Promise.all(
+          TIMEFRAMES.map(async (tf) => {
+            try {
+              const klines = await fetchKlines(symbol, okxId, tf, 200);
+              return [tf, analyzeTimeframe(klines, tf)] as const;
+            } catch {
+              return [tf, null] as const;
+            }
+          })
+        ),
+        apiGet<{ fundingRate: number }>(`/api/funding-rate?symbol=${symbol}`).catch(() => null),
+      ]);
+
       const map: Record<string, TimeframeResult | null> = {};
-      for (const [tf, res] of entries) map[tf] = res;
+      for (const [tf, res] of klineEntries) map[tf] = res;
       setResults(map);
+
+      if (fundingData) {
+        setFunding(parseFundingRate(fundingData.fundingRate));
+      } else {
+        setFunding(null);
+      }
     } catch (err: any) {
       setError(err.message || '加载失败');
     } finally {
@@ -162,7 +179,10 @@ export default function TrendPanel() {
     return () => clearInterval(timer);
   }, [load]);
 
-  const suggestion = useMemo(() => calcSuggestion(results), [results]);
+  const suggestion = useMemo(() => calcSuggestion(results, funding), [results, funding]);
+
+  // 取4小时的关键价位作为参考
+  const keyLevels = results['4h'];
 
   if (loading && Object.keys(results).length === 0) {
     return (
@@ -199,6 +219,11 @@ export default function TrendPanel() {
               <div className="flex items-center gap-2 mb-1">
                 <span className="text-xs text-dark-400">操作建议</span>
                 <span className="text-xs text-dark-500">{symbolLabel}</span>
+                {funding && (
+                  <span className={`text-xs px-2 py-0.5 rounded ${dirColor(funding.direction)}`}>
+                    {funding.text}
+                  </span>
+                )}
               </div>
               <div className={`text-2xl font-bold ${suggestion.color.split(' ')[1]}`}>
                 {suggestion.action}
@@ -206,6 +231,21 @@ export default function TrendPanel() {
               <p className="text-sm text-dark-300 mt-1.5 leading-relaxed">
                 {suggestion.advice}
               </p>
+              {/* 关键价位 */}
+              {keyLevels && (keyLevels.support || keyLevels.resistance) && (
+                <div className="flex items-center gap-4 mt-2 text-xs">
+                  {keyLevels.resistance != null && (
+                    <span className="text-red-400/80">
+                      阻力 ${keyLevels.resistance.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                    </span>
+                  )}
+                  {keyLevels.support != null && (
+                    <span className="text-green-400/80">
+                      支撑 ${keyLevels.support.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
             <div className="flex flex-col items-end shrink-0">
               <span className="text-xs text-dark-500">信号强度</span>
@@ -289,6 +329,29 @@ export default function TrendPanel() {
                         {d}
                         <span className="ml-1 text-[10px] opacity-60">{score > 0 ? `+${score}` : score}</span>
                       </span>
+                    </td>
+                  );
+                })}
+              </tr>
+              {/* 关键价位行 */}
+              <tr className="border-t border-dark-700">
+                <td className="py-2 px-2 text-dark-400 text-[10px]">支撑</td>
+                {TIMEFRAMES.map((tf) => {
+                  const r = results[tf];
+                  return (
+                    <td key={tf} className="text-center py-2 px-2 text-green-400/70 text-[10px]">
+                      {r?.support != null ? `$${r.support.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'}
+                    </td>
+                  );
+                })}
+              </tr>
+              <tr>
+                <td className="py-1 px-2 text-dark-400 text-[10px]">阻力</td>
+                {TIMEFRAMES.map((tf) => {
+                  const r = results[tf];
+                  return (
+                    <td key={tf} className="text-center py-1 px-2 text-red-400/70 text-[10px]">
+                      {r?.resistance != null ? `$${r.resistance.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'}
                     </td>
                   );
                 })}
