@@ -79,6 +79,41 @@ function saveIndicatorPrefs(next: typeof DEFAULT_INDICATORS) {
   } catch {}
 }
 
+// ========== 利润测算画线（结构分析数据，与 AI 分析卡片同源） ==========
+const PROFIT_PREF_KEY = 'kline-profit-pref';
+
+function loadProfitPref(): boolean {
+  if (typeof window === 'undefined') return true;
+  try {
+    return window.localStorage.getItem(PROFIT_PREF_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
+
+interface ProfitPlanLine {
+  id: string;
+  entry: number;
+  stop: number;
+  tp1: number;
+  tp2: number;
+  rrTp1: number;
+  rrTp2: number;
+  tp1ProbabilityPct?: number;
+  tp2ProbabilityPct?: number;
+}
+
+/** 结构分析接口中与画线相关的字段 */
+interface ProfitLineData {
+  symbol: string;
+  currentPrice: number;
+  plans: ProfitPlanLine[];
+  profitTargets: { label: string; price: number; probabilityPct: number }[];
+  confluence: { low: number; high: number; mid: number; methods: string[]; probabilityPct: number } | null;
+  extendedTarget: { label: string; price: number; probabilityPct: number } | null;
+  invalidation: { price: number; note: string } | null;
+}
+
 export default function KlineChart({ isFullscreen = false, onToggleFullscreen }: KlineChartProps) {
   const mainChartRef = useRef<HTMLDivElement>(null);
   const macdChartRef = useRef<HTMLDivElement>(null);
@@ -108,12 +143,18 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const [showAutoAB9, setShowAutoAB9] = useState(true);
   // 斐波那契回调线
   const [showFibonacci, setShowFibonacci] = useState(false);
+  // 利润测算画线（结构分析：预案/汇流止盈区/目标位）
+  const [showProfit, setShowProfit] = useState(loadProfitPref);
   // AB9线 ref
   const autoLinesRef = useRef<ISeriesApi<'Line'>[]>([]);
   const autoPriceLinesRef = useRef<any[]>([]);
   // 斐波那契线 ref
   const fibLinesRef = useRef<ISeriesApi<'Line'>[]>([]);
   const fibPriceLinesRef = useRef<any[]>([]);
+  // 利润测算线 ref + 数据缓存（结构分析接口，服务端 4h 级缓存）
+  const profitLinesRef = useRef<any[]>([]);
+  const profitDataRef = useRef<ProfitLineData | null>(null);
+  const profitFetchStateRef = useRef<{ symbol: string; at: number } | null>(null);
 
   // 指标显示开关：前台徽章直接管控（localStorage 持久化，后台不再干预）
   const [indicators, setIndicators] = useState(loadIndicatorPrefs);
@@ -340,6 +381,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       try { series.removePriceLine(pl); } catch {}
     }
     fibPriceLinesRef.current = [];
+    for (const pl of profitLinesRef.current) {
+      try { series.removePriceLine(pl); } catch {}
+    }
+    profitLinesRef.current = [];
 
     // —— AB9线 ——
     if (showAutoAB9 && isMember) {
@@ -395,7 +440,74 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         }
       }
     }
-  }, [showAutoAB9, showFibonacci, isMember]);
+
+    // —— 利润测算画线（结构分析：预案 / 汇流止盈区 / 目标位） ——
+    const pdata = profitDataRef.current;
+    if (showProfit && isMember && pdata && pdata.symbol === symbol) {
+      // 去重：距已画线 < 0.2% 现价的位不再重复画（TP2 与汇流区中值常重合）
+      const drawn: number[] = [];
+      const ref = pdata.currentPrice || klines[klines.length - 1].close;
+      const isDup = (p: number) => {
+        if (drawn.some((x) => Math.abs(x - p) / ref < 0.002)) return true;
+        drawn.push(p);
+        return false;
+      };
+      const addLine = (price: number, color: string, width: 1 | 2, style: number, title: string) => {
+        if (!Number.isFinite(price) || price <= 0 || isDup(price)) return;
+        try {
+          const pl = series.createPriceLine({
+            price,
+            color,
+            lineWidth: width,
+            lineStyle: style,
+            axisLabelVisible: true,
+            title,
+          });
+          profitLinesRef.current.push(pl);
+        } catch {}
+      };
+
+      // 1. 方案A（实线，最醒目）：入场 / 止损 / TP1 / TP2
+      const pa = pdata.plans.find((p) => p.id === 'A');
+      if (pa) {
+        addLine(pa.entry, 'rgba(59, 130, 246, 0.95)', 2, 0, ` 方案A入场`);
+        addLine(pa.stop, 'rgba(239, 68, 68, 0.95)', 2, 0, ` 方案A止损`);
+        addLine(pa.tp1, 'rgba(34, 197, 94, 0.85)', 1, 2, ` TP1 ${pa.tp1ProbabilityPct != null ? pa.tp1ProbabilityPct + '%' : ''}`);
+        addLine(pa.tp2, 'rgba(34, 197, 94, 0.95)', 2, 2, ` TP2 ${pa.tp2ProbabilityPct != null ? pa.tp2ProbabilityPct + '%' : ''}`);
+      }
+
+      // 2. 结构失效位（红点线）
+      if (pdata.invalidation) {
+        addLine(pdata.invalidation.price, 'rgba(248, 113, 113, 0.7)', 1, 3, ' 结构失效');
+      }
+
+      // 3. 汇流止盈区（琥珀实线上下沿 + 点线中值）
+      if (pdata.confluence) {
+        addLine(pdata.confluence.high, 'rgba(245, 158, 11, 0.95)', 2, 0, ` 汇流区 ${pdata.confluence.probabilityPct}%`);
+        addLine(pdata.confluence.low, 'rgba(245, 158, 11, 0.95)', 2, 0, ' 汇流区');
+        addLine(pdata.confluence.mid, 'rgba(245, 158, 11, 0.5)', 1, 1, ' 汇流中值');
+      }
+
+      // 4. 方案B（细虚线）
+      const pb = pdata.plans.find((p) => p.id === 'B');
+      if (pb) {
+        addLine(pb.entry, 'rgba(59, 130, 246, 0.45)', 1, 3, ' 方案B触发');
+        addLine(pb.stop, 'rgba(239, 68, 68, 0.45)', 1, 3, ' 方案B止损');
+        addLine(pb.tp1, 'rgba(34, 197, 94, 0.4)', 1, 3, ' B·TP1');
+        addLine(pb.tp2, 'rgba(34, 197, 94, 0.45)', 1, 3, ` B·TP2 ${pb.rrTp2}`);
+      }
+
+      // 5. 延伸档（紫色虚线）
+      if (pdata.extendedTarget) {
+        addLine(pdata.extendedTarget.price, 'rgba(168, 85, 247, 0.8)', 1, 2, ` 延伸档 ${pdata.extendedTarget.probabilityPct}%`);
+      }
+
+      // 6. 其余方法目标位（细灰点线，含触及概率）
+      for (const t of pdata.profitTargets || []) {
+        addLine(t.price, 'rgba(148, 163, 184, 0.45)', 1, 1, ` ${t.label} ${t.probabilityPct}%`);
+      }
+    }
+  }, [showAutoAB9, showFibonacci, showProfit, isMember, symbol]);
 
   // 更新K线数据
   const updateChart = useCallback((klines: KlineData[], intv?: string) => {
@@ -445,6 +557,31 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   useEffect(() => {
     redrawOverlayLines();
   }, [redrawOverlayLines]);
+
+  // 拉取结构分析数据（利润测算画线的数据源，与 AI 分析卡片同接口同缓存）
+  // 服务端按 4h 收盘缓存，这里 5 分钟静默轮询：跨 4h 收盘后能自动换新结构
+  useEffect(() => {
+    if (!showProfit || !isMember || !symbol) return;
+    let cancelled = false;
+    const fetchOnce = () => {
+      const st = profitFetchStateRef.current;
+      if (st && st.symbol === symbol && Date.now() - st.at < 4.5 * 60_000 && profitDataRef.current) return;
+      apiGet<Partial<ProfitLineData>>(`/api/structure-analysis?symbol=${symbol}`)
+        .then((d) => {
+          if (cancelled || !d || !Array.isArray(d.plans)) return;
+          profitDataRef.current = { ...(d as ProfitLineData), symbol };
+          profitFetchStateRef.current = { symbol, at: Date.now() };
+          redrawOverlayLines();
+        })
+        .catch(() => {});
+    };
+    fetchOnce();
+    const timer = setInterval(fetchOnce, 5 * 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [showProfit, isMember, symbol, redrawOverlayLines]);
 
   // Tick 实时更新（rAF + 50ms 节流，和 v24 一致）
   const flushTick = useCallback(() => {
@@ -822,6 +959,17 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
                 title="斐波那契回调线"
               >
                 FIB
+              </button>
+              <button
+                onClick={() => {
+                  const v = !showProfit;
+                  setShowProfit(v);
+                  try { window.localStorage.setItem(PROFIT_PREF_KEY, v ? '1' : '0'); } catch {}
+                }}
+                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showProfit ? 'text-amber-400' : 'text-dark-600'}`}
+                title="利润测算画线（结构分析：预案 / 汇流止盈区 / 目标位）"
+              >
+                止盈
               </button>
             </>
           )}
