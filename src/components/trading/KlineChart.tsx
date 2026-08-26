@@ -398,7 +398,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   }, [showAutoAB9, showFibonacci, isMember]);
 
   // 更新K线数据
-  const updateChart = useCallback((klines: KlineData[]) => {
+  const updateChart = useCallback((klines: KlineData[], intv?: string) => {
     allKlinesRef.current = klines;
     if (!candleSeries.current || !volumeSeries.current) return;
 
@@ -427,12 +427,16 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       candleSeries.current.setMarkers([]);
     }
 
-    // 切换币种后重置视图，fitContent 先让价格轴适配新数据范围
+    // 视图定位：
+    // - 切换周期（intv 有值）：直接定位到最右端约 72 根，跳过 fitContent 避免视图缩放跳变
+    // - 初始加载或币种切换：先 fitContent 再定位到右端，确保价格轴适配新范围
     if (mainChart.current) {
-      mainChart.current.timeScale().fitContent();
       const bars = Math.min(72, klines.length);
       const toIdx = klines.length - 1;
       const fromIdx = Math.max(0, toIdx - bars + 1);
+      if (intv === undefined) {
+        mainChart.current.timeScale().fitContent();
+      }
       mainChart.current.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx + 4 });
     }
   }, [updateIndicators, redrawOverlayLines]);
@@ -523,16 +527,19 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   updateLastKlineRef.current = updateLastKline;
 
   const loadKlines = useCallback(async (intv: string) => {
-    setLoading(true);
+    // 切换周期不显示 loading 骨架屏 —— 新数据直接覆盖旧图，保持视觉连贯
+    // 仅初始加载（K线为空）才显示 loading，避免切换时图表闪烁
+    const isInitial = allKlinesRef.current.length === 0;
+    if (isInitial) setLoading(true);
     setError(null);
     try {
       // 300 根：OKX 直连上限（Binance/代理均支持更多），大级别波段的 A 点更不容易落在窗口外
       const klines = await fetchKlinesApi(symbol, okxId, intv, 300);
-      updateChartRef.current(klines);
+      updateChartRef.current(klines, intv);
     } catch (err: any) {
       setError(err.message || '获取K线数据失败');
     } finally {
-      setLoading(false);
+      if (isInitial) setLoading(false);
     }
   }, [symbol, okxId]);
 
@@ -705,6 +712,18 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // 加载数据 + 连接 WebSocket
   useEffect(() => {
     loadKlines(interval);
+
+    // 预加载相邻周期数据 —— 利用 fetchKlines 的 TTL 缓存，
+    // 用户点切换时直接命中缓存，零等待。
+    // 比如当前是 15m，预加载 5m 和 1h；当前是 1h，预加载 15m 和 4h
+    const idx = INTERVALS.findIndex((i) => i.value === interval);
+    if (idx > 0) {
+      // 不 await，后台静默拉取
+      fetchKlinesApi(symbol, okxId, INTERVALS[idx - 1].value, 300).catch(() => {});
+    }
+    if (idx >= 0 && idx < INTERVALS.length - 1) {
+      fetchKlinesApi(symbol, okxId, INTERVALS[idx + 1].value, 300).catch(() => {});
+    }
 
     // 连接实时 WebSocket（按当前币种 + 周期订阅）
     const { updatePrice } = usePriceStore.getState();
