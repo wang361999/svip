@@ -124,7 +124,7 @@ interface ProfitLineData {
   confluence: { low: number; high: number; mid: number; methods: string[]; probabilityPct: number } | null;
   extendedTarget: { label: string; price: number; probabilityPct: number } | null;
   invalidation: { price: number; note: string } | null;
-  liquidityPools?: { price: number; side: 'high' | 'low'; distancePct: number }[];
+  liquidityPools?: { price: number; side: 'high' | 'low'; distancePct: number; formedAt?: number }[];
   fairValueGaps?: { low: number; high: number; ce: number; dir: 'bull' | 'bear'; distancePct: number; formedAt?: number }[];
 }
 
@@ -552,9 +552,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     drawZonesRef.current();
   }, [showAutoAB9, showFibonacci, showProfit, showMicro, isMember, symbol]);
 
-  // === 测算透明框：把"线"升级为"面"（风险区红框 / 盈利区绿框 / 汇流区琥珀框 / FVG靛蓝框 / 池青色带） ===
-  // 画在覆盖K线的第二层 canvas 上：填充用 7%-13% 低透明度（不遮K线），边框 30% 左右勾出边界，
-  // 关键价位仍由价格线承担（右侧价格轴有精确读数），透明框负责"一眼看清盈亏结构"。
+  // === 测算透明区（TradingView 头寸工具风格：渐变填充 + 右侧标签芯片） ===
+  // 渐变自锚点向右渐隐（左实右虚），无描框 —— 区域边界由价格线本身勾出；
+  // 右侧贴价格轴放标签芯片（深底彩字圆角胶囊），显示各区块的精确盈亏百分比。
   const drawZones = useCallback(() => {
     const canvas = zoneCanvasRef.current;
     const chart = mainChart.current;
@@ -604,62 +604,97 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     };
 
     const klines = allKlinesRef.current;
-    const lastTime = klines.length ? klines[klines.length - 1].time : null;
     const xEnd = paneW - 2;
 
-    // 通用画框：填充 + 1px 边框 + 左上角小标签（框太矮时省略标签避免叠字）
-    const box = (
-      y1: number | null, y2: number | null, x0: number, x1: number,
-      fill: string, border: string, label?: string,
-    ) => {
-      if (y1 == null || y2 == null || !Number.isFinite(y1) || !Number.isFinite(y2)) return;
-      const top = Math.max(0, Math.min(y1, y2));
-      const bot = Math.min(paneH, Math.max(y1, y2));
-      if (bot - top < 1 || x1 - x0 < 6) return;
-      ctx.fillStyle = fill;
-      ctx.fillRect(x0, top, x1 - x0, bot - top);
-      ctx.strokeStyle = border;
+    // 右侧标签芯片：深底 + 彩字 + 细描边的圆角胶囊，贴价格轴一侧；
+    // 记录已占用纵向槽位，重叠时丢弃（如汇流区与 TP2 同价时不叠字）
+    const chipSlots: { top: number; bottom: number }[] = [];
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    const chip = (yMid: number, text: string, color: string, border: string) => {
+      ctx.font = '600 10px -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif';
+      const cw = ctx.measureText(text).width + 14;
+      const ch = 17;
+      const cx = paneW - cw - 8;
+      const cy = Math.round(yMid - ch / 2);
+      if (cx < 8 || cy < 3 || cy + ch > paneH - 3) return;
+      if (chipSlots.some((s) => cy < s.bottom + 3 && cy + ch > s.top - 3)) return;
+      chipSlots.push({ top: cy, bottom: cy + ch });
+      const r = 3.5;
+      ctx.beginPath();
+      ctx.moveTo(cx + r, cy);
+      ctx.arcTo(cx + cw, cy, cx + cw, cy + ch, r);
+      ctx.arcTo(cx + cw, cy + ch, cx, cy + ch, r);
+      ctx.arcTo(cx, cy + ch, cx, cy, r);
+      ctx.arcTo(cx, cy, cx + cw, cy, r);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(10, 14, 23, 0.88)';
+      ctx.fill();
       ctx.lineWidth = 1;
-      ctx.strokeRect(Math.round(x0) + 0.5, Math.round(top) + 0.5, Math.round(x1 - x0) - 1, Math.round(bot - top) - 1);
-      if (label && bot - top >= 15 && x1 - x0 > 44) {
-        ctx.font = '11px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
-        ctx.fillStyle = border;
-        ctx.textBaseline = 'top';
-        ctx.fillText(label, x0 + 5, top + 3);
-      }
+      ctx.strokeStyle = border;
+      ctx.stroke();
+      ctx.fillStyle = color;
+      ctx.fillText(text, cx + cw / 2, cy + ch / 2 + 0.5);
     };
 
-    // 投影框横向锚点：最后一根K线往前约 24 根 → 右边缘。
-    // 用户回看历史（最后一根K线不在可视区）时不画，避免色块盖在旧K线上造成误导。
-    let projX0: number | null = null;
-    if (lastTime != null && xOf(lastTime) != null) {
-      const anchor = klines[Math.max(0, klines.length - 24)];
-      const ax = anchor ? xOf(anchor.time) : null;
-      if (ax != null) projX0 = Math.max(0, ax);
-    }
+    // 渐变填充区：左实右虚（头寸工具经典渐隐），边界交给价格线，不描框
+    const zoneFill = (
+      y1: number | null, y2: number | null, x0: number,
+      rgb: string, a0: number, a1 = 0.02,
+    ): { top: number; mid: number; h: number } | null => {
+      if (y1 == null || y2 == null || !Number.isFinite(y1) || !Number.isFinite(y2)) return null;
+      const top = Math.max(0, Math.min(y1, y2));
+      const bot = Math.min(paneH, Math.max(y1, y2));
+      if (bot - top < 1.5 || xEnd - x0 < 8) return null;
+      const g = ctx.createLinearGradient(x0, 0, xEnd, 0);
+      g.addColorStop(0, `rgba(${rgb}, ${a0})`);
+      g.addColorStop(1, `rgba(${rgb}, ${a1})`);
+      ctx.fillStyle = g;
+      ctx.fillRect(x0, top, xEnd - x0, bot - top);
+      return { top, mid: (top + bot) / 2, h: bot - top };
+    };
 
-    if (showProfit && projX0 != null) {
-      const pa = pdata.plans.find((p) => p.id === 'A');
-      if (pa) {
-        // 风险区（入场↔止损，红）：面视化"亏多少"
-        box(yOf(pa.entry), yOf(pa.stop), projX0, xEnd,
-          'rgba(239, 68, 68, 0.08)', 'rgba(239, 68, 68, 0.32)', '风险区');
-        // 盈利区①（入场↔TP1，浅绿）
-        box(yOf(pa.entry), yOf(pa.tp1), projX0, xEnd,
-          'rgba(34, 197, 94, 0.07)', 'rgba(34, 197, 94, 0.30)', '盈利①');
-        // 盈利区②（TP1↔TP2，绿加深一档：越远的目标区颜色越实）
-        box(yOf(pa.tp1), yOf(pa.tp2), projX0, xEnd,
-          'rgba(34, 197, 94, 0.13)', 'rgba(34, 197, 94, 0.35)', '盈利②');
-      }
-      // 汇流止盈区（琥珀框）
-      if (pdata.confluence) {
-        box(yOf(pdata.confluence.high), yOf(pdata.confluence.low), projX0, xEnd,
-          'rgba(245, 158, 11, 0.10)', 'rgba(245, 158, 11, 0.40)', `汇流区 ${pdata.confluence.probabilityPct}%`);
+    if (showProfit) {
+      // 投影区仅当最后一根K线在可视区附近才画（回看历史时不投影，避免色块盖旧K线误导）
+      let planVisible = false;
+      try {
+        const lr = ts.getVisibleLogicalRange();
+        if (lr && klines.length) {
+          const lastIdx = klines.length - 1;
+          planVisible = lr.to >= lastIdx - 1 && lr.from <= lastIdx + 8;
+        }
+      } catch {}
+      if (planVisible && klines.length > 2) {
+        // 锚点：最后一根K线往左约 18 根（覆盖近期K线 + 右侧未来空间）
+        const xLast = xOf(klines[klines.length - 1].time);
+        const xPrev = xOf(klines[klines.length - 2].time);
+        if (xLast != null && xPrev != null) {
+          const step = Math.max(1, Math.abs(xLast - xPrev));
+          const projX0 = Math.max(0, xLast - step * 18);
+          const pa = pdata.plans.find((p) => p.id === 'A');
+          if (pa) {
+            const dist = (a: number, b: number) => ((Math.abs(a - b) / pa.entry) * 100).toFixed(1);
+            // 风险区（入场↔止损，红渐变）
+            const rz = zoneFill(yOf(pa.entry), yOf(pa.stop), projX0, '239, 68, 68', 0.13);
+            if (rz && rz.h >= 17) chip(rz.mid, `风险 −${dist(pa.stop, pa.entry)}%`, '#f87171', 'rgba(239, 68, 68, 0.45)');
+            // 盈利区①（入场↔TP1，浅绿）
+            const z1 = zoneFill(yOf(pa.entry), yOf(pa.tp1), projX0, '34, 197, 94', 0.10);
+            if (z1 && z1.h >= 17) chip(z1.mid, `TP1 +${dist(pa.tp1, pa.entry)}%`, '#4ade80', 'rgba(34, 197, 94, 0.45)');
+            // 盈利区②（TP1↔TP2，绿加深一档：越远的目标颜色越实）
+            const z2 = zoneFill(yOf(pa.tp1), yOf(pa.tp2), projX0, '34, 197, 94', 0.17);
+            if (z2 && z2.h >= 17) chip(z2.mid, `TP2 +${dist(pa.tp2, pa.entry)}%`, '#4ade80', 'rgba(34, 197, 94, 0.45)');
+          }
+          // 汇流止盈区（琥珀渐变）
+          if (pdata.confluence) {
+            const cz = zoneFill(yOf(pdata.confluence.high), yOf(pdata.confluence.low), projX0, '245, 158, 11', 0.15);
+            if (cz && cz.h >= 17) chip(cz.mid, `汇流区 ${pdata.confluence.probabilityPct}%`, '#fbbf24', 'rgba(245, 158, 11, 0.5)');
+          }
+        }
       }
     }
 
     if (showMicro) {
-      // FVG 缺口（靛蓝框）：从形成时间延伸到右缘；形成点在可视区左侧则从 0 开始
+      // FVG 缺口（靛蓝渐变）：从形成时间渐隐至右缘；形成点在可视区左侧则从 0 开始
       let visFrom: number | null = null;
       try {
         const vr = ts.getVisibleRange();
@@ -671,14 +706,17 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         if (visFrom != null && f.formedAt < visFrom) x0 = 0;
         else x0 = xOf(f.formedAt);
         if (x0 == null) continue;
-        box(yOf(f.high), yOf(f.low), Math.max(0, x0), xEnd,
-          'rgba(99, 102, 241, 0.12)', 'rgba(99, 102, 241, 0.38)', 'FVG');
+        zoneFill(yOf(f.high), yOf(f.low), Math.max(0, x0), '99, 102, 241', 0.13);
       }
-      // 流动性池（青色细带，全宽：池是"当前时点"的价位，不随K线滚动）
+      // 流动性池（青色细带）：从池形成点渐隐至右缘（不再是全宽横带）
       for (const p of pdata.liquidityPools || []) {
-        const half = p.price * 0.0012;
-        box(yOf(p.price + half), yOf(p.price - half), 0, xEnd,
-          'rgba(6, 182, 212, 0.10)', 'rgba(6, 182, 212, 0.32)');
+        let x0: number | null = null;
+        if (p.formedAt == null) x0 = 0;
+        else if (visFrom != null && p.formedAt < visFrom) x0 = 0;
+        else x0 = xOf(p.formedAt);
+        if (x0 == null) continue;
+        const half = p.price * 0.0015;
+        zoneFill(yOf(p.price + half), yOf(p.price - half), Math.max(0, x0), '6, 182, 212', 0.12);
       }
     }
   }, [showProfit, showMicro, isMember, symbol]);
