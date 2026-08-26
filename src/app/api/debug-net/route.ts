@@ -70,7 +70,12 @@ export const GET = createHandler(async () => {
     if (!r.ok || r.bytes === 0) return { items: 0, pubDates: [] as string[] };
     const full = r.snippetFull || '';
     const items = (full.match(/<item>/g) || []).length;
-    const dates = [...full.matchAll(/<pubDate>([\s\S]*?)<\/pubDate>/g)].slice(0, 5).map((m) => m[1]);
+    const dates: string[] = [];
+    const dateRe = /<pubDate>([\s\S]*?)<\/pubDate>/g;
+    let dm: RegExpExecArray | null;
+    while ((dm = dateRe.exec(full)) !== null && dates.length < 5) {
+      dates.push(dm[1]);
+    }
     return { items, pubDates: dates };
   };
 
