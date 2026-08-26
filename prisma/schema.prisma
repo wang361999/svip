@@ -17,7 +17,8 @@ model User {
   membershipExpires String?
   strategyConfig   String?
   // 用户画线偏好
-  prefAllDrawings  String        @default("false")
+  prefAB9           String        @default("true")
+  prefFibonacci     String        @default("false")
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 

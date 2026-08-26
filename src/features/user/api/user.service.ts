@@ -13,7 +13,8 @@ type UpdatePreferencesInput = z.infer<typeof updatePreferencesSchema>;
 /** 安全的用户偏好默认值（数据库列不同步时使用） */
 function safePreferences(fallback: Partial<UserPreferences> = {}): UserPreferences {
   return {
-    prefAllDrawings: false,
+    prefAB9: true,
+    prefFibonacci: false,
     ...fallback,
   };
 }
@@ -24,13 +25,14 @@ export const userService = {
     try {
       const record = await prisma.user.findUnique({
         where: { id: userId },
-        select: { prefAllDrawings: true },
+        select: { prefAB9: true, prefFibonacci: true },
       });
       if (!record) {
         throw new NotFoundError('USER_NOT_FOUND', '用户不存在');
       }
       return {
-        prefAllDrawings: record.prefAllDrawings === 'true',
+        prefAB9: record.prefAB9 === 'true',
+        prefFibonacci: record.prefFibonacci === 'true',
       };
     } catch {
       // 数据库列不同步时，返回安全默认值
@@ -47,25 +49,26 @@ export const userService = {
       }
 
       const updateData: Record<string, string> = {};
-      if (input.prefAllDrawings !== undefined) {
-        updateData.prefAllDrawings = input.prefAllDrawings ? 'true' : 'false';
+      if (input.prefAB9 !== undefined) {
+        updateData.prefAB9 = input.prefAB9 ? 'true' : 'false';
+      }
+      if (input.prefFibonacci !== undefined) {
+        updateData.prefFibonacci = input.prefFibonacci ? 'true' : 'false';
       }
 
       const record = await prisma.user.update({
         where: { id: userId },
         data: updateData,
-        select: { prefAllDrawings: true },
+        select: { prefAB9: true, prefFibonacci: true },
       });
 
       return {
-        prefAllDrawings: record.prefAllDrawings === 'true',
+        prefAB9: record.prefAB9 === 'true',
+        prefFibonacci: record.prefFibonacci === 'true',
       };
     } catch {
       // 数据库列不同步时，返回内存中的值
       return safePreferences(input as Partial<UserPreferences>);
     }
   },
-
-  // 策略配置的读写已随策略系统下线移除（原 getStrategyConfig / updateStrategyConfig）
-  // 数据库 User.strategyConfig 列保留不动，避免迁移；历史数据不再被使用。
 };

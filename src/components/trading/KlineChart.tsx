@@ -7,7 +7,6 @@ import {
   calcRSIArray,
   calcAB9Lines,
   calcFibonacci,
-  calcAutoLines,
 } from '@/shared/lib/indicators';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
@@ -76,18 +75,17 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const rAFRef = useRef<number | null>(null);
   const lastTickAtRef = useRef<number>(0);
 
-  // 自动画线总开关（AB9 + 斐波那契 + 支撑阻力 + 趋势线）
-  const [showAllDrawings, setShowAllDrawings] = useState(false);
+  // AB9线
+  const [showAutoAB9, setShowAutoAB9] = useState(true);
+  // 斐波那契回调线
+  const [showFibonacci, setShowFibonacci] = useState(false);
   const [prefsLoaded, setPrefsLoaded] = useState(false);
+  // AB9线 ref
   const autoLinesRef = useRef<ISeriesApi<'Line'>[]>([]);
   const autoPriceLinesRef = useRef<any[]>([]);
   // 斐波那契线 ref
   const fibLinesRef = useRef<ISeriesApi<'Line'>[]>([]);
   const fibPriceLinesRef = useRef<any[]>([]);
-  // 自动划线 ref
-  const srLinesRef = useRef<ISeriesApi<'Line'>[]>([]);
-  const srPriceLinesRef = useRef<any[]>([]);
-  const trendLineRef = useRef<ISeriesApi<'Line'> | null>(null);
 
 
   const [indicators, setIndicators] = useState({
@@ -146,7 +144,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     // 同时发起 settings + preferences，不串行等待
     const settingsPromise = apiGet<Record<string, string>>('/api/settings');
     const prefsPromise = isMember
-      ? apiGet<{ prefAllDrawings?: boolean }>('/api/user/preferences').catch(() => ({}) as any)
+      ? apiGet<{ prefAB9?: boolean; prefFibonacci?: boolean }>('/api/user/preferences').catch(() => ({}) as any)
       : Promise.resolve({} as any);
 
     Promise.all([settingsPromise, prefsPromise])
@@ -166,7 +164,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           macdSlow: parseInt(data.macdSlow || '26', 10) || 26,
           macdSignal: parseInt(data.macdSignal || '9', 10) || 9,
         });
-        if (prefs.prefAllDrawings !== undefined) setShowAllDrawings(prefs.prefAllDrawings);
+        if (prefs.prefAB9 !== undefined) setShowAutoAB9(prefs.prefAB9);
+        if (prefs.prefFibonacci !== undefined) setShowFibonacci(prefs.prefFibonacci);
       })
       .catch(() => {})
       .finally(() => { if (!cancelled) setPrefsLoaded(true); });
@@ -299,43 +298,20 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
     updateIndicators();
 
-    // === 自动画线（AB9 + 斐波那契 + 支撑阻力 + 趋势线）===
+    // === AB9线 + 斐波那契回调线（各自独立控制）===
     if (mainChart.current) {
       // 先清除所有旧画线
-      for (const s of autoLinesRef.current) {
-        try { mainChart.current!.removeSeries(s); } catch {}
-      }
-      autoLinesRef.current = [];
       for (const pl of autoPriceLinesRef.current) {
         try { candleSeries.current?.removePriceLine(pl); } catch {}
       }
       autoPriceLinesRef.current = [];
-      for (const s of fibLinesRef.current) {
-        try { mainChart.current!.removeSeries(s); } catch {}
-      }
-      fibLinesRef.current = [];
       for (const pl of fibPriceLinesRef.current) {
         try { candleSeries.current?.removePriceLine(pl); } catch {}
       }
       fibPriceLinesRef.current = [];
-      for (const s of srLinesRef.current) {
-        try { mainChart.current!.removeSeries(s); } catch {}
-      }
-      srLinesRef.current = [];
-      for (const pl of srPriceLinesRef.current) {
-        try { candleSeries.current?.removePriceLine(pl); } catch {}
-      }
-      srPriceLinesRef.current = [];
-      if (trendLineRef.current) {
-        try { mainChart.current!.removeSeries(trendLineRef.current); } catch {}
-        trendLineRef.current = null;
-      }
 
-      const firstTime = klines[0].time as Time;
-      const lastTime = klines[klines.length - 1].time as Time;
-
-      if (showAllDrawings && isMember) {
-        // —— AB9线 ——
+      // —— AB9线 ——
+      if (showAutoAB9 && isMember) {
         const ab9 = calcAB9Lines(klines);
         if (ab9 && candleSeries.current) {
           const ab9Styles: Record<number, { color: string; label: string }> = {
@@ -365,8 +341,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             } catch {}
           }
         }
+      }
 
-        // —— 斐波那契回调线 ——
+      // —— 斐波那契回调线 ——
+      if (showFibonacci && isMember) {
         const fib = calcFibonacci(klines);
         if (fib && candleSeries.current) {
           const fibColors: Record<string, string> = {
@@ -396,75 +374,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             } catch {}
           }
         }
-
-        // —— 支撑/阻力位 + 趋势线 ——
-        const autoLines = calcAutoLines(klines);
-        if (autoLines && candleSeries.current) {
-          // 支撑位（绿色）
-          for (const sr of autoLines.supports) {
-            const lineWidth = sr.strength >= 3 ? 2 : 1;
-            try {
-              const pl = candleSeries.current.createPriceLine({
-                price: sr.price,
-                color: `rgba(34, 197, 94, ${0.5 + sr.strength * 0.1})`,
-                lineWidth,
-                lineStyle: 1,
-                axisLabelVisible: true,
-                title: ` 支撑`,
-              });
-              srPriceLinesRef.current.push(pl);
-            } catch {}
-          }
-          // 阻力位（红色）
-          for (const sr of autoLines.resistances) {
-            const lineWidth = sr.strength >= 3 ? 2 : 1;
-            try {
-              const pl = candleSeries.current.createPriceLine({
-                price: sr.price,
-                color: `rgba(239, 68, 68, ${0.5 + sr.strength * 0.1})`,
-                lineWidth,
-                lineStyle: 1,
-                axisLabelVisible: true,
-                title: ` 阻力`,
-              });
-              srPriceLinesRef.current.push(pl);
-            } catch {}
-          }
-          // 上升趋势线（绿色实线）
-          if (autoLines.uptrendLine) {
-            const s = mainChart.current!.addLineSeries({
-              color: 'rgba(34, 197, 94, 0.8)',
-              lineWidth: 2,
-              lineStyle: 0,
-              priceLineVisible: false,
-              lastValueVisible: false,
-              crosshairMarkerVisible: false,
-              title: '上升趋势线',
-            });
-            s.setData([
-              { time: autoLines.uptrendLine.time1 as Time, value: autoLines.uptrendLine.price1 },
-              { time: autoLines.uptrendLine.time2 as Time, value: autoLines.uptrendLine.price2 },
-            ]);
-            trendLineRef.current = s;
-          }
-          // 下降趋势线（红色实线）
-          if (autoLines.downtrendLine && !trendLineRef.current) {
-            const s = mainChart.current!.addLineSeries({
-              color: 'rgba(239, 68, 68, 0.8)',
-              lineWidth: 2,
-              lineStyle: 0,
-              priceLineVisible: false,
-              lastValueVisible: false,
-              crosshairMarkerVisible: false,
-              title: '下降趋势线',
-            });
-            s.setData([
-              { time: autoLines.downtrendLine.time1 as Time, value: autoLines.downtrendLine.price1 },
-              { time: autoLines.downtrendLine.time2 as Time, value: autoLines.downtrendLine.price2 },
-            ]);
-            trendLineRef.current = s;
-          }
-        }
       }
     }
 
@@ -480,14 +389,14 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       const fromIdx = Math.max(0, toIdx - bars + 1);
       mainChart.current.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx + 4 });
     }
-  }, [updateIndicators, showAllDrawings]);
+  }, [updateIndicators, showAutoAB9, showFibonacci]);
 
   // 切换画线开关时重新绘制
   useEffect(() => {
     if (allKlinesRef.current.length > 0) {
       updateChart(allKlinesRef.current);
     }
-  }, [showAllDrawings, updateChart]);
+  }, [showAutoAB9, showFibonacci, updateChart]);
 
   // Tick 实时更新（rAF + 50ms 节流，和 v24 一致）
   const flushTick = useCallback(() => {
@@ -819,16 +728,23 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
               {ind}
             </span>
           ))}
-          {/* 自动画线总开关 */}
+          {/* AB9 + 斐波那契 独立按钮 */}
           {isMember && (
             <>
               <div className="w-px h-4 bg-dark-700" />
               <button
-                onClick={() => { const v = !showAllDrawings; setShowAllDrawings(v); saveUserPref('prefAllDrawings', v); }}
-                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showAllDrawings ? 'text-cyan-400' : 'text-dark-600'}`}
-                title="自动画线（AB9 + 斐波那契 + 支撑阻力 + 趋势线）"
+                onClick={() => { const v = !showAutoAB9; setShowAutoAB9(v); saveUserPref('prefAB9', v); }}
+                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showAutoAB9 ? 'text-cyan-400' : 'text-dark-600'}`}
+                title="AB9线"
               >
-                画线
+                AB9
+              </button>
+              <button
+                onClick={() => { const v = !showFibonacci; setShowFibonacci(v); saveUserPref('prefFibonacci', v); }}
+                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showFibonacci ? 'text-cyan-400' : 'text-dark-600'}`}
+                title="斐波那契回调线"
+              >
+                FIB
               </button>
             </>
           )}

@@ -61,7 +61,8 @@ export const authService = {
         membership: user.membership,
         membershipExpires: user.membershipExpires,
         createdAt: user.createdAt,
-        prefAllDrawings: 'false',
+        prefAB9: 'true',
+        prefFibonacci: 'false',
       },
       token,
       maxAge,
@@ -112,7 +113,8 @@ export const authService = {
       membership: user.membership,
       membershipExpires: user.membershipExpires,
       createdAt: user.createdAt,
-      prefAllDrawings: 'false',
+      prefAB9: 'true',
+        prefFibonacci: 'false',
     };
   },
 
@@ -141,7 +143,8 @@ export const authService = {
       membership: user.membership,
       membershipExpires: user.membershipExpires,
       createdAt: user.createdAt,
-      prefAllDrawings: 'false',
+      prefAB9: 'true',
+        prefFibonacci: 'false',
     };
   },
 

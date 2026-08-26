@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
 export const updatePreferencesSchema = z.object({
-  prefAllDrawings: z.boolean().optional(),
+  prefAB9: z.boolean().optional(),
+  prefFibonacci: z.boolean().optional(),
 });

@@ -112,7 +112,8 @@ export const redeemCodeService = {
           data: {
             membership: 'vip',
             membershipExpires: expiresAt,
-            prefAllDrawings: 'true',
+            prefAB9: 'true',
+            prefFibonacci: 'true',
           },
         }),
       ]);
