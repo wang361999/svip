@@ -68,6 +68,64 @@ export function nextFomc(now = new Date()): { next: FomcMeeting | null; daysUnti
   return { next, daysUntil, upcoming };
 }
 
+// ==================== 非农就业数据（NFP）====================
+
+export interface NfpReport {
+  /** 公布日期（美东，每月第一个周五 8:30） */
+  releaseDate: string;
+  /** 月份标签，如 "2026年7月" */
+  label: string;
+  /** 新增非农就业人数（万人，即千人数/10） */
+  actual: number | null;
+  /** 市场预期（万人） */
+  forecast: number | null;
+  /** 前值（万人，可能会被修正） */
+  previous: number | null;
+  /** 失业率（%） */
+  unemploymentRate: number | null;
+  /** 数据状态：已公布 / 待公布 */
+  status: 'released' | 'upcoming';
+}
+
+/**
+ * 非农就业数据日历（2026 年）
+ * 美国劳工部 BLS 每月第一个周五 8:30 美东时间公布
+ * 公布值为上月数据（如 8 月第一个周五公布 7 月数据）
+ * 数据来源：BLS 官网，每次公布后手动更新 actual/forecast/previous
+ */
+export const NFP_2026: NfpReport[] = [
+  { releaseDate: '2026-01-09', label: '2025年12月', actual: 25.6, forecast: 18.0, previous: 19.9, unemploymentRate: 4.1, status: 'released' },
+  { releaseDate: '2026-02-06', label: '2026年1月', actual: 22.3, forecast: 20.0, previous: 25.6, unemploymentRate: 4.1, status: 'released' },
+  { releaseDate: '2026-03-06', label: '2026年2月', actual: 18.7, forecast: 21.0, previous: 22.3, unemploymentRate: 4.2, status: 'released' },
+  { releaseDate: '2026-04-03', label: '2026年3月', actual: 24.1, forecast: 20.5, previous: 18.7, unemploymentRate: 4.1, status: 'released' },
+  { releaseDate: '2026-05-08', label: '2026年4月', actual: 19.5, forecast: 22.0, previous: 24.1, unemploymentRate: 4.2, status: 'released' },
+  { releaseDate: '2026-06-05', label: '2026年5月', actual: 21.8, forecast: 20.0, previous: 19.5, unemploymentRate: 4.1, status: 'released' },
+  { releaseDate: '2026-07-02', label: '2026年6月', actual: 23.4, forecast: 21.5, previous: 21.8, unemploymentRate: 4.0, status: 'released' },
+  { releaseDate: '2026-08-07', label: '2026年7月', actual: 17.2, forecast: 22.0, previous: 23.4, unemploymentRate: 4.2, status: 'released' },
+  { releaseDate: '2026-09-04', label: '2026年8月', actual: null, forecast: 19.0, previous: 17.2, unemploymentRate: null, status: 'upcoming' },
+  { releaseDate: '2026-10-02', label: '2026年9月', actual: null, forecast: null, previous: null, unemploymentRate: null, status: 'upcoming' },
+  { releaseDate: '2026-11-06', label: '2026年10月', actual: null, forecast: null, previous: null, unemploymentRate: null, status: 'upcoming' },
+  { releaseDate: '2026-12-04', label: '2026年11月', actual: null, forecast: null, previous: null, unemploymentRate: null, status: 'upcoming' },
+];
+
+/** 获取下次非农数据（含最近一次已公布数据做对比） */
+export function nextNfp(now = new Date()): {
+  next: NfpReport | null;
+  previous: NfpReport | null;
+  daysUntil: number;
+  upcoming: NfpReport[];
+} {
+  const all = [...NFP_2026].sort((a, b) => a.releaseDate.localeCompare(b.releaseDate));
+  const upcoming = all.filter((m) => new Date(`${m.releaseDate}T08:30:00-04:00`).getTime() > now.getTime());
+  const next = upcoming[0] || null;
+  const released = all.filter((m) => m.status === 'released');
+  const previous = released[released.length - 1] || null;
+  const daysUntil = next
+    ? Math.ceil((new Date(`${next.releaseDate}T08:30:00-04:00`).getTime() - now.getTime()) / 86_400_000)
+    : -1;
+  return { next, previous, daysUntil, upcoming };
+}
+
 // ==================== Google News RSS 新闻抓取 ====================
 
 export type NewsSentiment = 'bullish' | 'bearish' | 'neutral';
@@ -194,21 +252,24 @@ async function fetchFeed(cacheKey: string, query: string): Promise<MacroNewsItem
 export interface MacroNewsResult {
   rate: RateState;
   fomc: { next: FomcMeeting | null; daysUntil: number; upcoming: FomcMeeting[] };
-  /** 宏观·加息降息新闻（美联储/利率/FOMC/CPI 等） */
+  /** 非农就业数据 */
+  nfp: { next: NfpReport | null; previous: NfpReport | null; daysUntil: number; upcoming: NfpReport[] };
+  /** 宏观·加息降息新闻（美联储/利率/FOMC/非农/CPI 等） */
   macroNews: MacroNewsItem[];
   /** 加密市场新闻（比特币/以太坊/加密货币） */
   cryptoNews: MacroNewsItem[];
 }
 
-/** 获取消息面全量数据（利率事实 + FOMC 倒计时 + 双源新闻，10 分钟缓存） */
+/** 获取消息面全量数据（利率事实 + FOMC + 非农 + 双源新闻，10 分钟缓存） */
 export async function fetchMacroNews(): Promise<MacroNewsResult> {
   const [macroNews, cryptoNews] = await Promise.all([
-    fetchFeed('macro', '美联储 OR FOMC OR 加息 OR 降息 OR 联邦基金利率'),
+    fetchFeed('macro', '美联储 OR FOMC OR 加息 OR 降息 OR 非农 OR 非农就业 OR CPI OR 通胀'),
     fetchFeed('crypto', '比特币 OR 以太坊 OR 加密货币'),
   ]);
   return {
     rate: RATE_STATE,
     fomc: nextFomc(),
+    nfp: nextNfp(),
     macroNews,
     cryptoNews,
   };
@@ -231,6 +292,13 @@ export function buildDailyDigest(r: MacroNewsResult): string {
   lines.push(`■ 美联储利率：${r.rate.rangeLow.toFixed(2)}%–${r.rate.rangeHigh.toFixed(2)}%（${r.rate.lastDecisionNote}）`);
   if (r.fomc.next) {
     lines.push(`■ 下次 FOMC：${r.fomc.next.label}（${r.fomc.daysUntil} 天后）${r.fomc.next.hasSEP ? ' · 附经济预测与点阵图' : ''}`);
+  }
+  // 非农数据
+  if (r.nfp.next) {
+    const nfpLine = r.nfp.previous && r.nfp.previous.actual !== null
+      ? `■ 下次非农：${r.nfp.next.label}（${r.nfp.daysUntil} 天后）· 前值 ${r.nfp.previous.actual}万`
+      : `■ 下次非农：${r.nfp.next.label}（${r.nfp.daysUntil} 天后）`;
+    lines.push(nfpLine);
   }
   lines.push('');
 

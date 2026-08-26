@@ -28,9 +28,20 @@ interface FomcMeeting {
   hasSEP: boolean;
 }
 
+interface NfpReport {
+  releaseDate: string;
+  label: string;
+  actual: number | null;
+  forecast: number | null;
+  previous: number | null;
+  unemploymentRate: number | null;
+  status: 'released' | 'upcoming';
+}
+
 interface MacroNewsData {
   rate: { rangeLow: number; rangeHigh: number; lastDecisionDate: string; lastDecisionNote: string; updatedAt: string };
   fomc: { next: FomcMeeting | null; daysUntil: number; upcoming: FomcMeeting[] };
+  nfp: { next: NfpReport | null; previous: NfpReport | null; daysUntil: number; upcoming: NfpReport[] };
   macroNews: NewsItem[];
   cryptoNews: NewsItem[];
   digest: string;
@@ -126,7 +137,7 @@ export default function MacroNewsPage() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-xl font-bold text-white">消息面</h1>
-            <p className="text-xs text-dark-500 mt-1">美联储利率 · 加息降息动态 · 宏观与加密新闻</p>
+            <p className="text-xs text-dark-500 mt-1">美联储利率 · 非农就业 · 宏观与加密新闻</p>
           </div>
           <div className="flex items-center gap-3">
             <button onClick={load} disabled={loading} className="text-xs text-dark-400 hover:text-white transition-colors">
@@ -183,6 +194,96 @@ export default function MacroNewsPage() {
             )}
             <div className="text-dark-600 text-[10px] mt-3">
               利率数据截至 {data.rate.lastDecisionDate} 决议 · 资料来源：美联储官网
+            </div>
+          </div>
+        )}
+
+        {/* 非农就业数据卡 */}
+        {data && data.nfp.next && (
+          <div className="glass-card p-5 mb-5">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <div className="text-dark-500 text-xs mb-1">非农就业数据（NFP）</div>
+                <div className="flex items-baseline gap-3">
+                  {data.nfp.previous && data.nfp.previous.actual !== null ? (
+                    <>
+                      <div className="text-3xl font-bold text-white leading-none">
+                        {data.nfp.previous.actual}
+                        <span className="text-lg ml-1">万</span>
+                      </div>
+                      <div className="text-dark-400 text-xs">
+                        {data.nfp.previous.label}
+                        {data.nfp.previous.forecast !== null && (
+                          <span className="text-dark-500 ml-2">预期 {data.nfp.previous.forecast} 万</span>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-dark-400 text-sm">暂无数据</div>
+                  )}
+                </div>
+                {data.nfp.previous && data.nfp.previous.unemploymentRate !== null && (
+                  <div className="text-dark-400 text-xs mt-2">
+                    失业率 <span className="text-white font-medium">{data.nfp.previous.unemploymentRate}%</span>
+                  </div>
+                )}
+              </div>
+              <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-center min-w-[120px]">
+                <div className="text-dark-400 text-[10px] mb-0.5">下次公布</div>
+                <div className="text-white text-lg font-bold leading-none">{data.nfp.daysUntil} 天</div>
+                <div className="text-amber-400 text-xs mt-1">
+                  {data.nfp.next.label}
+                </div>
+              </div>
+            </div>
+
+            {/* 近期非农数据对比 */}
+            {data.nfp.previous && data.nfp.previous.actual !== null && data.nfp.previous.previous !== null && (
+              <div className="flex flex-wrap gap-4 mt-4 pt-4 border-t border-dark-800">
+                <div>
+                  <div className="text-dark-500 text-[10px] mb-0.5">实际值</div>
+                  <div className={`text-sm font-semibold ${
+                    data.nfp.previous.forecast !== null
+                      ? data.nfp.previous.actual > data.nfp.previous.forecast
+                        ? 'text-red-400'
+                        : data.nfp.previous.actual < data.nfp.previous.forecast
+                        ? 'text-green-400'
+                        : 'text-white'
+                      : 'text-white'
+                  }`}>
+                    {data.nfp.previous.actual} 万
+                    {data.nfp.previous.forecast !== null && (
+                      <span className="text-dark-500 text-[10px] ml-1">
+                        ({data.nfp.previous.actual > data.nfp.previous.forecast ? '超预期' : data.nfp.previous.actual < data.nfp.previous.forecast ? '低于预期' : '符合预期'})
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-dark-500 text-[10px] mb-0.5">预期值</div>
+                  <div className="text-sm text-dark-300">
+                    {data.nfp.previous.forecast !== null ? `${data.nfp.previous.forecast} 万` : '—'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-dark-500 text-[10px] mb-0.5">前值</div>
+                  <div className="text-sm text-dark-300">{data.nfp.previous.previous} 万</div>
+                </div>
+                <div>
+                  <div className="text-dark-500 text-[10px] mb-0.5">环比</div>
+                  <div className={`text-sm font-semibold ${
+                    data.nfp.previous.actual > data.nfp.previous.previous
+                      ? 'text-red-400'
+                      : 'text-green-400'
+                  }`}>
+                    {data.nfp.previous.actual > data.nfp.previous.previous ? '+' : ''}
+                    {(data.nfp.previous.actual - data.nfp.previous.previous).toFixed(1)} 万
+                  </div>
+                </div>
+              </div>
+            )}
+            <div className="text-dark-600 text-[10px] mt-3">
+              美国劳工部 BLS · 每月第一个周五 8:30 美东时间公布 · 数据为上月数据
             </div>
           </div>
         )}
