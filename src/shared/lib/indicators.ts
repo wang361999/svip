@@ -664,8 +664,8 @@ export type TrendDirection = 'bullish' | 'bearish' | 'neutral';
 export interface TrendSignal {
   /** 趋势方向 */
   direction: TrendDirection;
-  /** 强度评分：-3（极空）~ +3（极多），三项结构特征各记 ±1 */
-  score: number;
+  /** 结构强度：strong（高低点同步）/ weak（仅单侧确认）/ neutral */
+  strength: 'strong' | 'weak' | 'neutral';
   /** 评级标签：强多头 / 偏多 / 震荡 / 偏空 / 强空头 */
   label: string;
   /** 最新收盘价 */
@@ -679,22 +679,27 @@ export interface TrendSignal {
 }
 
 /**
- * 结构趋势判定：完全基于高低点结构，不用任何均线。
+ * 纯结构趋势判定：完全基于高低点结构，不加权、不打分。
  *
- * 三项结构特征（每项 +1 多头 / -1 空头 / 0 中性）：
- *   1. 高点结构：最近 2 个分形高点，递升 +1，递降 -1
- *   2. 低点结构：最近 2 个分形低点，递升 +1，递降 -1
- *   3. 最近波段方向：最近完成的完整波段（endIdx 最大），上升 +1，下降 -1
+ * 道氏理论核心定义：
+ *   上升趋势 = 更高的高点（HH） + 更高的低点（HL）
+ *   下降趋势 = 更低的高点（LH） + 更低的低点（LL）
  *
- * score ≥ 2 强多头 / 1 偏多 / 0 震荡 / -1 偏空 / ≤ -2 强空头
+ * 五种结构状态（无任何人为加权，纯结构推导）：
  *
- * 为什么用结构不用均线：
- *   - 均线本质是"价格的滞后平滑"，结构（高低点抬升/下降）才是趋势的直接定义
- *   - 道氏理论核心：上升趋势 = 更高的高点 + 更高的低点；下降趋势反之
- *   - 震荡行情中均线频繁假突破，结构法更稳健
+ *   强多头  HH 且 HL       高点递升 + 低点递升，趋势完整确认
+ *   偏多    仅 HL          低点已抬升，高点尚未突破（酝酿中）
+ *   震荡    HH 与 LL 不一致  或分形不足无法判定
+ *   偏空    仅 LH          高点已下降，低点尚未跌破（酝酿中）
+ *   强空头  LH 且 LL       高点递降 + 低点递降，趋势完整确认
  *
- * 分形不足时对应项记 0 分；两侧分形全空返回 null。
- * 比较带 1e-6 相对容差，避免浮点噪声把"平顶/平底"误判成抬升/下降。
+ * 为什么不用打分：
+ *   - 加减分是人为加权，"高点+1、低点+1、波段+1" 的权重没有客观依据
+ *   - 结构本身就是趋势的定义，不是"得分越高趋势越强"，而是"结构是否成立"
+ *   - 最近波段方向是高低点结构的结果，不应作为第三项重复计分
+ *
+ * 比较带 1e-6 相对容差，避免浮点噪声把"平顶/平底"误判。
+ * 高点或低点不足 2 个分形时，对应侧视为"无法判定"。
  */
 export function calcTrendSignal(klines: KlineData[]): TrendSignal | null {
   if (!klines || klines.length < 20) return null;
@@ -704,57 +709,64 @@ export function calcTrendSignal(klines: KlineData[]): TrendSignal | null {
   const prevClose = klines[last - 1]?.close ?? price;
   const changePercent = prevClose !== 0 ? ((price - prevClose) / prevClose) * 100 : 0;
 
-  // 复用项目已有的分形检测（strength=3，即左右各 3 根确认的局部极值）
+  // 复用项目已有的分形检测（strength=3，左右各 3 根确认的局部极值）
   const { fractalHighs, fractalLows } = detectFractals(klines);
 
   // 相对容差：按价格量级缩放（ETH≈3000 时约 0.003 USDT）
   const eps = Math.max(price, 1) * 1e-6;
 
-  let score = 0;
-
-  // 1. 高点结构：最近 2 个分形高点的方向
+  // 高点结构：最近 2 个分形高点
   const highs = fractalHighs.slice(-2);
+  let hh = false; // higher high  高点递升
+  let lh = false; // lower high   高点递降
   if (highs.length === 2) {
-    if (highs[1].price > highs[0].price + eps) score += 1;      // 高点递升
-    else if (highs[1].price < highs[0].price - eps) score -= 1; // 高点递降
+    if (highs[1].price > highs[0].price + eps) hh = true;
+    else if (highs[1].price < highs[0].price - eps) lh = true;
   }
 
-  // 2. 低点结构：最近 2 个分形低点的方向
+  // 低点结构：最近 2 个分形低点
   const lows = fractalLows.slice(-2);
+  let hl = false; // higher low   低点递升
+  let ll = false; // lower low    低点递降
   if (lows.length === 2) {
-    if (lows[1].price > lows[0].price + eps) score += 1;      // 低点递升
-    else if (lows[1].price < lows[0].price - eps) score -= 1; // 低点递降
+    if (lows[1].price > lows[0].price + eps) hl = true;
+    else if (lows[1].price < lows[0].price - eps) ll = true;
   }
 
-  // 3. 最近波段方向：最近完成的完整波段（endIdx 最大）
-  const swings = buildSwings(fractalHighs, fractalLows, 1); // 1% 阈值即可，趋势判定不需要大波段
-  if (swings.length > 0) {
-    const lastSwing = [...swings].sort((a, b) => b.endIdx - a.endIdx)[0];
-    if (lastSwing.direction === 'up') score += 1;
-    else score -= 1;
-  }
-
+  // 纯结构判定，不加权不打分
   let direction: TrendDirection;
+  let strength: 'strong' | 'weak' | 'neutral';
   let label: string;
-  if (score >= 2) {
+
+  if (hh && hl) {
+    // 高点递升 + 低点递升 → 完整上升趋势
     direction = 'bullish';
+    strength = 'strong';
     label = '强多头';
-  } else if (score === 1) {
-    direction = 'bullish';
-    label = '偏多';
-  } else if (score === 0) {
-    direction = 'neutral';
-    label = '震荡';
-  } else if (score === -1) {
+  } else if (lh && ll) {
+    // 高点递降 + 低点递降 → 完整下降趋势
     direction = 'bearish';
+    strength = 'strong';
+    label = '强空头';
+  } else if (hl && !lh && !ll) {
+    // 仅低点抬升（高点方向不明）→ 偏多酝酿
+    direction = 'bullish';
+    strength = 'weak';
+    label = '偏多';
+  } else if (lh && !hl && !hh) {
+    // 仅高点下降（低点方向不明）→ 偏空酝酿
+    direction = 'bearish';
+    strength = 'weak';
     label = '偏空';
   } else {
-    direction = 'bearish';
-    label = '强空头';
+    // 结构不一致（HH+LL / LH+HL）或分形不足 → 震荡
+    direction = 'neutral';
+    strength = 'neutral';
+    label = '震荡';
   }
 
   const lastHigh = fractalHighs.length > 0 ? fractalHighs[fractalHighs.length - 1].price : null;
   const lastLow = fractalLows.length > 0 ? fractalLows[fractalLows.length - 1].price : null;
 
-  return { direction, score, label, price, lastHigh, lastLow, changePercent };
+  return { direction, strength, label, price, lastHigh, lastLow, changePercent };
 }
