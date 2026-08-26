@@ -375,6 +375,133 @@ function volumeNodes(klines: KlineData[]): { price: number; volume: number }[] {
     .map(([price, volume]) => ({ price: Math.round(price * 100) / 100, volume }));
 }
 
+// ==================== 微观结构位（流动性池 + FVG） ====================
+
+/** 未扫流动性池：等高/等低点对形成的止损簇（价格倾向先扫荡再反转） */
+export interface LiquidityPool {
+  /** 池位（等高点取较高者 / 等低点取较低者） */
+  price: number;
+  /** 等高点池（上方止损簇） / 等低点池（下方止损簇） */
+  side: 'high' | 'low';
+  /** 池形成时间（第二个端点） */
+  formedAt: number;
+  /** 距当前价百分比（正=上方） */
+  distancePct: number;
+}
+
+/**
+ * 等高/等低点对 → 流动性池
+ * 判定：两摆动点价差 < 0.3%，间隔 >= 8 根；第二端点确认后至今池位未被扫过（未破=池子还在）
+ * 回测口径（Binance 4h×1000 根，ETH/BTC/SOL）：触及率 68-76%，触及后反转率 62-78%，
+ * 平均扫过幅度 0.85-0.93×ATR —— 池位本身即可作为止盈挂单位
+ */
+function findLiquidityPools(klines: KlineData[], currentPrice: number): LiquidityPool[] {
+  const seg = klines.slice(-120);
+  if (seg.length < 30 || currentPrice <= 0) return [];
+  const { highs, lows } = findSwings(seg);
+  const tol = 0.003;
+  const pools: LiquidityPool[] = [];
+
+  const scan = (pts: { index: number; price: number }[], side: 'high' | 'low') => {
+    for (let i = 0; i < pts.length; i++) {
+      for (let j = i + 1; j < pts.length; j++) {
+        const a = pts[i];
+        const b = pts[j];
+        if (b.index - a.index < 8) continue; // 间隔太近不算独立池
+        if (Math.abs(a.price - b.price) / a.price > tol) continue;
+        const pool = side === 'high' ? Math.max(a.price, b.price) : Math.min(a.price, b.price);
+        const confirmIdx = b.index + 3; // 摆动点右侧 3 根确认后才能"看到"这个池
+        if (confirmIdx >= seg.length - 1) continue;
+        // 池位必须尚未被扫（从确认点到现在都没触及）
+        let swept = false;
+        for (let t = confirmIdx; t < seg.length; t++) {
+          if (side === 'high' ? seg[t].high >= pool : seg[t].low <= pool) {
+            swept = true;
+            break;
+          }
+        }
+        if (swept) continue;
+        pools.push({
+          price: roundPrice(pool),
+          side,
+          formedAt: seg[b.index].time,
+          distancePct: Math.round(((pool - currentPrice) / currentPrice) * 1000) / 10,
+        });
+      }
+    }
+  };
+  scan(highs, 'high');
+  scan(lows, 'low');
+
+  // 同价位附近多个池只留一个（0.4% 内合并），按距现价由近到远取前 4
+  const out: LiquidityPool[] = [];
+  for (const p of pools.sort((x, y) => Math.abs(x.distancePct) - Math.abs(y.distancePct))) {
+    if (!out.some((o) => Math.abs(o.price - p.price) / currentPrice < 0.004)) out.push(p);
+    if (out.length >= 4) break;
+  }
+  return out;
+}
+
+/** 未回补 FVG 缺口（三K失衡区，50% CE 位为回补目标） */
+export interface FairValueGap {
+  /** 缺口下沿 */
+  low: number;
+  /** 缺口上沿 */
+  high: number;
+  /** 50% 回补位（CE, Consequent Encroachment） */
+  ce: number;
+  /** 上缺口（多头失衡） / 下缺口（空头失衡） */
+  dir: 'bull' | 'bear';
+  /** 形成时间 */
+  formedAt: number;
+  /** CE 距当前价百分比（正=上方） */
+  distancePct: number;
+}
+
+/**
+ * 三K失衡缺口 → FVG
+ * 判定：K1.high < K3.low（上缺口）或 K1.low > K3.high（下缺口），宽 >= 0.15×ATR，且 CE 至今未被触及
+ * 回测口径（Binance 4h×1000 根，ETH/BTC/SOL）：50% CE 回补率 80-88%，是所有目标位中"必达率"最高的一类
+ */
+function findFairValueGaps(klines: KlineData[], currentPrice: number, atrValue: number): FairValueGap[] {
+  const seg = klines.slice(-90);
+  if (seg.length < 10 || currentPrice <= 0) return [];
+  const minWidth = Math.max(atrValue * 0.15, currentPrice * 0.0008);
+  const out: FairValueGap[] = [];
+
+  for (let i = 2; i < seg.length; i++) {
+    const k1 = seg[i - 2];
+    const k3 = seg[i];
+    const bull = k1.high < k3.low; // 上缺口：K1 最高 < K3 最低
+    const bear = k1.low > k3.high; // 下缺口：K1 最低 > K3 最高
+    if (!bull && !bear) continue;
+    const gapLow = bull ? k1.high : k3.high;
+    const gapHigh = bull ? k3.low : k1.low;
+    if (gapHigh - gapLow < minWidth) continue;
+    const ce = (gapLow + gapHigh) / 2;
+    // CE 必须尚未回补（从形成后到现在都没触及）
+    let filled = false;
+    for (let t = i + 1; t < seg.length; t++) {
+      if (seg[t].low <= ce && seg[t].high >= ce) {
+        filled = true;
+        break;
+      }
+    }
+    if (filled) continue;
+    out.push({
+      low: roundPrice(gapLow),
+      high: roundPrice(gapHigh),
+      ce: roundPrice(ce),
+      dir: bull ? 'bull' : 'bear',
+      formedAt: k3.time,
+      distancePct: Math.round(((ce - currentPrice) / currentPrice) * 1000) / 10,
+    });
+  }
+
+  // 按距现价由近到远取前 4
+  return out.sort((x, y) => Math.abs(x.distancePct) - Math.abs(y.distancePct)).slice(0, 4);
+}
+
 // ==================== 利润测算（多方法汇流） ====================
 
 /** 概率估算的展望窗口：30 根 4h（约 5 天） */
@@ -594,6 +721,10 @@ export interface StructureAnalysis {
   confluence: ConfluenceZone | null;
   /** 延伸目标（汇流区之外最远投影），无则 null */
   extendedTarget: ProfitTarget | null;
+  /** 未扫流动性池（等高/等低点止损簇，扫荡目标位），独立于本腿 */
+  liquidityPools: LiquidityPool[];
+  /** 未回补 FVG 缺口（50% CE 回补目标位），独立于本腿 */
+  fairValueGaps: FairValueGap[];
   /** AB=CD 时间对称的到达时间窗 */
   eta: { bars: number; text: string } | null;
   /** 4h ATR(14) */
@@ -633,6 +764,11 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
   const vNodes = volumeNodes(k4h);
   const gannLevels = gannEighths(k4h, currentPrice);
   const atrValue = atr(k4h);
+
+  // ---------- 微观结构位（流动性池 + FVG，独立于本腿识别，供画线与目标位参考） ----------
+  const liquidityPools = findLiquidityPools(k4h, currentPrice);
+  const fairValueGaps = findFairValueGaps(k4h, currentPrice, atrValue);
+
   const sigmaPerBar = currentPrice > 0 ? atrValue / currentPrice : 0;
   const probFrom = (anchor: number, tp: number) => Math.round(touchProbability(anchor, tp, sigmaPerBar, PROB_BARS) * 100);
 
@@ -677,6 +813,16 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
     // 江恩八分位（方向侧最近一档）
     const gn = nearestInDirection(gannLevels, currentPrice, dirSign, 0.15);
     if (gn) pushTarget('gann', gn.label, gn.price);
+    // 流动性池（方向侧最近一个未扫池：止损簇扫荡位，触及后反转率 62-86%）
+    const pool = liquidityPools
+      .filter((p) => (p.price - currentPrice) * dirSign > currentPrice * 0.005)
+      .sort((a, b) => (a.price - b.price) * dirSign)[0];
+    if (pool) pushTarget('liquidity', `流动性池·${pool.side === 'high' ? '等高' : '等低'}`, pool.price);
+    // FVG 50% 回补位（方向侧最近一个未回补缺口，回补率 80-88%）
+    const fvg = fairValueGaps
+      .filter((f) => (f.ce - currentPrice) * dirSign > currentPrice * 0.005)
+      .sort((a, b) => (a.ce - b.ce) * dirSign)[0];
+    if (fvg) pushTarget('fvg', 'FVG 50%回补', fvg.ce);
 
     // 只保留方向侧、离现价有意义（>0.5%）的目标
     profitTargets = candidates.filter((t) => (t.price - currentPrice) * dirSign > currentPrice * 0.005);
@@ -862,6 +1008,8 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
     profitTargets,
     confluence,
     extendedTarget,
+    liquidityPools,
+    fairValueGaps,
     eta,
     atr: roundPrice(atrValue),
     bias,

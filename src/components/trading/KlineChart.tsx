@@ -112,6 +112,8 @@ interface ProfitLineData {
   confluence: { low: number; high: number; mid: number; methods: string[]; probabilityPct: number } | null;
   extendedTarget: { label: string; price: number; probabilityPct: number } | null;
   invalidation: { price: number; note: string } | null;
+  liquidityPools?: { price: number; side: 'high' | 'low'; distancePct: number }[];
+  fairValueGaps?: { low: number; high: number; ce: number; dir: 'bull' | 'bear'; distancePct: number }[];
 }
 
 export default function KlineChart({ isFullscreen = false, onToggleFullscreen }: KlineChartProps) {
@@ -505,6 +507,24 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       // 6. 其余方法目标位（细灰点线，含触及概率）
       for (const t of pdata.profitTargets || []) {
         addLine(t.price, 'rgba(148, 163, 184, 0.45)', 1, 1, ` ${t.label} ${t.probabilityPct}%`);
+      }
+
+      // 7. 未扫流动性池（青色实线：等高/等低点止损簇，触及后反转率 62-86%）
+      for (const p of pdata.liquidityPools || []) {
+        addLine(
+          p.price,
+          'rgba(6, 182, 212, 0.85)',
+          2,
+          0,
+          ` 流动性池·${p.side === 'high' ? '等高' : '等低'} ${p.distancePct > 0 ? '+' : ''}${p.distancePct}%`,
+        );
+      }
+
+      // 8. 未回补 FVG 缺口（靛蓝：上下沿虚线 + 50% CE 点线，回补率 80-88%）
+      for (const f of pdata.fairValueGaps || []) {
+        addLine(f.ce, 'rgba(99, 102, 241, 0.75)', 1, 1, ` FVG·50% ${f.distancePct > 0 ? '+' : ''}${f.distancePct}%`);
+        addLine(f.high, 'rgba(99, 102, 241, 0.35)', 1, 3, '');
+        addLine(f.low, 'rgba(99, 102, 241, 0.35)', 1, 3, '');
       }
     }
   }, [showAutoAB9, showFibonacci, showProfit, isMember, symbol]);
