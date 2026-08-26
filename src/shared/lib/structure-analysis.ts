@@ -375,6 +375,123 @@ function volumeNodes(klines: KlineData[]): { price: number; volume: number }[] {
     .map(([price, volume]) => ({ price: Math.round(price * 100) / 100, volume }));
 }
 
+// ==================== 利润测算（多方法汇流） ====================
+
+/** 概率估算的展望窗口：30 根 4h（约 5 天） */
+const PROB_BARS = 30;
+
+export interface ProfitTarget {
+  /** 方法标识（measured-move / fib-1272 / ...） */
+  method: string;
+  /** 中文标签（等距测量 / 1.272 扩展 / ...） */
+  label: string;
+  price: number;
+  /** 自现价起 N 根 4h 内触及的估算概率（0-100） */
+  probabilityPct: number;
+}
+
+export interface ConfluenceZone {
+  low: number;
+  high: number;
+  mid: number;
+  /** 叠加出该区的方法标签 */
+  methods: string[];
+  /** 自现价触及近侧边缘的估算概率（0-100） */
+  probabilityPct: number;
+}
+
+/** ATR(14)：平均真实波幅 */
+function atr(klines: KlineData[], period = 14): number {
+  if (klines.length < period + 1) return 0;
+  let sum = 0;
+  for (let i = klines.length - period; i < klines.length; i++) {
+    const prevClose = klines[i - 1].close;
+    const tr = Math.max(
+      klines[i].high - klines[i].low,
+      Math.abs(klines[i].high - prevClose),
+      Math.abs(klines[i].low - prevClose),
+    );
+    sum += tr;
+  }
+  return sum / period;
+}
+
+/** 标准正态 CDF（Zelen & Severo 近似，误差 < 7.5e-8） */
+function normCdf(z: number): number {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const d = 0.3989422804014327 * Math.exp((-z * z) / 2);
+  const p = d * t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  return z >= 0 ? 1 - p : p;
+}
+
+/**
+ * 无漂移随机游走近似下，n 根 K 线内价格触及目标的概率
+ * 反射原理：P(max ≥ T) = 2·P(S_n ≥ T)，按 ATR 波动率归一化
+ * 结果截断在 [1%, 95%]，只做量级参考不做精确预测
+ */
+function touchProbability(anchorPrice: number, target: number, sigmaPerBar: number, bars: number): number {
+  if (anchorPrice <= 0 || target <= 0 || sigmaPerBar <= 0 || bars <= 0) return 0;
+  const z = Math.abs(Math.log(target / anchorPrice)) / (sigmaPerBar * Math.sqrt(bars));
+  const p = 2 * (1 - normCdf(z));
+  return Math.min(0.95, Math.max(0.01, p));
+}
+
+/** 取方向侧最近的一个位（dir=1 上方 / -1 下方，限制最大距离） */
+function nearestInDirection(
+  levels: { price: number; label: string }[],
+  currentPrice: number,
+  dir: 1 | -1,
+  maxDistPct: number,
+): { price: number; label: string } | null {
+  const maxDist = currentPrice * maxDistPct;
+  const filtered = levels.filter((l) => {
+    const d = (l.price - currentPrice) * dir;
+    return d > currentPrice * 0.005 && d <= maxDist;
+  });
+  if (filtered.length === 0) return null;
+  filtered.sort((a, b) => (a.price - b.price) * dir);
+  return filtered[0];
+}
+
+/** 目标位聚类：价差 <= 0.8% 现价的相邻目标归为一区，≥2 个不同方法才成汇流区 */
+function clusterTargets(
+  targets: ProfitTarget[],
+  currentPrice: number,
+  dirSign: 1 | -1,
+  sigmaPerBar: number,
+): ConfluenceZone[] {
+  if (targets.length === 0) return [];
+  const tol = currentPrice * 0.008;
+  const sorted = [...targets].sort((a, b) => a.price - b.price);
+  const zones: ConfluenceZone[] = [];
+
+  const makeZone = (group: ProfitTarget[]): ConfluenceZone => {
+    const prices = group.map((g) => g.price);
+    const low = Math.min(...prices);
+    const high = Math.max(...prices);
+    return {
+      low: roundPrice(low),
+      high: roundPrice(high),
+      mid: roundPrice((low + high) / 2),
+      methods: group.map((g) => g.label),
+      // 触及概率按近侧边缘算（上方区间的 low / 下方区间的 high）
+      probabilityPct: Math.round(touchProbability(currentPrice, dirSign === 1 ? low : high, sigmaPerBar, PROB_BARS) * 100),
+    };
+  };
+
+  let group: ProfitTarget[] = [sorted[0]];
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i].price - group[group.length - 1].price <= tol) {
+      group.push(sorted[i]);
+    } else {
+      if (group.length >= 2) zones.push(makeZone(group));
+      group = [sorted[i]];
+    }
+  }
+  if (group.length >= 2) zones.push(makeZone(group));
+  return zones;
+}
+
 // ==================== 预案生成 ====================
 
 export interface TradePlan {
@@ -394,6 +511,12 @@ export interface TradePlan {
   rrTp2: number;
   /** 半仓 TP1 + 半仓 TP2 的加权盈亏比 */
   rrBlended: number;
+  /** TP2 的依据（如 "等距测量 + 1.272 扩展 汇流"），无汇流时缺省 */
+  tp2Source?: string;
+  /** 自入场价起 N 根 4h 内触及 TP1 的估算概率（0-100） */
+  tp1ProbabilityPct?: number;
+  /** 自入场价起 N 根 4h 内触及 TP2 的估算概率（0-100） */
+  tp2ProbabilityPct?: number;
   /** 触发概率主观标记：high=回调类（结构内），medium=突破类（需动能确认） */
   confidence: 'high' | 'medium';
 }
@@ -414,6 +537,7 @@ function buildPlan(
   tp1: number,
   tp2: number,
   confidence: 'high' | 'medium',
+  extras?: { tp2Source?: string; tp1ProbabilityPct?: number; tp2ProbabilityPct?: number },
 ): TradePlan {
   const risk = Math.abs(entry - stop);
   const rrTp1 = Math.abs(tp1 - entry) / risk;
@@ -432,6 +556,9 @@ function buildPlan(
     rrTp1: Math.round(rrTp1 * 100) / 100,
     rrTp2: Math.round(rrTp2 * 100) / 100,
     rrBlended: Math.round(((rrTp1 + rrTp2) / 2) * 100) / 100,
+    tp2Source: extras?.tp2Source,
+    tp1ProbabilityPct: extras?.tp1ProbabilityPct,
+    tp2ProbabilityPct: extras?.tp2ProbabilityPct,
     confidence,
   };
 }
@@ -461,6 +588,16 @@ export interface StructureAnalysis {
   keyLevels: KeyLevel[];
   /** 成交密集区 */
   volumeNodes: { price: number; volume: number }[];
+  /** 利润测算目标位（多方法投影 + 估算触及概率） */
+  profitTargets: ProfitTarget[];
+  /** 主汇流止盈区（2+ 方法重叠，方向侧离入场最近），无则 null */
+  confluence: ConfluenceZone | null;
+  /** 延伸目标（汇流区之外最远投影），无则 null */
+  extendedTarget: ProfitTarget | null;
+  /** AB=CD 时间对称的到达时间窗 */
+  eta: { bars: number; text: string } | null;
+  /** 4h ATR(14) */
+  atr: number;
   /** 规则引擎的定性结论（AI 与模板共用） */
   bias: 'bull' | 'bear' | 'neutral';
   biasText: string;
@@ -492,6 +629,18 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
 
   const leg = identifyLeg(k4h, currentPrice);
 
+  // ---------- 利润测算（多方法投影 + 汇流聚类） ----------
+  const vNodes = volumeNodes(k4h);
+  const gannLevels = gannEighths(k4h, currentPrice);
+  const atrValue = atr(k4h);
+  const sigmaPerBar = currentPrice > 0 ? atrValue / currentPrice : 0;
+  const probFrom = (anchor: number, tp: number) => Math.round(touchProbability(anchor, tp, sigmaPerBar, PROB_BARS) * 100);
+
+  let profitTargets: ProfitTarget[] = [];
+  let confluence: ConfluenceZone | null = null;
+  let extendedTarget: ProfitTarget | null = null;
+  let eta: { bars: number; text: string } | null = null;
+
   // ---------- 预案 ----------
   const plans: TradePlan[] = [];
   let invalidation: { price: number; note: string } | null = null;
@@ -501,37 +650,139 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
     const ext = (r: number) => leg.fibExtensions.find((f) => f.ratio === r)!.price;
     const { highs, lows } = findSwings(k4h.slice(-60));
 
-    if (leg.direction === 'up') {
+    const isUp = leg.direction === 'up';
+    const dirSign: 1 | -1 = isUp ? 1 : -1;
+
+    // ---- 1. 各方法独立投影目标位 ----
+    const candidates: ProfitTarget[] = [];
+    const pushTarget = (method: string, label: string, price: number) => {
+      candidates.push({
+        method,
+        label,
+        price: roundPrice(price),
+        probabilityPct: probFrom(currentPrice, price),
+      });
+    };
+
+    // 等距测量（Measured Move）：目标 = 回调锚 C + |AB|
+    pushTarget('measured-move', '等距测量', fib(0.618) + dirSign * leg.range);
+    // 斐波那契扩展
+    pushTarget('fib-1272', '1.272 扩展', ext(1.272));
+    pushTarget('fib-1618', '1.618 扩展', ext(1.618));
+    // 前高/前低结构位
+    pushTarget('structure', isUp ? '前高结构位' : '前低结构位', leg.endPrice);
+    // 成交密集区（方向侧最近一档）
+    const vn = nearestInDirection(vNodes.map((v) => ({ price: v.price, label: '成交密集区' })), currentPrice, dirSign, 0.15);
+    if (vn) pushTarget('volume-node', '成交密集区', vn.price);
+    // 江恩八分位（方向侧最近一档）
+    const gn = nearestInDirection(gannLevels, currentPrice, dirSign, 0.15);
+    if (gn) pushTarget('gann', gn.label, gn.price);
+
+    // 只保留方向侧、离现价有意义（>0.5%）的目标
+    profitTargets = candidates.filter((t) => (t.price - currentPrice) * dirSign > currentPrice * 0.005);
+
+    // ---- 2. 汇流聚类（≥2 方法重叠才算） ----
+    const zones = clusterTargets(profitTargets, currentPrice, dirSign, sigmaPerBar);
+    const entryA = fib(0.618);
+    // 主汇流区：入场之外方向侧最近的区
+    const beyondEntry = zones.filter((z) =>
+      dirSign === 1 ? z.low > entryA + currentPrice * 0.003 : z.high < entryA - currentPrice * 0.003,
+    );
+    const zoneA = beyondEntry.length > 0 ? beyondEntry[0] : null;
+    confluence = zoneA;
+
+    // 延伸目标：主汇流区之外最远的投影
+    if (zoneA) {
+      const beyond = profitTargets.filter((t) => (t.price - zoneA.high) * dirSign > 0);
+      const pool = beyond.length > 0 ? beyond : profitTargets;
+      extendedTarget = pool.reduce((far, t) => ((t.price - far.price) * dirSign > 0 ? t : far), pool[0]);
+    }
+
+    // ---- 3. AB=CD 时间对称（到达时间窗估算） ----
+    if (leg.endTime > leg.startTime) {
+      const bars = Math.round((leg.endTime - leg.startTime) / 14400); // 4h = 14400s
+      if (bars >= 2) {
+        eta = { bars, text: `AB=CD 时间对称：D 点预计 ≈ ${Math.max(1, Math.round((bars * 4) / 24))} 天内到达` };
+      }
+    }
+
+    if (isUp) {
       // ---- 上涨腿：回调做多 + 突破做多 ----
-      const entryA = fib(0.618);
       const swingLow = lows.length > 0 ? lows[lows.length - 1].price : fib(0.786);
       const stopA = Math.min(fib(0.786), swingLow) * 0.996; // 结构位下方留 0.4% 缓冲
       // TP1 = 23.6% 回撤位（entry 上方第一阻力）；若离 entry 太近（盈亏比<1）取 entry~端点中间
       let tp1A = fib(0.236);
       if ((tp1A - entryA) / (entryA - stopA) < 1) tp1A = entryA + (leg.endPrice - entryA) / 2;
+      // TP2：主汇流区中值优先（多方法重叠，置信度高于单一结构位）
+      let tp2A = leg.endPrice;
+      let tp2SourceA: string | undefined;
+      if (zoneA && zoneA.mid > tp1A) {
+        tp2A = zoneA.mid;
+        tp2SourceA = `${zoneA.methods.join(' + ')} 汇流`;
+      }
       plans.push(
-        buildPlan('A', '回调做多（首选）', 'long', `回踩 ${roundPrice(entryA)} 需求区（本腿 61.8% 回撤），15m 出现止跌结构后入场`, entryA, stopA, tp1A, leg.endPrice, 'high'),
+        buildPlan('A', '回调做多（首选）', 'long', `回踩 ${roundPrice(entryA)} 需求区（本腿 61.8% 回撤），15m 出现止跌结构后入场`, entryA, stopA, tp1A, tp2A, 'high', {
+          tp2Source: tp2SourceA,
+          tp1ProbabilityPct: probFrom(entryA, tp1A),
+          tp2ProbabilityPct: probFrom(entryA, tp2A),
+        }),
       );
       const entryB = leg.endPrice * 1.005; // 突破前高后回踩
       const stopB = leg.endPrice * 0.988; // 突破点下方 1.2% 缓冲
+      // B 单目标：突破后先看主汇流区（若在突破位上方），延伸档看最远投影
+      const zoneB = zones.find((z) => z.low > entryB);
+      const tp1B = zoneB ? zoneB.mid : entryB + leg.range * 0.1;
+      let tp2B = ext(1.618);
+      let tp2SourceB: string | undefined;
+      if (extendedTarget && (extendedTarget.price - tp1B) * dirSign > 0) {
+        tp2B = extendedTarget.price;
+        tp2SourceB = `${extendedTarget.label}（延伸档）`;
+      }
+      if ((tp2B - tp1B) * dirSign <= 0) tp2B = tp1B + dirSign * leg.range * 0.1;
       plans.push(
-        buildPlan('B', '突破追多（备选）', 'long', `1h 放量突破 ${roundPrice(leg.endPrice)} 后回踩不破`, entryB, stopB, entryB + leg.range * 0.1, ext(1.618), 'medium'),
+        buildPlan('B', '突破追多（备选）', 'long', `1h 放量突破 ${roundPrice(leg.endPrice)} 后回踩不破`, entryB, stopB, tp1B, tp2B, 'medium', {
+          tp2Source: tp2SourceB,
+          tp1ProbabilityPct: probFrom(entryB, tp1B),
+          tp2ProbabilityPct: probFrom(entryB, tp2B),
+        }),
       );
       invalidation = { price: roundPrice(stopA), note: `4h 收盘跌破 ${roundPrice(stopA)} 则本腿结构失效，做多预案作废` };
     } else {
       // ---- 下跌腿：反弹做空 + 跌破追空 ----
-      const entryA = fib(0.618);
       const swingHigh = highs.length > 0 ? highs[highs.length - 1].price : fib(0.786);
       const stopA = Math.max(fib(0.786), swingHigh) * 1.004;
       let tp1A = fib(0.236);
       if ((entryA - tp1A) / (stopA - entryA) < 1) tp1A = entryA - (entryA - leg.endPrice) / 2;
+      let tp2A = leg.endPrice;
+      let tp2SourceA: string | undefined;
+      if (zoneA && zoneA.mid < tp1A) {
+        tp2A = zoneA.mid;
+        tp2SourceA = `${zoneA.methods.join(' + ')} 汇流`;
+      }
       plans.push(
-        buildPlan('A', '反弹做空（首选）', 'short', `反弹至 ${roundPrice(entryA)} 供给区（本腿 61.8% 回撤），15m 出现滞涨结构后入场`, entryA, stopA, tp1A, leg.endPrice, 'high'),
+        buildPlan('A', '反弹做空（首选）', 'short', `反弹至 ${roundPrice(entryA)} 供给区（本腿 61.8% 回撤），15m 出现滞涨结构后入场`, entryA, stopA, tp1A, tp2A, 'high', {
+          tp2Source: tp2SourceA,
+          tp1ProbabilityPct: probFrom(entryA, tp1A),
+          tp2ProbabilityPct: probFrom(entryA, tp2A),
+        }),
       );
       const entryB = leg.endPrice * 0.995;
       const stopB = leg.endPrice * 1.012;
+      const zoneB = zones.find((z) => z.high < entryB);
+      const tp1B = zoneB ? zoneB.mid : entryB - leg.range * 0.1;
+      let tp2B = ext(1.618);
+      let tp2SourceB: string | undefined;
+      if (extendedTarget && (extendedTarget.price - tp1B) * dirSign > 0) {
+        tp2B = extendedTarget.price;
+        tp2SourceB = `${extendedTarget.label}（延伸档）`;
+      }
+      if ((tp2B - tp1B) * dirSign >= 0) tp2B = tp1B - leg.range * 0.1;
       plans.push(
-        buildPlan('B', '跌破追空（备选）', 'short', `1h 放量跌破 ${roundPrice(leg.endPrice)} 后反抽不破`, entryB, stopB, entryB - leg.range * 0.1, ext(1.618), 'medium'),
+        buildPlan('B', '跌破追空（备选）', 'short', `1h 放量跌破 ${roundPrice(leg.endPrice)} 后反抽不破`, entryB, stopB, tp1B, tp2B, 'medium', {
+          tp2Source: tp2SourceB,
+          tp1ProbabilityPct: probFrom(entryB, tp1B),
+          tp2ProbabilityPct: probFrom(entryB, tp2B),
+        }),
       );
       invalidation = { price: roundPrice(stopA), note: `4h 收盘升破 ${roundPrice(stopA)} 则本腿结构失效，做空预案作废` };
     }
@@ -549,14 +800,21 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
       rawLevels.push({ price: e.price, label: `本腿${e.ratio}扩展` });
     }
   }
-  for (const g of gannEighths(k4h, currentPrice)) {
+  for (const g of gannLevels) {
     rawLevels.push({ price: g.price, label: g.label });
+  }
+  // 利润测算目标位 + 汇流区边缘
+  for (const t of profitTargets) {
+    rawLevels.push({ price: t.price, label: t.label });
+  }
+  if (confluence) {
+    rawLevels.push({ price: confluence.high, label: '汇流区上沿' });
+    rawLevels.push({ price: confluence.low, label: '汇流区下沿' });
   }
   // EMA 参考位
   rawLevels.push({ price: t4h.ema20, label: '4h EMA20' });
   rawLevels.push({ price: t4h.ema60, label: '4h EMA60' });
-  // 成交密集区
-  const vNodes = volumeNodes(k4h);
+  // 成交密集区（vNodes 已在利润测算段计算）
   for (const v of vNodes) {
     rawLevels.push({ price: v.price, label: '成交密集区' });
   }
@@ -601,6 +859,11 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
     invalidation,
     keyLevels,
     volumeNodes: vNodes,
+    profitTargets,
+    confluence,
+    extendedTarget,
+    eta,
+    atr: roundPrice(atrValue),
     bias,
     biasText,
   };

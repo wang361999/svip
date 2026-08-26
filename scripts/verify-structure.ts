@@ -45,10 +45,25 @@ async function main() {
 
   console.log('\n===== 预案 =====');
   for (const p of a.plans) {
-    console.log(`[${p.id}] ${p.name} | 入场 ${p.entry} 止损 ${p.stop} (${p.riskPct}%) TP1 ${p.tp1}(${p.rrTp1}) TP2 ${p.tp2}(${p.rrTp2}) 加权${p.rrBlended}`);
+    console.log(`[${p.id}] ${p.name} | 入场 ${p.entry} 止损 ${p.stop} (${p.riskPct}%) TP1 ${p.tp1}(${p.rrTp1}·${p.tp1ProbabilityPct}%) TP2 ${p.tp2}(${p.rrTp2}·${p.tp2ProbabilityPct}%) 加权${p.rrBlended}`);
     console.log(`     触发: ${p.trigger}`);
+    if (p.tp2Source) console.log(`     TP2 依据: ${p.tp2Source}`);
   }
   console.log(`\n失效: ${a.invalidation?.note || '无'}`);
+
+  console.log('\n===== 利润测算（多方法汇流） =====');
+  console.log(`ATR(14): ${a.atr}`);
+  for (const t of a.profitTargets) {
+    console.log(`  ${t.label}: ${t.price} (触及概率 ${t.probabilityPct}%)`);
+  }
+  if (a.confluence) {
+    console.log(`  ★ 汇流止盈区: ${a.confluence.low}–${a.confluence.high} 中值 ${a.confluence.mid}`);
+    console.log(`    叠加方法: ${a.confluence.methods.join(' + ')} | 概率 ${a.confluence.probabilityPct}%`);
+  } else {
+    console.log('  （无汇流区）');
+  }
+  if (a.extendedTarget) console.log(`  延伸档: ${a.extendedTarget.label} ${a.extendedTarget.price}`);
+  if (a.eta) console.log(`  时间窗: ${a.eta.text}`);
 
   console.log('\n===== 关键位 =====');
   for (const k of a.keyLevels) console.log(`${k.price} ${k.label} (${k.distancePct >= 0 ? '+' : ''}${k.distancePct}%)`);

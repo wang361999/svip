@@ -26,6 +26,9 @@ interface Plan {
   rrTp1: number;
   rrTp2: number;
   rrBlended: number;
+  tp2Source?: string;
+  tp1ProbabilityPct?: number;
+  tp2ProbabilityPct?: number;
   confidence: 'high' | 'medium';
 }
 
@@ -33,6 +36,21 @@ interface KeyLevel {
   price: number;
   label: string;
   distancePct: number;
+}
+
+interface ProfitTarget {
+  method: string;
+  label: string;
+  price: number;
+  probabilityPct: number;
+}
+
+interface ConfluenceZone {
+  low: number;
+  high: number;
+  mid: number;
+  methods: string[];
+  probabilityPct: number;
 }
 
 interface Narrative {
@@ -55,6 +73,11 @@ interface AnalysisData {
   plans: Plan[];
   invalidation: { price: number; note: string } | null;
   keyLevels: KeyLevel[];
+  profitTargets?: ProfitTarget[];
+  confluence?: ConfluenceZone | null;
+  extendedTarget?: ProfitTarget | null;
+  eta?: { bars: number; text: string } | null;
+  atr?: number;
   narrative: Narrative;
   narrativeSource: 'ai' | 'template';
   model: string;
@@ -94,6 +117,7 @@ export default function AiAnalysisCard() {
   const [error, setError] = useState('');
   const [collapsed, setCollapsed] = useState(loadCollapsed);
   const [showLevels, setShowLevels] = useState(false);
+  const [showProfit, setShowProfit] = useState(false);
 
   const load = useCallback(
     async (force = false) => {
@@ -175,13 +199,21 @@ export default function AiAnalysisCard() {
           <div className="flex justify-between">
             <span className="text-dark-400">TP1</span>
             <span className="text-green-400 font-mono">
-              {formatPrice(plan.tp1)} <span className="text-dark-500">({plan.rrTp1})</span>
+              {formatPrice(plan.tp1)}{' '}
+              <span className="text-dark-500">
+                ({plan.rrTp1}
+                {plan.tp1ProbabilityPct != null ? ` · ${plan.tp1ProbabilityPct}%` : ''})
+              </span>
             </span>
           </div>
           <div className="flex justify-between">
             <span className="text-dark-400">TP2</span>
             <span className="text-green-400 font-mono">
-              {formatPrice(plan.tp2)} <span className="text-dark-500">({plan.rrTp2})</span>
+              {formatPrice(plan.tp2)}{' '}
+              <span className="text-dark-500">
+                ({plan.rrTp2}
+                {plan.tp2ProbabilityPct != null ? ` · ${plan.tp2ProbabilityPct}%` : ''})
+              </span>
             </span>
           </div>
         </div>
@@ -193,6 +225,11 @@ export default function AiAnalysisCard() {
             加权盈亏比 <span className="text-amber-400 font-mono font-semibold">{plan.rrBlended}</span>
           </span>
         </div>
+        {plan.tp2Source && (
+          <div className="mt-1.5 text-[11px] text-amber-400/90">
+            TP2 依据：{plan.tp2Source}
+          </div>
+        )}
         <p className="text-dark-300 text-xs mt-2 leading-relaxed">{comment}</p>
       </div>
     );
@@ -356,6 +393,79 @@ export default function AiAnalysisCard() {
                   </div>
                 )}
               </div>
+
+              {/* 利润测算（多方法汇流，可展开） */}
+              {data.profitTargets && data.profitTargets.length > 0 && (
+                <div>
+                  <button
+                    onClick={() => setShowProfit(!showProfit)}
+                    className="flex items-center gap-1.5 text-dark-400 text-xs hover:text-dark-200 transition-colors"
+                  >
+                    <svg
+                      className={`w-3 h-3 transition-transform ${showProfit ? 'rotate-90' : ''}`}
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                    利润测算（{data.profitTargets.length} 方法投影
+                    {data.confluence ? ` · 汇流区 ${formatPrice(data.confluence.low)}–${formatPrice(data.confluence.high)}` : ' · 暂无汇流'}）
+                  </button>
+                  {showProfit && (
+                    <div className="mt-2 space-y-1.5">
+                      {data.confluence && (
+                        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-2.5 py-2">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-amber-400 font-medium">汇流止盈区</span>
+                            <span className="text-dark-100 font-mono">
+                              {formatPrice(data.confluence.low)}–{formatPrice(data.confluence.high)}
+                            </span>
+                          </div>
+                          <p className="text-dark-400 text-[11px] mt-1">{data.confluence.methods.join(' + ')}</p>
+                          <div className="flex items-center gap-2 mt-1.5">
+                            <div className="flex-1 h-1 rounded-full bg-dark-700/60 overflow-hidden">
+                              <div
+                                className="h-full rounded-full bg-amber-400"
+                                style={{ width: `${data.confluence.probabilityPct}%` }}
+                              />
+                            </div>
+                            <span className="text-dark-300 text-[11px] font-mono shrink-0">
+                              {data.confluence.probabilityPct}%
+                            </span>
+                          </div>
+                          <p className="text-dark-500 text-[10px] mt-1">
+                            中值 {formatPrice(data.confluence.mid)} · 自现价 30 根 4h 内触及概率（ATR 估算）
+                          </p>
+                        </div>
+                      )}
+                      {data.profitTargets.map((t, i) => (
+                        <div
+                          key={i}
+                          className="flex items-center justify-between text-xs px-2.5 py-1.5 rounded bg-dark-800/40"
+                        >
+                          <span className="text-dark-400">{t.label}</span>
+                          <span className="flex items-center gap-2">
+                            <span className="text-dark-200 font-mono">{formatPrice(t.price)}</span>
+                            <span className="font-mono text-green-500/70 w-8 text-right">{t.probabilityPct}%</span>
+                          </span>
+                        </div>
+                      ))}
+                      {data.extendedTarget && (
+                        <p className="text-dark-400 text-[11px]">
+                          延伸档：{data.extendedTarget.label} {formatPrice(data.extendedTarget.price)}
+                        </p>
+                      )}
+                      {data.eta && <p className="text-dark-500 text-[11px]">{data.eta.text}</p>}
+                      {data.atr != null && data.atr > 0 && (
+                        <p className="text-dark-600 text-[10px]">
+                          概率基于 4h ATR(14) = {data.atr} 的随机游走估算，仅供参考非精确预测
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* 提醒 */}
               <p className="text-dark-500 text-[11px] leading-relaxed">

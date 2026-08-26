@@ -78,6 +78,13 @@ function numbersMatchAnalysis(text: string, analysis: StructureAnalysis): boolea
   if (analysis.invalidation) add(analysis.invalidation.price);
   for (const k of analysis.keyLevels) add(k.price);
   for (const v of analysis.volumeNodes) add(v.price);
+  for (const t of analysis.profitTargets || []) add(t.price);
+  if (analysis.confluence) {
+    add(analysis.confluence.low);
+    add(analysis.confluence.high);
+    add(analysis.confluence.mid);
+  }
+  if (analysis.extendedTarget) add(analysis.extendedTarget.price);
 
   const priceThreshold = analysis.currentPrice * 0.3;
   for (const n of extractNumbers(text)) {
@@ -110,9 +117,12 @@ function buildLlmInput(a: StructureAnalysis): Record<string, unknown> {
     止损: p.stop,
     目标1: p.tp1,
     目标2: p.tp2,
+    目标2依据: p.tp2Source || null,
     盈亏比TP1: p.rrTp1,
     盈亏比TP2: p.rrTp2,
     加权盈亏比: p.rrBlended,
+    触及概率TP1: p.tp1ProbabilityPct != null ? `${p.tp1ProbabilityPct}%（自入场价，30根4h内估算）` : null,
+    触及概率TP2: p.tp2ProbabilityPct != null ? `${p.tp2ProbabilityPct}%（自入场价，30根4h内估算）` : null,
   });
 
   const trendBrief = (tf: '4h' | '1h' | '15m') => {
@@ -149,6 +159,24 @@ function buildLlmInput(a: StructureAnalysis): Record<string, unknown> {
         }
       : null,
     预案: a.plans.map(planBrief),
+    利润测算: {
+      目标位: (a.profitTargets || []).map((t) => ({
+        方法: t.label,
+        价格: t.price,
+        触及概率: `${t.probabilityPct}%（自现价，30根4h内估算）`,
+      })),
+      汇流止盈区: a.confluence
+        ? {
+            区间: `${a.confluence.low}–${a.confluence.high}`,
+            中值: a.confluence.mid,
+            叠加方法: a.confluence.methods,
+            触及概率: `${a.confluence.probabilityPct}%（自现价触及近侧边缘）`,
+          }
+        : null,
+      延伸目标: a.extendedTarget ? { 方法: a.extendedTarget.label, 价格: a.extendedTarget.price } : null,
+      时间窗: a.eta ? a.eta.text : null,
+      波动率基准: a.atr ? `4h ATR(14) = ${a.atr}` : null,
+    },
     失效条件: a.invalidation ? a.invalidation.note : null,
     关键位: a.keyLevels.map((k) => ({ 价格: k.price, 说明: k.label, 距当前价百分比: k.distancePct })),
     成交密集区: a.volumeNodes.map((v) => v.price),
@@ -166,6 +194,7 @@ const SYSTEM_PROMPT = `你是"结构共振交易法"的资深交易分析师，�
 2. 偏向结论（偏多/偏空/中性）必须与"规则引擎定性"一致
 3. 只用简体中文，专业克制的交易员复盘口吻，不喊单、不绝对化
 4. 严格输出 JSON，不要 markdown 代码块，不要多余文字
+5. 若存在"汇流止盈区"，解读中须点出它由哪些方法叠加、为什么可信度更高；仅当预案的"目标2依据"含"汇流"时才把 TP2 与汇流区价格绑定，否则汇流区应描述为现价附近的第一目标带（减仓参考），不要与 TP2 混淆
 
 输出 JSON 结构：
 {
@@ -251,6 +280,17 @@ export function buildTemplateNarrative(a: StructureAnalysis): AnalysisNarrative 
         ? `按结构共振法的纪律，现价不在入场区：三周期未形成同向共振，直接追的止损无处安放。方案A 等回踩 ${a.plans[0].entry} 需求区（本腿 61.8% 回撤结构位），方案B 等突破 ${round2(a.leg.endPrice)} 后回踩确认，两者都挂条件单等触发，都不触发就空仓等待。`
         : trendLine,
     );
+    if (a.confluence) {
+      const extText = a.extendedTarget ? `；更远的 ${a.extendedTarget.label} ${a.extendedTarget.price} 作延伸档` : '';
+      // 汇流区是否真的绑定了某档 TP2（措辞与预案保持一致，防止"主止盈"与 TP2 矛盾）
+      const boundToTp2 = a.plans.some((pl) => (pl.tp2Source || '').includes('汇流'));
+      const isUp = a.leg.direction === 'up';
+      paragraphs.push(
+        boundToTp2
+          ? `多方法利润测算显示：${a.confluence.methods.join('、')} 在 ${a.confluence.low}–${a.confluence.high} 重叠形成汇流止盈区，自现价触及概率约 ${a.confluence.probabilityPct}%，主止盈锚定区间中值 ${a.confluence.mid}${extText}。${a.eta ? a.eta.text + '。' : ''}`
+          : `多方法利润测算显示：${a.confluence.methods.join('、')} 在 ${a.confluence.low}–${a.confluence.high} 重叠（自现价触及概率约 ${a.confluence.probabilityPct}%），是现价${isUp ? '上方第一目标带，价格到达后预计反复，适合首批减仓' : '下方第一目标带，价格到达后预计反复，适合首批减仓'}；主止盈仍看结构位${extText}。${a.eta ? a.eta.text + '。' : ''}`,
+      );
+    }
   } else {
     paragraphs.push(`最近 30 根 4h 内没有振幅超过 3% 的显著推动腿，结构压缩，方向未选。${trendLine} 此时任何方向的盈亏比都不够，等待突破或回撤出结构后再评估。`);
   }
