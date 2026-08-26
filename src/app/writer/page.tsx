@@ -158,7 +158,12 @@ export default function MacroNewsPage() {
           <div className="glass-card p-5 mb-5">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
-                <div className="text-dark-500 text-xs mb-1">联邦基金利率目标区间</div>
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="text-dark-500 text-xs">联邦基金利率目标区间</div>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-medium border text-amber-400 bg-amber-500/10 border-amber-500/30">
+                    高利率环境（偏空）
+                  </span>
+                </div>
                 <div className="text-3xl font-bold text-white leading-none">
                   {data.rate.rangeLow.toFixed(2)}
                   <span className="text-dark-500 text-lg mx-1">–</span>
@@ -203,7 +208,24 @@ export default function MacroNewsPage() {
           <div className="glass-card p-5 mb-5">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
-                <div className="text-dark-500 text-xs mb-1">非农就业数据（NFP）</div>
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="text-dark-500 text-xs">非农就业数据（NFP）</div>
+                  {data.nfp.previous && data.nfp.previous.actual !== null && data.nfp.previous.forecast !== null && (
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
+                      data.nfp.previous.actual > data.nfp.previous.forecast
+                        ? 'text-red-400 bg-red-500/10 border-red-500/30'
+                        : data.nfp.previous.actual < data.nfp.previous.forecast
+                        ? 'text-green-400 bg-green-500/10 border-green-500/30'
+                        : 'text-dark-400 bg-dark-800/80 border-dark-700'
+                    }`}>
+                      {data.nfp.previous.actual > data.nfp.previous.forecast
+                        ? '利空（就业强劲 → 降息难）'
+                        : data.nfp.previous.actual < data.nfp.previous.forecast
+                        ? '利好（就业疲软 → 降息预期）'
+                        : '中性（符合预期）'}
+                    </span>
+                  )}
+                </div>
                 <div className="flex items-baseline gap-3">
                   {data.nfp.previous && data.nfp.previous.actual !== null ? (
                     <>
