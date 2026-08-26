@@ -404,25 +404,30 @@ export interface BtcTicker {
  * 失败时返回 null
  */
 export async function fetchBtcTicker(): Promise<BtcTicker | null> {
-  try {
-    const res = await fetch('https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT', {
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) return null;
-    const j = await res.json();
-    const price = Number(j.lastPrice);
-    if (!Number.isFinite(price) || price <= 0) return null;
-    return {
-      price,
-      change24h: Number(j.priceChangePercent),
-      volumeUsd: Math.round((Number(j.quoteVolume) / 1e8) * 10) / 10,
-      high24h: Number(j.highPrice),
-      low24h: Number(j.lowPrice),
-      updatedAt: new Date().toISOString(),
-    };
-  } catch {
-    return null;
+  // 公共数据镜像优先（主站对受限地区出口返回 451）
+  const hosts = ['https://data-api.binance.vision', 'https://api.binance.com'];
+  for (const host of hosts) {
+    try {
+      const res = await fetch(`${host}/api/v3/ticker/24hr?symbol=BTCUSDT`, {
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) continue;
+      const j = await res.json();
+      const price = Number(j.lastPrice);
+      if (!Number.isFinite(price) || price <= 0) continue;
+      return {
+        price,
+        change24h: Number(j.priceChangePercent),
+        volumeUsd: Math.round((Number(j.quoteVolume) / 1e8) * 10) / 10,
+        high24h: Number(j.highPrice),
+        low24h: Number(j.lowPrice),
+        updatedAt: new Date().toISOString(),
+      };
+    } catch {
+      continue; // 换下一个源
+    }
   }
+  return null;
 }
 
 // ==================== FRED 官方数据（圣路易斯联储，免费无 key）====================

@@ -20,9 +20,11 @@ export const maxDuration = 60;
 
 // ==================== K 线获取（多源 fallback） ====================
 
+// 公共数据镜像优先：主站 API 对受限地区（含 Vercel hkg1 香港出口）返回 451，
+// data-api.binance.vision 不受地域封锁且服务端出口稳定可达
 const KLINES_HOSTS = [
+  'https://data-api.binance.vision',
   'https://api.binance.com',
-  'https://data-api.binance.vision', // Binance 官方公共数据镜像（Vercel 出口常被主站拦时用）
   'https://api1.binance.com',
 ];
 

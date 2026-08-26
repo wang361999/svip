@@ -192,18 +192,27 @@ async function importSymbolPairs(
 
       if (source === 'binance') {
         try {
+          // 公共数据镜像优先（主站对受限地区出口返回 451）
           const exchangeController = new AbortController();
           const exchangeTimer = setTimeout(() => exchangeController.abort(), 5000);
-          const exchangeInfoRes = await fetch(
-            `https://api.binance.com/api/v3/exchangeInfo?symbol=${symbol}`,
-            { signal: exchangeController.signal },
-          );
+          let exchangeInfo: any = null;
+          for (const host of ['https://data-api.binance.vision', 'https://api.binance.com']) {
+            try {
+              const exchangeInfoRes = await fetch(
+                `${host}/api/v3/exchangeInfo?symbol=${symbol}`,
+                { signal: exchangeController.signal },
+              );
+              if (exchangeInfoRes.ok) {
+                exchangeInfo = await exchangeInfoRes.json();
+                break;
+              }
+            } catch {}
+          }
           clearTimeout(exchangeTimer);
 
-          if (exchangeInfoRes.ok) {
-            const info = await exchangeInfoRes.json();
-            const symInfo = info.symbols?.[0];
-            if (symInfo) {
+          const info = exchangeInfo;
+          const symInfo = info?.symbols?.[0];
+          if (symInfo) {
               const priceFilter = symInfo.filters?.find((f: any) => f.filterType === 'PRICE_FILTER');
               const lotSize = symInfo.filters?.find((f: any) => f.filterType === 'LOT_SIZE');
               const notional = symInfo.filters?.find((f: any) => f.filterType === 'MIN_NOTIONAL');
@@ -220,7 +229,6 @@ async function importSymbolPairs(
               if (notional?.minNotional) {
                 minNotional = parseFloat(notional.minNotional) || 5;
               }
-            }
           }
         } catch {
           // 精度获取失败使用默认值
@@ -261,29 +269,42 @@ async function importSymbolPairs(
 
 /** 从 Binance 导入热门 USDT 币对；如果 Binance 不可用，则使用内置热门列表兜底 */
 async function importFromBinance() {
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10000);
+  // 公共数据镜像优先（主站对受限地区出口返回 451）
+  const BINANCE_HOSTS = ['https://data-api.binance.vision', 'https://api.binance.com'];
+  let data: Array<{ symbol: string; quoteVolume: string; lastPrice: string }> | null = null;
+  let lastStatus = 0;
 
-    const res = await fetch('https://api.binance.com/api/v3/ticker/24hr', {
-      signal: controller.signal,
-      headers: { 'accept': 'application/json' },
-    });
-    clearTimeout(timer);
-
-    if (!res.ok) {
-      const fallback = await importSymbolPairs(FALLBACK_SYMBOLS, 'fallback');
-      return apiSuccess({
-        ...fallback,
-        warning: `Binance API 返回 ${res.status}，已改用内置热门币种列表`,
+  for (const host of BINANCE_HOSTS) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      const res = await fetch(`${host}/api/v3/ticker/24hr`, {
+        signal: controller.signal,
+        headers: { 'accept': 'application/json' },
       });
+      clearTimeout(timer);
+      if (!res.ok) {
+        lastStatus = res.status;
+        continue;
+      }
+      data = (await res.json()) as Array<{
+        symbol: string;
+        quoteVolume: string;
+        lastPrice: string;
+      }>;
+      break;
+    } catch {
+      continue;
     }
+  }
 
-    const data = await res.json() as Array<{
-      symbol: string;
-      quoteVolume: string;
-      lastPrice: string;
-    }>;
+  if (!data) {
+    const fallback = await importSymbolPairs(FALLBACK_SYMBOLS, 'fallback');
+    return apiSuccess({
+      ...fallback,
+      warning: `Binance API 返回 ${lastStatus || '超时'}，已改用内置热门币种列表`,
+    });
+  }
 
     // 筛选 USDT 交易对，按 24h 成交额排序，取前 50
     const usdtPairs = data
@@ -301,11 +322,4 @@ async function importFromBinance() {
       });
 
     return apiSuccess(await importSymbolPairs(usdtPairs, 'binance'));
-  } catch (err) {
-    const fallback = await importSymbolPairs(FALLBACK_SYMBOLS, 'fallback');
-    return apiSuccess({
-      ...fallback,
-      warning: `Binance API 不可用，已改用内置热门币种列表`,
-    });
-  }
 }

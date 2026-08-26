@@ -10,6 +10,14 @@ const OKX_BAR_MAP: Record<string, string> = {
   '1h': '1H', '4h': '4H', '1d': '1D',
 };
 
+// Binance 现货多端点：公共数据镜像优先（不受地域封锁，Vercel hkg1 出口稳定可达），
+// 主站 API 在受限地区（含香港）返回 451，仅作次选
+const BINANCE_HOSTS = [
+  'https://data-api.binance.vision',
+  'https://api.binance.com',
+  'https://api1.binance.com',
+];
+
 async function fetchWithTimeout(url: string, ms = 3500): Promise<any> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
@@ -34,16 +42,18 @@ export const GET = createHandler(async ({ req }) => {
     : '1h';
   const limit = Math.max(50, Math.min(1000, parseInt(searchParams.get('limit') || '500')));
 
-  // 1. Binance
-  try {
-    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
-    const data = await fetchWithTimeout(url);
-    if (Array.isArray(data) && data.length > 0) {
-      return NextResponse.json(data, {
-        headers: { 'Cache-Control': 'no-store', 'X-Data-Source': 'binance' },
-      });
-    }
-  } catch {}
+  // 1. Binance（镜像 → 主站 → api1）
+  for (const host of BINANCE_HOSTS) {
+    try {
+      const url = `${host}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+      const data = await fetchWithTimeout(url);
+      if (Array.isArray(data) && data.length > 0) {
+        return NextResponse.json(data, {
+          headers: { 'Cache-Control': 'no-store', 'X-Data-Source': 'binance' },
+        });
+      }
+    } catch {}
+  }
 
   // 2. OKX fallback
   try {

@@ -1,5 +1,6 @@
 // 服务端 fallback：当浏览器直连失败时，通过服务端代理获取
-// 注意：Vercel 服务器在中国大陆可能无法访问 Binance
+// 多源策略：公共数据镜像优先（data-api.binance.vision 不受地域封锁，
+// 主站 api.binance.com 对受限地区/香港出口返回 451），OKX 兜底
 
 export interface KlineData {
   time: number;
@@ -9,6 +10,12 @@ export interface KlineData {
   close: number;
   volume: number;
 }
+
+const BINANCE_HOSTS = [
+  'https://data-api.binance.vision',
+  'https://api.binance.com',
+  'https://api1.binance.com',
+];
 
 // Helper: fetch with timeout
 async function fetchWithTimeout(url: string, timeoutMs: number = 15000): Promise<Response> {
@@ -22,6 +29,24 @@ async function fetchWithTimeout(url: string, timeoutMs: number = 15000): Promise
   }
 }
 
+/** 按端点列表依次请求，返回第一个成功的 JSON，全失败返回 null */
+async function fetchJsonMultiHost(
+  path: string,
+  hosts: string[],
+  timeoutMs: number,
+): Promise<any | null> {
+  for (const host of hosts) {
+    try {
+      const response = await fetchWithTimeout(`${host}${path}`, timeoutMs);
+      if (!response.ok) continue;
+      return await response.json();
+    } catch {
+      continue; // 换下一个源
+    }
+  }
+  return null;
+}
+
 // Get historical klines from Binance REST API
 export async function getHistoricalKlines(
   symbol: string,
@@ -29,18 +54,12 @@ export async function getHistoricalKlines(
   limit: number = 500,
 ): Promise<KlineData[]> {
   try {
-    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
-    const response = await fetchWithTimeout(url, 15000);
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
-
-    if (!Array.isArray(data)) {
-      throw new Error('Invalid response');
-    }
+    const data = await fetchJsonMultiHost(
+      `/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,
+      BINANCE_HOSTS,
+      10000,
+    );
+    if (!Array.isArray(data)) return [];
 
     return data.map((kline: any[]) => ({
       time: kline[0] / 1000,
@@ -59,14 +78,21 @@ export async function getHistoricalKlines(
 // Get 24hr statistics
 export async function get24hrStats(symbol: string) {
   try {
-    const url = `https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`;
-    const response = await fetchWithTimeout(url, 10000);
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+    const data = await fetchJsonMultiHost(
+      `/api/v3/ticker/24hr?symbol=${symbol}`,
+      BINANCE_HOSTS,
+      8000,
+    );
+    if (!data || !data.lastPrice) {
+      return {
+        price: 0,
+        change: 0,
+        changePercent: '0',
+        volume: 0,
+        high: 0,
+        low: 0,
+      };
     }
-
-    const data = await response.json();
 
     return {
       price: parseFloat(data.lastPrice),
