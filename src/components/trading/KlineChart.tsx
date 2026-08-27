@@ -466,14 +466,15 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     drawZonesRef.current();
   }, [showAutoAB9, showFibonacci, showProfit, showMicro, isMember, symbol]);
 
-  // === 测算与结构画线（画布层：渐变区 / 边界线 / 芯片标签） ===
+  // === 测算与结构画线（画布层：纯色带为主） ===
   // 画法原则（按用户反馈收敛）：
   //   AB9/FIB → 原生满宽价格线（价格轴精确读数，经典画法）
+  //   方案A（止损/入场/TP1/TP2）→ 纯平涂色带：红=风险、浅绿=TP1段、深绿=TP2段，
+  //     无线无字，色块边界即价位（精确数字在 AI 分析卡片）
+  //   汇流区 → 平涂琥珀色带（与盈利区重叠过半时不画）
   //   流动性池 → 等高/等低两点连线 + 端点圆（EQH/EQL 经典标法）
-  //   方案A（止损/入场/TP1/TP2）→ 区域边界即线：渐变面 + 贴边细线 + 带价格芯片，
-  //     一个价位只出现一次（原生满宽线已移除，避免三层叠加双标签）
-  //   汇流/FVG 区 → 渐变面 + 上下沿边线
-  //   其余候选位射线（B方案/延伸档/目标位/FVG CE/池延伸）→ 已隐藏，数据在AI卡片呈现
+  //   FVG → 渐变面（微构开关独立控制）
+  //   其余候选位（B方案/延伸档/目标位/FVG CE/池延伸）→ 已隐藏，数据在AI卡片呈现
   const drawZones = useCallback(() => {
     const canvas = zoneCanvasRef.current;
     const chart = mainChart.current;
@@ -546,20 +547,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     }
     const isDupPrice = (p: number) => drawnPrices.some((x) => Math.abs(x - p) / refPrice < 0.002);
 
-    // —— 画法原语：水平线（实/虚/点，从 x0 到右缘） ——
-    const hline = (y: number, x0: number, color: string, width: number, dash: number[]) => {
-      if (xEnd - x0 < 4) return;
-      ctx.save();
-      ctx.strokeStyle = color;
-      ctx.lineWidth = width;
-      ctx.setLineDash(dash);
-      ctx.beginPath();
-      ctx.moveTo(x0, Math.round(y) + 0.5);
-      ctx.lineTo(xEnd, Math.round(y) + 0.5);
-      ctx.stroke();
-      ctx.restore();
-    };
-    // 统一标签槽位：芯片与射线标签共用（阈值 13px ≈ 标签框高，保证互不压字）
+    // 统一标签槽位：射线标签占位（阈值 13px ≈ 标签框高，保证互不压字）
     const occupiedY: number[] = [];
     // 射线起点小标签（深底彩字）；与已占槽位冲突时上/下让位 13px，仍冲突则丢弃
     const rayLabel = (x: number, y: number, text: string, color: string) => {
@@ -597,34 +585,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       }
     };
 
-    // ===== 第一层：利润测算 / 微构（区域 + 芯片优先占槽位，核心信息不让位） =====
+    // ===== 第一层：利润测算 / 微构（纯色带呈现，无线无字） =====
     if (pd && (showProfit || showMicro)) {
-
-    ctx.textBaseline = 'middle';
-    ctx.textAlign = 'center';
-
-    // 右缘纯文字标签：无底框无边框，颜色即语义（TradingView 头寸工具读数风格）；
-    // 右对齐贴价格轴一侧，碰撞时上下让 12px；深色描边保证压 K 线时可读
-    const tag = (y: number, text: string, color: string) => {
-      let yy = y;
-      if (occupiedY.some((sy) => Math.abs(sy - yy) < 12)) {
-        yy = y - 12;
-        if (occupiedY.some((sy) => Math.abs(sy - yy) < 12)) {
-          yy = y + 12;
-          if (occupiedY.some((sy) => Math.abs(sy - yy) < 12)) return;
-        }
-      }
-      if (yy < 7 || yy > paneH - 7) return;
-      occupiedY.push(yy);
-      ctx.font = '600 10px -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif';
-      ctx.textAlign = 'right';
-      ctx.textBaseline = 'middle';
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = 'rgba(8, 12, 20, 0.85)';
-      ctx.strokeText(text, xEnd - 5, yy);
-      ctx.fillStyle = color;
-      ctx.fillText(text, xEnd - 5, yy);
-    };
 
     // 色带填充：a1 省略 = 平涂（TradingView 头寸工具风格）；传 a1 = 左实右虚渐变（微构沿用）
     const zoneFill = (
@@ -666,33 +628,23 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           const projX0 = Math.max(0, xLast - step * 18);
           const pa = pd.plans.find((p) => p.id === 'A');
           if (pa) {
-            const dist = (a: number, b: number) => ((Math.abs(a - b) / pa.entry) * 100).toFixed(1);
-            const fmt = (p: number) => (p >= 100 ? p.toFixed(1) : p.toFixed(2));
-            // ===== TradingView 头寸工具画法 =====
-            // 平涂色带（红=风险 / 绿=盈利，TP2 档加深）+ 细线（入场虚线、目标点线）
-            // + 右缘纯文字（名称+价格+距离/概率）。无渐变、无底框、无粗线。
-            zoneFill(yOf(pa.entry), yOf(pa.stop), projX0, '239, 68, 68', 0.09);
-            zoneFill(yOf(pa.entry), yOf(pa.tp1), projX0, '34, 197, 94', 0.07);
-            zoneFill(yOf(pa.tp1), yOf(pa.tp2), projX0, '34, 197, 94', 0.13);
-            const yE = yOf(pa.entry), yS = yOf(pa.stop), yT1 = yOf(pa.tp1), yT2 = yOf(pa.tp2);
-            if (yE != null) hline(yE, projX0, 'rgba(96, 165, 250, 0.85)', 1, [5, 4]);
-            if (yS != null) hline(yS, projX0, 'rgba(248, 113, 113, 0.7)', 1, [2, 3]);
-            if (yT1 != null) hline(yT1, projX0, 'rgba(74, 222, 128, 0.7)', 1, [2, 3]);
-            if (yT2 != null) hline(yT2, projX0, 'rgba(74, 222, 128, 0.8)', 1, [2, 3]);
-            if (yS != null) tag(yS, `止损 ${fmt(pa.stop)} −${dist(pa.stop, pa.entry)}%`, '#f87171');
-            if (yE != null) tag(yE, `入场 ${fmt(pa.entry)}`, '#60a5fa');
-            if (yT1 != null) tag(yT1, `TP1 ${fmt(pa.tp1)} +${dist(pa.tp1, pa.entry)}%${pa.tp1ProbabilityPct != null ? `·${pa.tp1ProbabilityPct}%` : ''}`, '#4ade80');
-            if (yT2 != null) tag(yT2, `TP2 ${fmt(pa.tp2)} +${dist(pa.tp2, pa.entry)}%${pa.tp2ProbabilityPct != null ? `·${pa.tp2ProbabilityPct}%` : ''}`, '#4ade80');
+            // ===== 纯色带画法（按反馈：无线无字，颜色即语义） =====
+            // 红 = 风险区（入场↔止损）；浅绿 = TP1 段；深绿 = TP2 段。
+            // 色块边界即价位，精确数字在 AI 分析卡片里读。
+            zoneFill(yOf(pa.entry), yOf(pa.stop), projX0, '239, 68, 68', 0.11);
+            zoneFill(yOf(pa.entry), yOf(pa.tp1), projX0, '34, 197, 94', 0.09);
+            zoneFill(yOf(pa.tp1), yOf(pa.tp2), projX0, '34, 197, 94', 0.18);
           }
-          // ===== 汇流止盈区（平涂 + 点线边 + 右缘文字，与方案A同风格） =====
+          // ===== 汇流止盈区（纯平涂色带；与盈利区重叠过半时不画，避免黄绿混叠发脏） =====
           if (pd.confluence) {
             const c = pd.confluence;
-            zoneFill(yOf(c.high), yOf(c.low), projX0, '245, 158, 11', 0.10);
-            const yh = yOf(c.high);
-            const yl = yOf(c.low);
-            if (yh != null && !isDupPrice(c.high)) hline(yh, projX0, 'rgba(251, 191, 36, 0.55)', 1, [2, 3]);
-            if (yl != null && !isDupPrice(c.low)) hline(yl, projX0, 'rgba(251, 191, 36, 0.55)', 1, [2, 3]);
-            if (yh != null && yl != null) tag((yh + yl) / 2, `汇流 ${c.probabilityPct}%`, '#fbbf24');
+            const lo = Math.min(c.low, c.high), hi = Math.max(c.low, c.high);
+            let ov = 0;
+            if (pa) {
+              const zLo = Math.min(pa.entry, pa.tp1, pa.tp2), zHi = Math.max(pa.entry, pa.tp1, pa.tp2);
+              ov = Math.max(0, Math.min(hi, zHi) - Math.max(lo, zLo)) / Math.max(1e-9, hi - lo);
+            }
+            if (ov <= 0.5) zoneFill(yOf(c.high), yOf(c.low), projX0, '245, 158, 11', 0.12);
           }
           // ===== 汇流止盈区之后的候选位射线已按反馈隐藏 =====
           // （B方案射线 / 延伸档 / 8个方法候选目标位不再画线；
