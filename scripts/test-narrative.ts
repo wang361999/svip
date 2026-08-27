@@ -34,8 +34,8 @@ async function main() {
   console.log('===== AI 文案 =====');
   console.log(`【${narrative.biasText}】${narrative.headline}\n`);
   for (const p of narrative.paragraphs) console.log(p + '\n');
-  console.log(`方案A: ${narrative.planAComment}`);
-  console.log(`方案B: ${narrative.planBComment}`);
+  console.log(`方案D: ${narrative.planDComment || '（无，信号未触发）'}`);
+  console.log(`方案E: ${narrative.planEComment || '（无，信号未触发）'}`);
   console.log(`失效: ${narrative.invalidation}`);
   console.log(`提醒: ${narrative.reminder}`);
 }

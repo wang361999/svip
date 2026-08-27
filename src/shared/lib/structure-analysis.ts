@@ -5,7 +5,7 @@
  * - 三周期趋势判定（4h/1h/15m：EMA20/60 + MACD + 高低点结构）
  * - 本腿识别（最近的显著推动腿）
  * - 斐波那契回撤/扩展 + 江恩八分位 + 成交密集区
- * - A/B 双预案生成 + 盈亏比测算 + 失效条件
+ * - D/E 双预案生成（短线点数档 + 波段点数档） + 盈亏比测算 + 失效条件
  *
  * 设计原则：纯函数、零副作用、确定性 —— 同样的 K 线永远算出同样的数字。
  * AI 层只负责把这些数字组织成文字，不允许自己算数。
@@ -658,184 +658,6 @@ function tpProbability(entry: number, tp: number, sigmaPerBar: number, bars: num
   return lookupCalib(ctx === 'pullback' ? TP_CALIB_PULLBACK : TP_CALIB_BREAKOUT, d, 0.15); // 0.15 宽分桶拟合
 }
 
-/**
- * A 方案"持仓窗口竞速"校准表 —— 入场确认后，各时间窗口内 TP1/止损 谁先被触及。
- *
- * 与 TP 触及概率的本质区别：触及口径包含"先扫损后又到 TP"的路径，
- * 对实际挂单交易者无意义；本表为 15m 精度逐根竞速（同根双触按先止损保守计），
- * 并按持仓时长分窗口 —— 持仓几小时与持仓几天的真实胜率完全不同。
- * ρ = TP1距离/止损距离（对数距离比）：ρ 小 = TP 比止损近 → 先到止盈率高。
- *
- * 数据来源：ETH/BTC/SOL 4h 信号 × 15m 精度回放（2024-10~2026-08），A 情境
- * （回踩触及+止跌确认K线起算）n=1399。TP1 表用单调不增 PAVA、SL 表单调不降。
- * 样本外验证（时间后30%，ETH n=153，2026-02~07）：
- *   先到止损列最可靠（120h 偏差 0.1pp）；先到止盈列偏差 -2~-8pp（近期行情偏快，
- *   全量表已含近期数据可部分吸收）；6h/12h 短窗口对行情机制最敏感（±10pp 量级）。
- *
- * 注意：B 方案（突破回踩）不提供此概率 —— 其先到止损率随行情机制漂移剧烈
- * （全期 21% vs 2026 年以来 35%），无法稳定校准，宁缺毋滥。
- */
-const WINDOW_RACE_HOURS = [6, 12, 24, 72, 120] as const;
-
-export interface WindowRaceRow {
-  /** 持仓窗口（小时） */
-  hours: number;
-  /** 窗口内 TP1 先于止损被触及的概率（0-100） */
-  tp1FirstPct: number;
-  /** 窗口内止损先于 TP1 被触及的概率（0-100） */
-  slFirstPct: number;
-  /** 窗口内两者都未触及（挂单仍浮沉）的概率（0-100） */
-  unresolvedPct: number;
-}
-
-/** 各窗口 TP1 先到率（ρ → 概率，单调不增 PAVA，0.25 步长桶；首桶为 ρ∈[0,0.25)） */
-const RACE_TP1: Record<number, [number, number][]> = {
-  6: [[0, 0.5], [0.25, 0.401], [0.75, 0.153], [1.5, 0.144], [1.75, 0.067]],
-  12: [[0, 0.66], [0.25, 0.504], [0.75, 0.247], [1, 0.225], [1.75, 0.138]],
-  24: [[0, 0.72], [0.25, 0.619], [0.75, 0.471], [1, 0.362], [1.5, 0.295], [1.75, 0.23]],
-  72: [[0, 0.92], [0.25, 0.73], [0.75, 0.576], [1, 0.538], [1.5, 0.442], [1.75, 0.383]],
-  120: [[0, 0.92], [0.25, 0.752], [0.75, 0.647], [1, 0.569], [1.5, 0.457], [1.75, 0.446]],
-};
-
-/** 各窗口止损先到率（ρ → 概率，单调不降 PAVA，0.25 步长桶） */
-const RACE_SL: Record<number, [number, number][]> = {
-  6: [[0.25, 0.025], [0.5, 0.042], [1.25, 0.081]],
-  12: [[0.25, 0.051], [0.5, 0.066], [1, 0.161], [1.25, 0.162], [1.5, 0.174]],
-  24: [[0.25, 0.085], [0.5, 0.122], [1, 0.194], [1.25, 0.279], [1.5, 0.302]],
-  72: [[0.25, 0.161], [0.5, 0.2], [0.75, 0.306], [1, 0.371], [1.25, 0.397], [1.5, 0.472]],
-  120: [[0.25, 0.178], [0.5, 0.221], [0.75, 0.329], [1, 0.403], [1.25, 0.412], [1.5, 0.516]],
-};
-
-/**
- * A 方案各持仓窗口的竞速概率分布（按预案的 ρ 查表）
- * 未触及 = 1 - 先到TP1 - 先到止损（截断至 ≥0；各桶实测未决率与该恒等式一致，±6pp 内）
- */
-function windowRaceOutcomes(entry: number, tp1: number, stop: number): WindowRaceRow[] {
-  if (entry <= 0 || tp1 <= 0 || stop <= 0) return [];
-  const dTp = Math.abs(Math.log(tp1 / entry));
-  const dSl = Math.abs(Math.log(stop / entry));
-  if (dSl <= 0) return [];
-  const rho = dTp / dSl;
-  return WINDOW_RACE_HOURS.map((h) => {
-    const tp = lookupCalib(RACE_TP1[h], rho, 0.25);
-    const sl = lookupCalib(RACE_SL[h], rho, 0.25);
-    const unresolved = Math.max(0, 1 - tp - sl);
-    // 归一化到 100%（未决截断产生的微量误差并入未决列之外的两列按比例分摊）
-    const sum = tp + sl;
-    const k = sum > 0 ? (1 - unresolved) / sum : 0;
-    // 先取整前两列，未触及列 = 100 - 两者，保证三列显示合计恒为 100
-    let tpPct = Math.round(tp * k * 100);
-    let slPct = Math.round(sl * k * 100);
-    let unPct = 100 - tpPct - slPct;
-    if (unPct < 0) {
-      // 极端双进位：从较大列扣回，保持合计 100 且未触及不为负
-      if (tpPct >= slPct) tpPct += unPct;
-      else slPct += unPct;
-      unPct = 0;
-    }
-    return {
-      hours: h,
-      tp1FirstPct: tpPct,
-      slFirstPct: slPct,
-      unresolvedPct: unPct,
-    };
-  });
-}
-
-/**
- * 方案 C（超短线）"持仓窗口竞速"校准表 —— 1h 推动腿回踩入场的快进快出统计。
- *
- * 与 A 方案同方法论：ρ = TP1距离/止损距离（对数距离比）分桶，
- * 但腿基于 1h 周期（zigzag 阈值 2%，最小腿幅 2%），窗口为超短适用的
- * 2h/4h/8h/12h/24h；确认口径 = 15m 触及入场价后收回（同 A）。
- *
- * 几何：入场=61.8%回撤，止损=78.6%回撤±0.3%缓冲（平均约0.9%），
- * TP1=38.2%回撤（快止盈，RR≈0.9-1.0），TP2=23.6%回撤（RR≈1.4）。
- * ρ 因此集中在 [0.75, 1.25)，仅两桶即覆盖绝大多数样本。
- *
- * 数据来源：ETH/BTC/SOL 1h 信号 × 15m 精度回放（2024-10~2026-08）n=2165。
- * ETH 样本外（时间后30%，n=229）：24h 先到TP 55.9%/先到SL 40.2%，
- * 较池化表低约 3~7pp（近期行情止损触发更快），使用时保守看待。
- * 时间前后半稳定性：ETH 24h 先到TP 63→62、先到SL 37→35（±2pp，可校准）。
- *
- * 费率警告：止损距离平均仅 0.9%，taker 双边 0.1% 费率≈吃掉 11% 的风险单位；
- * 本方案的边际优势依赖 maker 挂单执行（限价入场+限价止盈）。
- */
-const WINDOW_SCALP_HOURS = [2, 4, 8, 12, 24] as const;
-
-const SCALP_RACE_TP1: Record<number, [number, number][]> = {
-  2: [[0.75, 0.433], [1, 0.279]],
-  4: [[0.75, 0.512], [1, 0.387]],
-  8: [[0.75, 0.585], [1, 0.47]],
-  12: [[0.75, 0.61], [1, 0.512]],
-  24: [[0.75, 0.632], [1, 0.539]],
-};
-
-const SCALP_RACE_SL: Record<number, [number, number][]> = {
-  2: [[0.75, 0.169], [1, 0.169]],
-  4: [[0.75, 0.255], [1, 0.255]],
-  8: [[0.75, 0.317], [1, 0.348]],
-  12: [[0.75, 0.334], [1, 0.38]],
-  24: [[0.75, 0.345], [1, 0.42]],
-};
-
-/** 方案 C 各持仓窗口的竞速概率分布（口径与 windowRaceOutcomes 相同，查超短表） */
-function scalpRaceOutcomes(entry: number, tp1: number, stop: number): WindowRaceRow[] {
-  if (entry <= 0 || tp1 <= 0 || stop <= 0) return [];
-  const dTp = Math.abs(Math.log(tp1 / entry));
-  const dSl = Math.abs(Math.log(stop / entry));
-  if (dSl <= 0) return [];
-  const rho = dTp / dSl;
-  return WINDOW_SCALP_HOURS.map((h) => {
-    const tp = lookupCalib(SCALP_RACE_TP1[h], rho, 0.25);
-    const sl = lookupCalib(SCALP_RACE_SL[h], rho, 0.25);
-    const unresolved = Math.max(0, 1 - tp - sl);
-    const sum = tp + sl;
-    const k = sum > 0 ? (1 - unresolved) / sum : 0;
-    let tpPct = Math.round(tp * k * 100);
-    let slPct = Math.round(sl * k * 100);
-    let unPct = 100 - tpPct - slPct;
-    if (unPct < 0) {
-      if (tpPct >= slPct) tpPct += unPct;
-      else slPct += unPct;
-      unPct = 0;
-    }
-    return { hours: h, tp1FirstPct: tpPct, slFirstPct: slPct, unresolvedPct: unPct };
-  });
-}
-
-/**
- * 1h 推动腿识别（方案 C 专用，与 4h identifyLeg 同逻辑不同参数）：
- * zigzag 阈值 2%，最近 90 根 1h（约 4 天），最小腿幅 2%。
- */
-function identifyScalpLeg(k1h: KlineData[]): { side: 'long' | 'short'; base: number; extreme: number } | null {
-  const seg = k1h.slice(-90);
-  if (seg.length < 20) return null;
-  const { points, dir, pendingExtreme } = zigzag(seg, 0.02);
-  if (!dir || points.length === 0) return null;
-  const last = points[points.length - 1];
-  const prev = points.length >= 2 ? points[points.length - 2] : null;
-  let side: 'long' | 'short' | null = null;
-  let base = 0;
-  let extreme = 0;
-  if (dir === 'down') {
-    if (last.type === 'H' && prev && prev.type === 'L') {
-      side = 'long'; base = prev.price; extreme = Math.max(last.price, pendingExtreme);
-    } else if (last.type === 'L' && prev && prev.type === 'H') {
-      side = 'short'; base = prev.price; extreme = Math.min(last.price, pendingExtreme);
-    }
-  } else {
-    if (last.type === 'L' && prev && prev.type === 'H') {
-      side = 'short'; base = prev.price; extreme = Math.min(last.price, pendingExtreme);
-    } else if (last.type === 'H' && prev && prev.type === 'L') {
-      side = 'long'; base = prev.price; extreme = Math.max(last.price, pendingExtreme);
-    }
-  }
-  if (!side || !base || !extreme) return null;
-  if (Math.abs(extreme - base) / base < 0.02) return null;
-  return { side, base, extreme };
-}
-
 /** 取方向侧最近的一个位（dir=1 上方 / -1 下方，限制最大距离） */
 function nearestInDirection(
   levels: { price: number; label: string }[],
@@ -1007,81 +829,10 @@ function calcDirectionSignal(k4h: KlineData[], currentPrice: number): DirectionS
   };
 }
 
-// ==================== 15m 动量确认过滤器（超短线 C 方案专用） ====================
-//
-// 背景：独立 15m/30m/1h 均值回归信号经 22 个月 walk-forward 回测无稳定期望（详见研究记录），
-// 不可独立做单。但 C 方案（1h 推动腿 61.8% 回踩）叠加"入场确认时 15m 动量同向且强"过滤后
-// 质量显著提升 —— 动量延续逻辑：强推动腿后的浅回踩，若确认时动量未衰竭，延续概率高。
-//
-// 回测口径（2024-10 ~ 2026-08，前70%定阈值/后30%样本外，4h 竞速窗，去重后）：
-//   ETH: TP1先到 55-75% / 先SL 10-25% / 期望 +0.19~+0.50R，频率≈0.15笔/天（每6.6天1笔）
-//   SOL: TP1先到 54-70% / 先SL 14-28% / 期望 +0.20~+0.42R，迁移通过
-//   BTC: 样本外前半为负 → 未验证，过滤器仅展示不背书
-//   反向对照（动量弱侧）：ETH 样本外 TP1 仅 10% —— 动量不足时该 setup 直接放弃
-//
-// 阈值 = 各币"确认时刻 MR 分布"训练段 10/90 分位（非全 bar 分布，二者有偏）。
-// MR15 = (偏离EMA50% ×10 + 24根(6h)动量% ×10 + (RSI14-50)/50) / 3
-// 注意：过滤时点 = 入场确认那一刻（触及后 15m 收回有利侧时），非挂单时刻。
-
-/** 各币动量阈值（确认时刻 MR 训练段 10/90 分位）；verified=false 表示回测未通过仅参考 */
-const MOMENTUM_THRESHOLDS: Record<string, { lo: number; hi: number; verified: boolean }> = {
-  ETHUSDT: { lo: -0.142, hi: 0.098, verified: true },
-  SOLUSDT: { lo: -0.143, hi: 0.129, verified: true },
-  BTCUSDT: { lo: -0.160, hi: 0.151, verified: false },
-};
-
-export interface MomentumFilter {
-  /** 当前 15m MR 分数 */
-  mrNow: number;
-  /** 本方向达标阈值：多单=hi，空单=lo */
-  threshold: number;
-  /** strong=当前已达标 / near=距阈值<0.05 / weak=动量不足（反向侧） */
-  state: 'strong' | 'near' | 'weak';
-  /** 该币是否通过样本外验证 */
-  verified: boolean;
-  /** 执行说明 */
-  note: string;
-}
-
-/** 15m 动量分数（与回测完全同公式：EMA50 偏离 + 24根动量 + RSI14）
- *  热身验证：80根与全历史(66732根)算出的MR差<0.001，EMA50/RSI14在80根内已收敛 */
-function calcMomentum15m(k15m: KlineData[]): number | null {
-  const closes = k15m.map((k) => k.close);
-  if (closes.length < 80) return null; // 与线上数据校验下限一致
-  const e50 = emaSeries(closes, 50);
-  const i = closes.length - 1;
-  const dev = (closes[i] - e50[i]) / e50[i];
-  const mom = (closes[i] - closes[i - 24]) / closes[i - 24];
-  const rs = (rsiWilder(closes) - 50) / 50;
-  return Math.round(((dev * 10 + mom * 10 + rs) / 3) * 1000) / 1000;
-}
-
-/** C 方案动量过滤状态（多单看 hi / 空单看 lo） */
-function momentumState(symbol: string, side: 'long' | 'short', mrNow: number | null): MomentumFilter | null {
-  const th = MOMENTUM_THRESHOLDS[symbol];
-  if (!th || mrNow === null) return null;
-  const threshold = side === 'long' ? th.hi : th.lo;
-  const opposite = side === 'long' ? th.lo : th.hi;
-  const inWeakZone = side === 'long' ? mrNow <= opposite : mrNow >= opposite;
-  let state: 'strong' | 'near' | 'weak';
-  if (side === 'long' ? mrNow >= threshold : mrNow <= threshold) state = 'strong';
-  else if (inWeakZone) state = 'weak';
-  else state = 'near';
-  return {
-    mrNow,
-    threshold,
-    state,
-    verified: th.verified,
-    note: th.verified
-      ? `入场确认时 15m 动量需 ${side === 'long' ? '≥' : '≤'} ${threshold} 才执行；当前 ${mrNow}（${state === 'strong' ? '已达标' : state === 'near' ? '接近' : '动量不足·放弃'}）。回测：TP1先到55-75%/先SL10-28%/期望+0.2~0.5R`
-      : `BTC 该过滤器样本外未通过验证，仅展示动量读数不构成执行依据`,
-  };
-}
-
 // ==================== 预案生成 ====================
 
 export interface TradePlan {
-  id: 'A' | 'B' | 'C' | 'D' | 'E';
+  id: 'D' | 'E';
   name: string;
   side: 'long' | 'short';
   /** 触发条件描述 */
@@ -1103,22 +854,8 @@ export interface TradePlan {
   tp1ProbabilityPct?: number;
   /** 自入场价起 N 根 4h 内触及 TP2 的估算概率（0-100） */
   tp2ProbabilityPct?: number;
-  /**
-   * 入场确认后 120h（=30根4h）内：TP1 先于止损被触及的概率（0-100，实测"先到"口径）
-   * 取自 windowRace 末行；仅 A 方案提供（B 方案无法稳定校准，见 RACE 表注释）
-   */
-  tp1FirstPct?: number;
-  /** 入场确认后 120h 内：止损先于 TP1 被触及的概率（0-100，实测"先到"口径），仅 A 方案 */
-  slFirstPct?: number;
-  /**
-   * 分持仓窗口的竞速概率分布（6/12/24/72/120h），仅 A 方案。
-   * 持仓多久看哪行：短窗口大量"未决"（价格还没走到任何一边），不是胜率低。
-   */
-  windowRace?: WindowRaceRow[];
   /** 触发概率主观标记：high=回调类（结构内），medium=突破类（需动能确认） */
   confidence: 'high' | 'medium';
-  /** 15m 动量确认过滤器（仅 C 方案）：入场确认时动量达标才执行 */
-  momentum?: MomentumFilter;
 }
 
 function roundPrice(p: number): number {
@@ -1128,7 +865,7 @@ function roundPrice(p: number): number {
 }
 
 function buildPlan(
-  id: 'A' | 'B' | 'C' | 'D' | 'E',
+  id: 'D' | 'E',
   name: string,
   side: 'long' | 'short',
   trigger: string,
@@ -1141,10 +878,6 @@ function buildPlan(
     tp2Source?: string;
     tp1ProbabilityPct?: number;
     tp2ProbabilityPct?: number;
-    tp1FirstPct?: number;
-    slFirstPct?: number;
-    windowRace?: WindowRaceRow[];
-    momentum?: MomentumFilter;
   },
 ): TradePlan {
   const risk = Math.abs(entry - stop);
@@ -1167,11 +900,7 @@ function buildPlan(
     tp2Source: extras?.tp2Source,
     tp1ProbabilityPct: extras?.tp1ProbabilityPct,
     tp2ProbabilityPct: extras?.tp2ProbabilityPct,
-    tp1FirstPct: extras?.tp1FirstPct,
-    slFirstPct: extras?.slFirstPct,
-    windowRace: extras?.windowRace,
     confidence,
-    momentum: extras?.momentum,
   };
 }
 
@@ -1192,7 +921,7 @@ export interface StructureAnalysis {
   resonanceText: string;
   /** 本腿 */
   leg: Leg | null;
-  /** A/B 双预案（leg 为 null 时可能为空） */
+  /** D/E 双预案（leg 为 null 时可能为空） */
   plans: TradePlan[];
   /** 结构失效位（跌破/升破则当前预案作废） */
   invalidation: { price: number; note: string } | null;
@@ -1258,20 +987,6 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
 
   const sigmaPerBar = currentPrice > 0 ? atrValue / currentPrice : 0;
   const probFrom = (anchor: number, tp: number) => Math.round(touchProbability(anchor, tp, sigmaPerBar, PROB_BARS) * 100);
-  // 预案 TP 概率：按入场情境查对应校准表（A=回调确认 / B=突破回踩确认）
-  const tpProbFrom = (entry: number, tp: number, ctx: 'pullback' | 'breakout') =>
-    Math.round(tpProbability(entry, tp, sigmaPerBar, PROB_BARS, ctx) * 100);
-  // A 方案"先到"口径概率（TP1 与止损逐根竞速，仅 A 情境有校准表）：
-  // 分持仓窗口分布 + 兼容字段（tp1FirstPct/slFirstPct 取 120h 行）
-  const raceExtras = (entry: number, tp1: number, stop: number) => {
-    const rows = windowRaceOutcomes(entry, tp1, stop);
-    const last = rows.length > 0 ? rows[rows.length - 1] : undefined;
-    return {
-      windowRace: rows.length > 0 ? rows : undefined,
-      tp1FirstPct: last?.tp1FirstPct,
-      slFirstPct: last?.slFirstPct,
-    };
-  };
 
   let profitTargets: ProfitTarget[] = [];
   let confluence: ConfluenceZone | null = null;
@@ -1353,134 +1068,19 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
       }
     }
 
+    // 方案 A/B（回调/突破）已按需求下线，仅保留结构失效位供 AI 解读引用
     if (isUp) {
-      // ---- 上涨腿：回调做多 + 突破做多 ----
       const swingLow = lows.length > 0 ? lows[lows.length - 1].price : fib(0.786);
-      const stopA = Math.min(fib(0.786), swingLow) * 0.996; // 结构位下方留 0.4% 缓冲
-      // TP1 = 23.6% 回撤位（entry 上方第一阻力）；若离 entry 太近（盈亏比<1）取 entry~端点中间
-      let tp1A = fib(0.236);
-      if ((tp1A - entryA) / (entryA - stopA) < 1) tp1A = entryA + (leg.endPrice - entryA) / 2;
-      // TP2：主汇流区中值优先（多方法重叠，置信度高于单一结构位）
-      let tp2A = leg.endPrice;
-      let tp2SourceA: string | undefined;
-      if (zoneA && zoneA.mid > tp1A) {
-        tp2A = zoneA.mid;
-        tp2SourceA = `${zoneA.methods.join(' + ')} 汇流`;
-      }
-      plans.push(
-        buildPlan('A', '回调做多（首选）', 'long', `回踩 ${roundPrice(entryA)} 需求区（推动腿 61.8% 回撤），15m 出现止跌结构后入场`, entryA, stopA, tp1A, tp2A, 'high', {
-          tp2Source: tp2SourceA,
-          tp1ProbabilityPct: tpProbFrom(entryA, tp1A, 'pullback'),
-          tp2ProbabilityPct: tpProbFrom(entryA, tp2A, 'pullback'),
-          ...raceExtras(entryA, tp1A, stopA),
-        }),
-      );
-      const entryB = leg.endPrice * 1.005; // 突破前高后回踩
-      const stopB = leg.endPrice * 0.988; // 突破点下方 1.2% 缓冲
-      // B 单目标：突破后先看主汇流区（若在突破位上方），延伸档看最远投影
-      const zoneB = zones.find((z) => z.low > entryB);
-      const tp1B = zoneB ? zoneB.mid : entryB + leg.range * 0.1;
-      let tp2B = ext(1.618);
-      let tp2SourceB: string | undefined;
-      if (extendedTarget && (extendedTarget.price - tp1B) * dirSign > 0) {
-        tp2B = extendedTarget.price;
-        tp2SourceB = `${extendedTarget.label}（延伸档）`;
-      }
-      if ((tp2B - tp1B) * dirSign <= 0) tp2B = tp1B + dirSign * leg.range * 0.1;
-      plans.push(
-        buildPlan('B', '突破追多（备选）', 'long', `1h 放量突破 ${roundPrice(leg.endPrice)} 后回踩不破`, entryB, stopB, tp1B, tp2B, 'medium', {
-          tp2Source: tp2SourceB,
-          tp1ProbabilityPct: tpProbFrom(entryB, tp1B, 'breakout'),
-          tp2ProbabilityPct: tpProbFrom(entryB, tp2B, 'breakout'),
-        }),
-      );
-      invalidation = { price: roundPrice(stopA), note: `4h 收盘跌破 ${roundPrice(stopA)} 则该推动腿结构失效，做多预案作废` };
+      const stopA = Math.min(fib(0.786), swingLow) * 0.996;
+      invalidation = { price: roundPrice(stopA), note: `4h 收盘跌破 ${roundPrice(stopA)} 则该推动腿结构失效` };
     } else {
-      // ---- 下跌腿：反弹做空 + 跌破追空 ----
       const swingHigh = highs.length > 0 ? highs[highs.length - 1].price : fib(0.786);
       const stopA = Math.max(fib(0.786), swingHigh) * 1.004;
-      let tp1A = fib(0.236);
-      if ((entryA - tp1A) / (stopA - entryA) < 1) tp1A = entryA - (entryA - leg.endPrice) / 2;
-      let tp2A = leg.endPrice;
-      let tp2SourceA: string | undefined;
-      if (zoneA && zoneA.mid < tp1A) {
-        tp2A = zoneA.mid;
-        tp2SourceA = `${zoneA.methods.join(' + ')} 汇流`;
-      }
-      plans.push(
-        buildPlan('A', '反弹做空（首选）', 'short', `反弹至 ${roundPrice(entryA)} 供给区（推动腿 61.8% 回撤），15m 出现滞涨结构后入场`, entryA, stopA, tp1A, tp2A, 'high', {
-          tp2Source: tp2SourceA,
-          tp1ProbabilityPct: tpProbFrom(entryA, tp1A, 'pullback'),
-          tp2ProbabilityPct: tpProbFrom(entryA, tp2A, 'pullback'),
-          ...raceExtras(entryA, tp1A, stopA),
-        }),
-      );
-      const entryB = leg.endPrice * 0.995;
-      const stopB = leg.endPrice * 1.012;
-      const zoneB = zones.find((z) => z.high < entryB);
-      const tp1B = zoneB ? zoneB.mid : entryB - leg.range * 0.1;
-      let tp2B = ext(1.618);
-      let tp2SourceB: string | undefined;
-      if (extendedTarget && (extendedTarget.price - tp1B) * dirSign > 0) {
-        tp2B = extendedTarget.price;
-        tp2SourceB = `${extendedTarget.label}（延伸档）`;
-      }
-      if ((tp2B - tp1B) * dirSign >= 0) tp2B = tp1B - leg.range * 0.1;
-      plans.push(
-        buildPlan('B', '跌破追空（备选）', 'short', `1h 放量跌破 ${roundPrice(leg.endPrice)} 后反抽不破`, entryB, stopB, tp1B, tp2B, 'medium', {
-          tp2Source: tp2SourceB,
-          tp1ProbabilityPct: tpProbFrom(entryB, tp1B, 'breakout'),
-          tp2ProbabilityPct: tpProbFrom(entryB, tp2B, 'breakout'),
-        }),
-      );
-      invalidation = { price: roundPrice(stopA), note: `4h 收盘升破 ${roundPrice(stopA)} 则该推动腿结构失效，做空预案作废` };
+      invalidation = { price: roundPrice(stopA), note: `4h 收盘升破 ${roundPrice(stopA)} 则该推动腿结构失效` };
     }
   }
 
-  // ---------- 方案 C：超短线（1h 推动腿，独立于 4h 结构） ----------
-  if (k1h.length >= 100) {
-    const legC = identifyScalpLeg(k1h);
-    if (legC) {
-      const rangeC = Math.abs(legC.extreme - legC.base);
-      const fibC = (r: number) => (legC.side === 'long' ? legC.extreme - rangeC * r : legC.extreme + rangeC * r);
-      const entryC = fibC(0.618);
-      const stopC = legC.side === 'long' ? fibC(0.786) * 0.997 : fibC(0.786) * 1.003;
-      const tp1C = fibC(0.382); // 快止盈（38.2% 回撤，RR≈0.9-1.0）
-      const tp2C = fibC(0.236); // 波段档（23.6% 回撤，RR≈1.4）
-      const riskC = Math.abs(entryC - stopC);
-      const rr1C = Math.abs(tp1C - entryC) / riskC;
-      // 显示门槛：止损未破（破了 = 该腿 setup 已死）、TP1 盈亏比 ≥0.8（与回测口径一致）。
-      // 与 A/B 同语义：点位常显，"15m 触及后收回确认"是执行条件而非显示条件
-      // （回测校准即以触达+确认为条件，显示时机不影响概率含义）。
-      const stopIntact = legC.side === 'long' ? currentPrice > stopC : currentPrice < stopC;
-      const nearEnough = Math.abs(entryC - currentPrice) / currentPrice <= 0.03;
-      if (stopIntact && nearEnough && rr1C >= 0.8) {
-        const rowsC = scalpRaceOutcomes(entryC, tp1C, stopC);
-        const lastC = rowsC.length > 0 ? rowsC[rowsC.length - 1] : undefined;
-        const momentumC = momentumState(symbol, legC.side, calcMomentum15m(k15m));
-        plans.push(
-          buildPlan(
-            'C',
-            legC.side === 'long' ? '超短线做多（快进快出）' : '超短线做空（快进快出）',
-            legC.side,
-            `1h 腿 61.8% 回撤 ${roundPrice(entryC)} 挂单，15m 触及后收回确认${momentumC?.verified ? '，且确认时 15m 动量达标（见动量过滤器）' : ''}；快止盈 ${roundPrice(tp1C)}，盈亏比<1 属正常（高胜率小目标），建议 maker 挂单执行`,
-            entryC,
-            stopC,
-            tp1C,
-            tp2C,
-            'medium',
-            {
-              tp2Source: '1h 腿 23.6% 回撤（波段档，可留部分仓位）',
-              tp1FirstPct: lastC?.tp1FirstPct,
-              slFirstPct: lastC?.slFirstPct,
-              windowRace: rowsC.length > 0 ? rowsC : undefined,
-              momentum: momentumC ?? undefined,
-            },
-          ),
-        );
-      }
-    }
-  }
+  // 方案 C（超短线回踩）已按需求下线——系统仅保留信号触发的 D/E 点数档
 
   // ---------- 关键位 ----------
   const rawLevels: { price: number; label: string }[] = [];

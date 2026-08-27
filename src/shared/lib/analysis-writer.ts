@@ -22,12 +22,6 @@ export interface AnalysisNarrative {
   biasText: string;
   /** 解读段落（2-4 段） */
   paragraphs: string[];
-  /** 方案 A 点评 */
-  planAComment: string;
-  /** 方案 B 点评 */
-  planBComment: string;
-  /** 方案 C 点评（超短线，可能不存在） */
-  planCComment: string;
   /** 方案D点评（短线点数档信号预案，可能不存在） */
   planDComment: string;
   /** 方案E点评（波段点数档信号预案，可能不存在） */
@@ -129,8 +123,7 @@ function buildLlmInput(a: StructureAnalysis): Record<string, unknown> {
     加权盈亏比: p.rrBlended,
     触及概率TP1: p.tp1ProbabilityPct != null ? `${p.tp1ProbabilityPct}%（条件概率：触发条件确认入场后，自入场价30根4h内触及；按入场情境校准的历史回测值，非理论推导）` : null,
     触及概率TP2: p.tp2ProbabilityPct != null ? `${p.tp2ProbabilityPct}%（条件概率：触发条件确认入场后，自入场价30根4h内触及；按入场情境校准的历史回测值，非理论推导）` : null,
-    先到止盈概率: p.tp1FirstPct != null ? `${p.tp1FirstPct}%（实测竞速口径：${p.id === 'C' ? '1h腿入场确认后2~24h窗口' : '入场确认后30根4h内'}，TP1先于止损被触及；同根双触按先止损保守计，最贴近挂单实绩）` : null,
-    先到止损概率: p.slFirstPct != null ? `${p.slFirstPct}%（实测竞速口径，含义同上；A/C方案提供，B方案因止损率随行情机制漂移无法稳定校准故不提供）` : null,
+    实证回测: (p as any).evidence || null,
   });
 
   const trendBrief = (tf: '4h' | '1h' | '15m') => {
@@ -217,16 +210,12 @@ const SYSTEM_PROMPT = `你是"结构共振交易法"的资深交易分析师，�
 4. 严格输出 JSON，不要 markdown 代码块，不要多余文字
 5. 若存在"汇流止盈区"，解读中须点出它由哪些方法叠加、为什么可信度更高；仅当预案的"目标2依据"含"汇流"时才把 TP2 与汇流区价格绑定，否则汇流区应描述为现价附近的第一目标带（减仓参考），不要与 TP2 混淆
 6. 术语规范：使用"推动腿"（Impulse Leg）指代最近一段单方向显著推动行情，首次出现须自然带出定义（如"最近一段自摆动低点 X 推升至摆动高点 Y 的上行推动（推动腿）"），不使用"腿"单字；回撤比例指现价沿该推动自端点向起点折返的深度
-7. 概率口径：方案A若提供"分窗口概率分布"，点评时按持仓周期引用对应窗口（短持仓引 6h/12h 行、日内引 24h、波段引 72h/120h），并指出持仓越短先到止盈率越低、未触及占比越高；明确这是条件概率、以止损纪律执行为前提。不要把"触及概率"说成胜率——触及口径包含先扫损后又到目标的路径，数值必然高于先到口径；B方案无先到概率，不要编造
-8. 方案C为超短线（1h 腿回踩，快止盈 RR 可能 <1 属正常设计），点评须点明：止损距离约 1% 量级、必须 maker 挂单执行否则费率吃掉优势、ETH 近期样本外先到止盈比表值低 3~7pp 需保守看待；不要把 C 与 A/B 的持仓周期混为一谈
+7. 概率口径：若预案提供"分窗口概率分布"，点评时按持仓周期引用对应窗口（短持仓引 6h/12h 行、日内引 24h、波段引 72h/120h），并指出持仓越短先到止盈率越低、未触及占比越高；明确这是条件概率、以止损纪律执行为前提。不要把"触及概率"说成胜率——触及口径包含先扫损后又到目标的路径，数值必然高于先到口径
 
 输出 JSON 结构：
 {
   "headline": "一句话结论，20字内。方向信号未触发时必须以'无信号'开头（如'无信号·多头结构等回调'），禁止任何方向倾向词；触发时包含信号方向",
   "paragraphs": ["结构解读段落，2-4段，每段60-120字：结构现状、当前位置、为什么现在不能进场（未触发时）或执行纪律（触发时）"],
-  "planAComment": "对方案A的一句话点评，说明它为什么是首选",
-  "planBComment": "对方案B的一句话点评，说明它适合什么情况",
-  "planCComment": "对方案C（超短线）的一句话点评：止损约1%量级、须maker挂单执行、ETH近期样本外先到止盈偏低需保守；若无C方案输出空字符串",
   "planDComment": "对方案D（短线点数档）的一句话点评：方向信号触发、目标约10点盈亏比3.33、6年回测胜率42%期望+0.24R七年度全正、超时3天离场；若无D方案输出空字符串",
   "planEComment": "对方案E（波段点数档）的一句话点评：同方向目标约15点盈亏比2.5、胜率44%期望+0.15R七年度全正、超时5天离场、适合挂单执行；若无E方案输出空字符串",
   "invalidation": "失效条件一句话，必须包含失效价格数字",
@@ -265,9 +254,6 @@ export async function generateNarrative(analysis: StructureAnalysis): Promise<An
       paragraphs: Array.isArray(parsed.paragraphs)
         ? parsed.paragraphs.map((p: unknown) => String(p)).filter((p: string) => p.length > 10).slice(0, 4)
         : [],
-      planAComment: String(parsed.planAComment || ''),
-      planBComment: String(parsed.planBComment || ''),
-      planCComment: String(parsed.planCComment || ''),
       planDComment: String(parsed.planDComment || ''),
       planEComment: String(parsed.planEComment || ''),
       invalidation: String(parsed.invalidation || template.invalidation),
@@ -278,7 +264,7 @@ export async function generateNarrative(analysis: StructureAnalysis): Promise<An
     if (!narrative.headline || narrative.paragraphs.length === 0) return template;
 
     // 数字校验：LLM 文案里出现的价格必须全部来自规则引擎
-    const fullText = [narrative.headline, ...narrative.paragraphs, narrative.planAComment, narrative.planBComment, narrative.invalidation, narrative.reminder].join(' ');
+    const fullText = [narrative.headline, ...narrative.paragraphs, narrative.planDComment, narrative.planEComment, narrative.invalidation, narrative.reminder].join(' ');
     if (!numbersMatchAnalysis(fullText, analysis)) {
       console.error('[AnalysisWriter] AI 文案数字与规则引擎不一致，降级模板');
       return template;
@@ -315,7 +301,7 @@ export function buildTemplateNarrative(a: StructureAnalysis): AnalysisNarrative 
     );
     paragraphs.push(
       a.plans.length > 0 && a.plans[0]
-        ? `按结构共振法的纪律，现价不在入场区：三周期未形成同向共振，直接追的止损无处安放。方案A 等回踩 ${a.plans[0].entry} 需求区（推动腿 61.8% 回撤结构位），方案B 等突破 ${round2(a.leg.endPrice)} 后回踩确认，两者都挂条件单等触发，都不触发就空仓等待。`
+        ? `当前方向信号未触发：实证方向信号（MR 极端 + EMA200 同向）尚未到极端位，此刻任何方向的点数目标都缺乏统计优势。等信号触发后按 D/E 点数档执行，不触发就空仓等待。`
         : trendLine,
     );
     if (a.confluence) {
@@ -333,9 +319,6 @@ export function buildTemplateNarrative(a: StructureAnalysis): AnalysisNarrative 
     paragraphs.push(`最近 30 根 4h 内没有振幅超过 3% 的显著推动腿，结构压缩，方向未选。${trendLine} 此时任何方向的盈亏比都不够，等待突破或回撤出结构后再评估。`);
   }
 
-  const planA = a.plans.find((x) => x.id === 'A');
-  const planB = a.plans.find((x) => x.id === 'B');
-  const planC = a.plans.find((x) => x.id === 'C');
   const planD = a.plans.find((x) => x.id === 'D');
 
   return {
@@ -350,19 +333,6 @@ export function buildTemplateNarrative(a: StructureAnalysis): AnalysisNarrative 
         : '偏空'
       : '中性',
     paragraphs,
-    planAComment: planA
-      ? `首选回调单：入场 ${planA.entry}，止损 ${planA.stop}（风险 ${planA.riskPct}%），TP2 盈亏比 ${planA.rrTp2}${
-          planA.windowRace && planA.windowRace.length > 0
-            ? `。历史回测同类入场分窗口先到 TP1 概率：持仓 6h 约 ${planA.windowRace[0].tp1FirstPct}%、24h 约 ${planA.windowRace.find((r) => r.hours === 24)?.tp1FirstPct ?? '-'}%、120h 约 ${planA.windowRace[planA.windowRace.length - 1].tp1FirstPct}%（条件概率，触发确认入场后按持仓周期取对应窗口；以止损纪律执行为前提）`
-            : ''
-        }。`
-      : '结构不明，暂无回调预案。',
-    planBComment: planB
-      ? `备选突破单：触发位 ${round2(planB.entry)}，止损 ${planB.stop}，TP2 盈亏比 ${planB.rrTp2}，需放量确认。`
-      : '结构不明，暂无突破预案。',
-    planCComment: planC
-      ? `超短线（1h 腿）：入场 ${planC.entry}（挂单），止损 ${planC.stop}（风险 ${planC.riskPct}%），快止盈 ${planC.tp1}。止损仅 ${planC.riskPct}% 量级，必须 maker 挂单执行，taker 费率会吃掉优势；ETH 近期样本外先到止盈比表值低 3~7pp，保守看待。`
-      : '',
     planDComment: planD
       ? `短线点数档（方案D）：${planD.side === 'long' ? '做多' : '做空'}，入场 ${planD.entry}，目标 ${planD.tp1}（+${Math.abs(planD.tp1 - planD.entry).toFixed(1)}点），止损 ${planD.stop}（${Math.abs(planD.entry - planD.stop).toFixed(1)}点，盈亏比 3.33）。6 年 128 个信号回测：胜率 42%、期望 +0.24R，2021~2026 七个年度全部为正。超时 3 天未达目标按市价离场。`
       : '',

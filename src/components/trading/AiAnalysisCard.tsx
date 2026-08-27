@@ -13,7 +13,7 @@ import useSymbolStore from '@/store/symbolStore';
  */
 
 interface Plan {
-  id: 'A' | 'B' | 'C' | 'D' | 'E';
+  id: 'D' | 'E';
   name: string;
   side: 'long' | 'short';
   trigger: string;
@@ -29,24 +29,7 @@ interface Plan {
   tp2Source?: string;
   tp1ProbabilityPct?: number;
   tp2ProbabilityPct?: number;
-  tp1FirstPct?: number;
-  slFirstPct?: number;
-  windowRace?: WindowRaceRow[];
   confidence: 'high' | 'medium';
-  momentum?: {
-    mrNow: number;
-    threshold: number;
-    state: 'strong' | 'near' | 'weak';
-    verified: boolean;
-    note: string;
-  };
-}
-
-interface WindowRaceRow {
-  hours: number;
-  tp1FirstPct: number;
-  slFirstPct: number;
-  unresolvedPct: number;
 }
 
 /**
@@ -118,9 +101,6 @@ interface Narrative {
   headline: string;
   biasText: string;
   paragraphs: string[];
-  planAComment: string;
-  planBComment: string;
-  planCComment?: string;
   planDComment?: string;
   planEComment?: string;
   invalidation: string;
@@ -273,7 +253,7 @@ export default function AiAnalysisCard() {
         </div>
         <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
           <div className="flex justify-between">
-            <span className="text-dark-400">{plan.id === 'B' ? '触发' : '入场'}</span>
+            <span className="text-dark-400">入场</span>
             <span className="text-white font-mono">{formatPrice(plan.entry)}</span>
           </div>
           <div className="flex justify-between">
@@ -309,106 +289,11 @@ export default function AiAnalysisCard() {
             TP1 {plan.rrTp1} · TP2 {plan.rrTp2}
           </span>
         </div>
-        {plan.momentum && (
-          <div className="mt-2 pt-2 border-t border-dark-700/50">
-            <div className="flex items-center justify-between text-[10px] mb-1.5">
-              <span className="text-dark-400">15m 动量过滤器（入场确认时执行）</span>
-              <span
-                className={
-                  !plan.momentum.verified
-                    ? 'text-dark-500'
-                    : plan.momentum.state === 'strong'
-                      ? 'text-green-400 font-semibold'
-                      : plan.momentum.state === 'near'
-                        ? 'text-amber-400'
-                        : 'text-red-400 font-semibold'
-                }
-              >
-                {!plan.momentum.verified
-                  ? 'BTC 未验证·仅供参考'
-                  : plan.momentum.state === 'strong'
-                    ? `达标 MR ${plan.momentum.mrNow}`
-                    : plan.momentum.state === 'near'
-                      ? `接近 MR ${plan.momentum.mrNow}`
-                      : `动量不足·放弃 MR ${plan.momentum.mrNow}`}
-              </span>
-            </div>
-            {/* 动量条：当前MR相对 [-0.25, +0.25] 区间位置 + 阈值刻度 */}
-            <div className="relative h-2 rounded-full bg-dark-700/70 overflow-visible">
-              <div
-                className={
-                  plan.momentum.state === 'strong'
-                    ? 'absolute inset-y-0 bg-green-500/50 rounded-full'
-                    : plan.momentum.state === 'weak'
-                      ? 'absolute inset-y-0 bg-red-500/40 rounded-full'
-                      : 'absolute inset-y-0 bg-amber-500/40 rounded-full'
-                }
-                style={{
-                  left: plan.momentum.mrNow >= 0 ? '50%' : `${50 + Math.max(-50, plan.momentum.mrNow / 0.5 * 100)}%`,
-                  width: `${Math.min(50, Math.abs(plan.momentum.mrNow) / 0.5 * 100)}%`,
-                }}
-              />
-              {/* 阈值刻度 */}
-              {(() => {
-                const pos = (v: number) => `${50 + Math.max(-50, Math.min(50, v / 0.5 * 100))}%`;
-                const th = plan.momentum!.threshold;
-                return (
-                  <div
-                    className="absolute -inset-y-0.5 w-px bg-white/70"
-                    style={{ left: pos(th) }}
-                    title={`本方向阈值 ${th}`}
-                  />
-                );
-              })()}
-              <div className="absolute -inset-y-0.5 left-1/2 w-px bg-dark-500" />
-            </div>
-            <p className="mt-1.5 text-[10px] text-dark-500 leading-relaxed">{plan.momentum.note}</p>
-          </div>
-        )}
-        {plan.windowRace && plan.windowRace.length > 0 && (
-          <div className="mt-2 pt-2 border-t border-dark-700/50">
-            <div className="flex items-center justify-between text-[10px] text-dark-500 mb-1.5">
-              <span className="text-dark-400">分持仓窗口 · 谁先触及</span>
-              <span>
-                <span className="text-green-400">先到止盈</span>
-                <span className="text-dark-600"> / </span>
-                <span className="text-red-400">先到止损</span>
-                <span className="text-dark-600"> / </span>
-                <span className="text-dark-400">未触及</span>
-              </span>
-            </div>
-            {plan.windowRace.map((row) => (
-              <div key={row.hours} className="flex items-center gap-2 text-[11px] font-mono leading-5">
-                <span className="w-9 shrink-0 text-dark-300">{row.hours}h</span>
-                <div className="flex-1 h-1.5 rounded-full bg-dark-700/70 overflow-hidden flex">
-                  <div className="bg-green-500/70" style={{ width: `${row.tp1FirstPct}%` }} />
-                  <div className="bg-red-500/70" style={{ width: `${row.slFirstPct}%` }} />
-                </div>
-                <span className="w-[7.5rem] shrink-0 text-right tabular-nums">
-                  <span className="text-green-400">{row.tp1FirstPct}%</span>
-                  <span className="text-dark-600"> / </span>
-                  <span className="text-red-400">{row.slFirstPct}%</span>
-                  <span className="text-dark-600"> / </span>
-                  <span className="text-dark-400">{row.unresolvedPct}%</span>
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-        {(plan.windowRace || plan.tp1ProbabilityPct != null || plan.tp2ProbabilityPct != null) && (
+        {plan.tp1ProbabilityPct != null || plan.tp2ProbabilityPct != null ? (
           <p className="mt-1.5 text-[10px] text-dark-500">
-            {plan.id === 'C'
-              ? '超短线窗口 2~24h 实测校准（1h 腿回踩，15m 触及收回确认后起算）：止损距约 1%，必须 maker 挂单执行，taker 费率约吃掉 11% 风险单位；ETH 近期样本外先到止盈比表值低 3~7pp，保守看待'
-              : plan.windowRace
-                ? '窗口竞速为实测校准（逐根判定谁先触发，同根双触按先止损保守计）：持仓越短先到止盈率越低、未触及占比越高，按自己的持仓周期查对应行；条件概率，触发确认入场后有效'
-                : 'TP 百分比为条件概率：触发条件确认入场后 30 根 4h 内触及（历史回测校准值）；未触发前不成立'}
+            TP 百分比为条件概率：触发条件确认入场后 30 根 4h 内触及（历史回测校准值）；未触发前不成立
           </p>
-        )}
-        {plan.id === 'B' && (
-          <p className="mt-1.5 text-[10px] text-dark-500">
-            B 方案不提供先到概率：实测其止损率先到比例随行情机制漂移（全期 21% → 2026 年 35%），无法稳定校准
-          </p>
-        )}
+        ) : null}
         {plan.tp2Source && (
           <div className="mt-1.5 text-[11px] text-amber-400/90">
             TP2 依据：{plan.tp2Source}
@@ -559,19 +444,9 @@ export default function AiAnalysisCard() {
                 </div>
               </div>
 
-              {/* 多预案（按 id 定位：A 回调 / B 突破 / C 超短线） */}
+              {/* 交易预案（仅 D 短线 / E 波段，信号触发时出现） */}
               {data.plans.length > 0 && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {data.plans.find((p) => p.id === 'A') &&
-                    renderPlan(
-                      data.plans.find((p) => p.id === 'A')!,
-                      data.narrative?.planAComment || data.plans.find((p) => p.id === 'A')!.trigger,
-                    )}
-                  {data.plans.find((p) => p.id === 'B') &&
-                    renderPlan(
-                      data.plans.find((p) => p.id === 'B')!,
-                      data.narrative?.planBComment || data.plans.find((p) => p.id === 'B')!.trigger,
-                    )}
                   {data.plans.find((p) => p.id === 'D') &&
                     renderPlan(
                       data.plans.find((p) => p.id === 'D')!,
@@ -581,14 +456,8 @@ export default function AiAnalysisCard() {
                   {data.plans.find((p) => p.id === 'E') &&
                     renderPlan(
                       data.plans.find((p) => p.id === 'E')!,
-                      (data.narrative as any)?.planEComment ||
+                      data.narrative?.planEComment ||
                         data.plans.find((p) => p.id === 'E')!.trigger,
-                    )}
-                  {data.plans.find((p) => p.id === 'C') &&
-                    renderPlan(
-                      data.plans.find((p) => p.id === 'C')!,
-                      data.narrative?.planCComment ||
-                        data.plans.find((p) => p.id === 'C')!.trigger,
                     )}
                 </div>
               )}

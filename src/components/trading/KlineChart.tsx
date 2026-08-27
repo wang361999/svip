@@ -482,7 +482,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // === 测算与结构画线（画布层：纯色带为主） ===
   // 画法原则（按用户反馈收敛）：
   //   AB9/FIB → 原生满宽价格线（价格轴精确读数，经典画法）
-  //   方案A（止损/入场/TP1/TP2）→ 纯平涂色带：红=风险、浅绿=TP1段、深绿=TP2段，
+  //   方案（止损/入场/TP1/TP2）→ 纯平涂色带：红=风险、浅绿=TP1段、深绿=TP2段，
   //     无线无字，色块边界即价位（精确数字在 AI 分析卡片）
   //   汇流区 → 平涂琥珀色带（与盈利区重叠过半时不画）
   //   流动性池 → 等高/等低两点连线 + 端点圆（EQH/EQL 经典标法）
@@ -551,12 +551,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       return xOf(t);
     };
 
-    // 价位去重：方案A四条原生线已画，画布层同价（<0.2%现价）不再重复画
+    // 价位去重：D 方案四条原生线已画，画布层同价（<0.2%现价）不再重复画
     const drawnPrices: number[] = [];
     const refPrice = pd?.currentPrice || (klines.length ? klines[klines.length - 1].close : 1);
     if (pd && showProfit) {
-      // 信号预案（D）优先：有实证校准依据；未触发时回落到结构方案 A（C 是超短线不铺色带）
-      const pa = pd.plans.find((p) => p.id === 'D') || pd.plans.find((p) => p.id === 'A');
+      // 仅 D 方案（短线点数档）铺色带；信号未触发时无色带
+      const pa = pd.plans.find((p) => p.id === 'D');
       if (pa) drawnPrices.push(pa.entry, pa.stop, pa.tp1, pa.tp2);
     }
     const isDupPrice = (p: number) => drawnPrices.some((x) => Math.abs(x - p) / refPrice < 0.002);
@@ -641,8 +641,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           const step = Math.max(1, Math.abs(xLast - xPrev));
           // 色带从最新K线向左铺 8 根（原18根过宽，压缩后不遮历史走势，仍够读色块边界）
           const projX0 = Math.max(0, xLast - step * 8);
-          // 信号预案（D）优先：色带跟随实证信号方向；未触发时画结构方案 A
-          const pa = pd.plans.find((p) => p.id === 'D') || pd.plans.find((p) => p.id === 'A');
+          // 色带仅跟随 D 方案（短线点数档）；信号未触发时不画色带
+          const pa = pd.plans.find((p) => p.id === 'D');
           if (pa) {
             // ===== 纯色带画法（按反馈：无线无字，颜色即语义；透明度加深保证醒目） =====
             // 红 = 风险区（入场↔止损）；浅绿 = TP1 段；深绿 = TP2 段。
@@ -663,8 +663,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             if (ov <= 0.5) zoneFill(yOf(c.high), yOf(c.low), projX0, '245, 158, 11', 0.26);
           }
           // ===== 汇流止盈区之后的候选位射线已按反馈隐藏 =====
-          // （B方案射线 / 延伸档 / 8个方法候选目标位不再画线；
-          //   数据仍在 AI 分析卡片中完整呈现，图表只保留方案A + 汇流区）
+          // （延伸档 / 8个方法候选目标位不再画线；
+          //   数据仍在 AI 分析卡片中完整呈现，图表只保留方案色带 + 汇流区）
         }
       }
     }
