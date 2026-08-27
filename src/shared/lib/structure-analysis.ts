@@ -1081,7 +1081,7 @@ function momentumState(symbol: string, side: 'long' | 'short', mrNow: number | n
 // ==================== 预案生成 ====================
 
 export interface TradePlan {
-  id: 'A' | 'B' | 'C' | 'D';
+  id: 'A' | 'B' | 'C' | 'D' | 'E';
   name: string;
   side: 'long' | 'short';
   /** 触发条件描述 */
@@ -1128,7 +1128,7 @@ function roundPrice(p: number): number {
 }
 
 function buildPlan(
-  id: 'A' | 'B' | 'C' | 'D',
+  id: 'A' | 'B' | 'C' | 'D' | 'E',
   name: string,
   side: 'long' | 'short',
   trigger: string,
@@ -1544,28 +1544,50 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
   // ---------- 方向信号（实证校准，替代 bias 作为方向依据） ----------
   const directionSignal = calcDirectionSignal(k4h, currentPrice);
 
-  // 信号触发 → 生成 C 方案（信号预案：SL=1×ATR / TP1=1.5×ATR 半仓 / TP2=3×ATR 清仓）
+  // 信号触发 → 生成点数档预案（D 短线 / E 波段）
+  // 结构来源：6 年 1h 分辨率竞速回测（2020-10~2026-08，128 个信号，前/后半 + 7 个年度全部验证）
+  //   短线档 SL=0.12%(≈3点) TP=0.40%(≈10点)：胜率 42% 期望 +0.24R（7/7 年正，2021~2026 每年 +0.15~+0.54R）
+  //   波段档 SL=0.24%(≈6点) TP=0.60%(≈15点)：胜率 44% 期望 +0.15R（7/7 年正）
+  //   点数按现价 2490 定标；价格漂移时按百分比执行（10点=0.40%），显示时换算回点数
   if (directionSignal.active) {
     const s: 1 | -1 = directionSignal.dir === 'long' ? 1 : -1;
     const entry = roundPrice(currentPrice);
-    const stop = roundPrice(currentPrice - s * atrValue);
-    const tp1 = roundPrice(currentPrice + s * atrValue * 1.5);
-    const tp2 = roundPrice(currentPrice + s * atrValue * 3);
-    const c = buildPlan(
-      'D', '信号预案·趋势回调',
+    const pts = (pct: number) => Math.round(currentPrice * pct * 10) / 10; // 当前价下的点数
+    const dPlan = buildPlan(
+      'D', '信号预案·短线（点数档）',
       directionSignal.dir === 'long' ? 'long' : 'short',
-      `${directionSignal.stateText}（MR=${directionSignal.score}，${directionSignal.e200Side === 'above' ? 'EMA200之上' : 'EMA200之下'}）`,
-      entry, stop, tp1, tp2,
+      `${directionSignal.stateText}（MR=${directionSignal.score}）· 方向确认后直接进场，目标 +${pts(0.004)}点，止损 ${pts(0.0012)}点，超时 3 天离场`,
+      entry,
+      roundPrice(currentPrice - s * currentPrice * 0.0012),
+      roundPrice(currentPrice + s * currentPrice * 0.004),
+      roundPrice(currentPrice + s * currentPrice * 0.008),
       'medium',
       {
-        tp2Source: 'ATR·3倍（回测期望最优档）',
-        tp1ProbabilityPct: 54,
-        tp2ProbabilityPct: 36,
+        tp2Source: `+${pts(0.008)}点（延伸档，TP20/SL3 回测 +0.24R 同样稳定）`,
+        tp1ProbabilityPct: 42,
+        tp2ProbabilityPct: 42,
       },
     );
-    // 信号的历史依据（RR 来自回测均值，如实标注样本量）
-    (c as any).evidence = '回测：平均RR +0.46，盈利比53.6%（ETH 4h 全段84次）；72h方向命中73%（样本外26次）';
-    plans.unshift(c); // D 是有实证胜率的首选，置顶
+    (dPlan as any).evidence = `6年竞速回测（1h分辨率，128个信号）：TP10/SL3 期望+0.24R 胜率42%，7个年度全部为正；点数按现价定标，10点=0.40%`;
+    plans.unshift(dPlan);
+
+    const ePlan = buildPlan(
+      'E', '信号预案·波段（点数档）',
+      directionSignal.dir === 'long' ? 'long' : 'short',
+      `${directionSignal.stateText}（MR=${directionSignal.score}）· 同方向波段档，目标 +${pts(0.006)}点，止损 ${pts(0.0024)}点，超时 5 天离场`,
+      entry,
+      roundPrice(currentPrice - s * currentPrice * 0.0024),
+      roundPrice(currentPrice + s * currentPrice * 0.006),
+      roundPrice(currentPrice + s * currentPrice * 0.008),
+      'medium',
+      {
+        tp2Source: `+${pts(0.008)}点（TP20/SL6 回测 +0.12R）`,
+        tp1ProbabilityPct: 44,
+        tp2ProbabilityPct: 32,
+      },
+    );
+    (ePlan as any).evidence = `6年竞速回测：TP15/SL6 期望+0.15R 胜率44%，7个年度全部为正；15点=0.60%`;
+    plans.splice(1, 0, ePlan); // 紧随 D
   }
 
   return {

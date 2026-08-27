@@ -28,8 +28,10 @@ export interface AnalysisNarrative {
   planBComment: string;
   /** 方案 C 点评（超短线，可能不存在） */
   planCComment: string;
-  /** 方案D点评（实证信号预案，可能不存在） */
+  /** 方案D点评（短线点数档信号预案，可能不存在） */
   planDComment: string;
+  /** 方案E点评（波段点数档信号预案，可能不存在） */
+  planEComment: string;
   /** 失效条件（数字必须与规则引擎一致） */
   invalidation: string;
   /** 风险提醒 */
@@ -225,7 +227,8 @@ const SYSTEM_PROMPT = `你是"结构共振交易法"的资深交易分析师，�
   "planAComment": "对方案A的一句话点评，说明它为什么是首选",
   "planBComment": "对方案B的一句话点评，说明它适合什么情况",
   "planCComment": "对方案C（超短线）的一句话点评：止损约1%量级、须maker挂单执行、ETH近期样本外先到止盈偏低需保守；若无C方案输出空字符串",
-  "planDComment": "对方案D（实证信号预案）的一句话点评：它有回测胜率支撑（72h方向命中73%）、止损1×ATR、TP1出半仓后止损移到开仓价是期望的主要来源；若无D方案输出空字符串",
+  "planDComment": "对方案D（短线点数档）的一句话点评：方向信号触发、目标约10点盈亏比3.33、6年回测胜率42%期望+0.24R七年度全正、超时3天离场；若无D方案输出空字符串",
+  "planEComment": "对方案E（波段点数档）的一句话点评：同方向目标约15点盈亏比2.5、胜率44%期望+0.15R七年度全正、超时5天离场、适合挂单执行；若无E方案输出空字符串",
   "invalidation": "失效条件一句话，必须包含失效价格数字",
   "reminder": "风险提醒一句话，结合当前波动特点"
 }`;
@@ -266,6 +269,7 @@ export async function generateNarrative(analysis: StructureAnalysis): Promise<An
       planBComment: String(parsed.planBComment || ''),
       planCComment: String(parsed.planCComment || ''),
       planDComment: String(parsed.planDComment || ''),
+      planEComment: String(parsed.planEComment || ''),
       invalidation: String(parsed.invalidation || template.invalidation),
       reminder: String(parsed.reminder || template.reminder),
       source: 'ai',
@@ -336,7 +340,7 @@ export function buildTemplateNarrative(a: StructureAnalysis): AnalysisNarrative 
 
   return {
     headline: a.directionSignal?.active
-      ? `${a.directionSignal.dir === 'long' ? '超跌做多信号触发' : '超涨做空信号触发'}（历史72h命中73%）`
+      ? `${a.directionSignal.dir === 'long' ? '超跌做多信号触发' : '超涨做空信号触发'}（6年点数档回测7/7年正，近两年72h命中78%）`
       : a.plans.length === 0
         ? '无信号·结构压缩，观望等方向'
         : `无信号·${a.directionSignal?.e200Side === 'above' ? '多头结构' : a.directionSignal?.e200Side === 'below' ? '空头结构' : '结构未明'}等极端位，现观望`,
@@ -360,8 +364,14 @@ export function buildTemplateNarrative(a: StructureAnalysis): AnalysisNarrative 
       ? `超短线（1h 腿）：入场 ${planC.entry}（挂单），止损 ${planC.stop}（风险 ${planC.riskPct}%），快止盈 ${planC.tp1}。止损仅 ${planC.riskPct}% 量级，必须 maker 挂单执行，taker 费率会吃掉优势；ETH 近期样本外先到止盈比表值低 3~7pp，保守看待。`
       : '',
     planDComment: planD
-      ? `实证信号预案：${planD.side === 'long' ? '超跌做多' : '超涨做空'}，入场 ${planD.entry}，止损 ${planD.stop}（1×ATR），TP1 ${planD.tp1} 出半仓后止损移至开仓价，TP2 ${planD.tp2} 清仓。历史 72h 方向命中 73%（样本外 26 次），平均 RR +0.46。`
+      ? `短线点数档（方案D）：${planD.side === 'long' ? '做多' : '做空'}，入场 ${planD.entry}，目标 ${planD.tp1}（+${Math.abs(planD.tp1 - planD.entry).toFixed(1)}点），止损 ${planD.stop}（${Math.abs(planD.entry - planD.stop).toFixed(1)}点，盈亏比 3.33）。6 年 128 个信号回测：胜率 42%、期望 +0.24R，2021~2026 七个年度全部为正。超时 3 天未达目标按市价离场。`
       : '',
+    planEComment: (() => {
+      const p = a.plans.find((x) => x.id === 'E');
+      return p
+        ? `波段点数档（方案E）：同方向 ${p.side === 'long' ? '做多' : '做空'}，入场 ${p.entry}，目标 ${p.tp1}（+${Math.abs(p.tp1 - p.entry).toFixed(1)}点），止损 ${p.stop}（${Math.abs(p.entry - p.stop).toFixed(1)}点，盈亏比 2.5）。回测胜率 44%、期望 +0.15R，七个年度全部为正。适合不盯盘时挂单执行，超时 5 天离场。`
+        : '';
+    })(),
     invalidation: a.invalidation ? a.invalidation.note : '暂无明确失效位（结构压缩期）。',
     reminder: '数据仅供参考，不构成投资建议。条件单进场，止损必带，破位不扛。',
     source: 'template',

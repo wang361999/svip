@@ -13,7 +13,7 @@ import useSymbolStore from '@/store/symbolStore';
  */
 
 interface Plan {
-  id: 'A' | 'B' | 'C' | 'D';
+  id: 'A' | 'B' | 'C' | 'D' | 'E';
   name: string;
   side: 'long' | 'short';
   trigger: string;
@@ -122,6 +122,7 @@ interface Narrative {
   planBComment: string;
   planCComment?: string;
   planDComment?: string;
+  planEComment?: string;
   invalidation: string;
   reminder: string;
   source: 'ai' | 'template';
@@ -576,6 +577,12 @@ export default function AiAnalysisCard() {
                       data.plans.find((p) => p.id === 'D')!,
                       data.narrative?.planDComment ||
                         data.plans.find((p) => p.id === 'D')!.trigger,
+                    )}
+                  {data.plans.find((p) => p.id === 'E') &&
+                    renderPlan(
+                      data.plans.find((p) => p.id === 'E')!,
+                      (data.narrative as any)?.planEComment ||
+                        data.plans.find((p) => p.id === 'E')!.trigger,
                     )}
                   {data.plans.find((p) => p.id === 'C') &&
                     renderPlan(
