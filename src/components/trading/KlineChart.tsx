@@ -637,15 +637,15 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     // ===== 第一层：利润测算 / 微构（区域 + 芯片优先占槽位，核心信息不让位） =====
     if (pd && (showProfit || showMicro)) {
 
-    // 右侧标签芯片：深底 + 彩字 + 细描边的圆角胶囊，贴价格轴一侧；
+    // 标签芯片：深底 + 彩字 + 细描边的圆角胶囊，锚定透明测算框左边缘（x0）；
       // 槽位写入统一 occupiedY（芯片高度 17px，间隔阈值 15px），射线标签后续避让
       ctx.textBaseline = 'middle';
       ctx.textAlign = 'center';
-      const chip = (yMid: number, text: string, color: string, border: string) => {
+      const chip = (yMid: number, text: string, color: string, border: string, x0 = 0) => {
         ctx.font = '600 10px -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif';
         const cw = ctx.measureText(text).width + 14;
         const ch = 17;
-        const cx = paneW - cw - 8;
+        const cx = x0 + 4;
         const cy = Math.round(yMid - ch / 2);
         if (cx < 8 || cy < 3 || cy + ch > paneH - 3) return;
         if (occupiedY.some((sy) => Math.abs(sy - (cy + ch / 2)) < 15)) return;
@@ -707,13 +707,13 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             // 芯片同时承载涨幅+概率（原生线只剩纯名称），一处读全两个维度
             // 风险区（入场↔止损，红渐变）
             const rz = zoneFill(yOf(pa.entry), yOf(pa.stop), projX0, '239, 68, 68', 0.13);
-            if (rz && rz.h >= 17) chip(rz.mid, `止损 −${dist(pa.stop, pa.entry)}%`, '#f87171', 'rgba(239, 68, 68, 0.45)');
+            if (rz && rz.h >= 17) chip(rz.mid, `止损 −${dist(pa.stop, pa.entry)}%`, '#f87171', 'rgba(239, 68, 68, 0.45)', projX0);
             // 盈利区①（入场↔TP1，浅绿）
             const z1 = zoneFill(yOf(pa.entry), yOf(pa.tp1), projX0, '34, 197, 94', 0.10);
-            if (z1 && z1.h >= 17) chip(z1.mid, `TP1 +${dist(pa.tp1, pa.entry)}%${pa.tp1ProbabilityPct != null ? `·${pa.tp1ProbabilityPct}%` : ''}`, '#4ade80', 'rgba(34, 197, 94, 0.45)');
+            if (z1 && z1.h >= 17) chip(z1.mid, `TP1 +${dist(pa.tp1, pa.entry)}%${pa.tp1ProbabilityPct != null ? `·${pa.tp1ProbabilityPct}%` : ''}`, '#4ade80', 'rgba(34, 197, 94, 0.45)', projX0);
             // 盈利区②（TP1↔TP2，绿加深一档：越远的目标颜色越实）
             const z2 = zoneFill(yOf(pa.tp1), yOf(pa.tp2), projX0, '34, 197, 94', 0.17);
-            if (z2 && z2.h >= 17) chip(z2.mid, `TP2 +${dist(pa.tp2, pa.entry)}%${pa.tp2ProbabilityPct != null ? `·${pa.tp2ProbabilityPct}%` : ''}`, '#4ade80', 'rgba(34, 197, 94, 0.45)');
+            if (z2 && z2.h >= 17) chip(z2.mid, `TP2 +${dist(pa.tp2, pa.entry)}%${pa.tp2ProbabilityPct != null ? `·${pa.tp2ProbabilityPct}%` : ''}`, '#4ade80', 'rgba(34, 197, 94, 0.45)', projX0);
           }
           // ===== 画法二：汇流止盈区（渐变面 + 上下沿边线，中值线取消） =====
           if (pd.confluence) {
@@ -724,7 +724,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             if (yh != null && !isDupPrice(c.high)) hline(yh, projX0, 'rgba(245, 158, 11, 0.55)', 1, [6, 4]);
             if (yl != null && !isDupPrice(c.low)) hline(yl, projX0, 'rgba(245, 158, 11, 0.55)', 1, [6, 4]);
             if (yh != null && yl != null && Math.abs(yh - yl) >= 17) {
-              chip((yh + yl) / 2, `汇流区 ${c.probabilityPct}%`, '#fbbf24', 'rgba(245, 158, 11, 0.5)');
+              chip((yh + yl) / 2, `汇流区 ${c.probabilityPct}%`, '#fbbf24', 'rgba(245, 158, 11, 0.5)', projX0);
             }
           }
           // ===== 汇流止盈区之后的候选位射线已按反馈隐藏 =====
