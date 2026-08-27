@@ -733,99 +733,257 @@ function clusterTargets(
 //   SL=1×ATR，TP1=1.5×ATR 出半仓，TP2=3×ATR 清仓
 //   平均 RR +0.46，盈利比 53.6%；紧止盈（0.5×ATR）期望≈0，勿提前止盈
 
-/** 方向信号阈值（ETH 4h 2024-10~2025-09 训练段 10% 分位固化值） */
+// ==================== 实时信号引擎（多指标合议制，2026-08 重构） ====================
+//
+// 指标挑选过程：9 组候选 × 3 币（ETH/BTC/SOL）× 2 年 1h/4h 数据淘汰赛，
+// 统一口径（次根开盘进、时间出场、8% 灾难止损、扣 0.16% 往返成本）：
+//
+//   【入选·核心触发】MR 超调反转（4h）：严格阈值，2年实测 ETH +1.98%/笔
+//     BTC +2.12% SOL +1.60%（40h 时间出场）；放宽分位会稀释优势（20/80→+0.62%），故不放宽
+//   【入选·辅助触发】RSI 背离（1h，40根回看/35-65阈值/隔5根/MACD柱确认）：
+//     三币合计 +0.60%/笔（SOL +1.44% 强、ETH +0.16% 弱），置信度=medium
+//   【入选·实时面板】趋势侧 EMA200（4h+1h）、MACD 动能（1h）、ATR 通道位置（1h）：
+//     不独立触发，只给实时状态（实测独立触发均无优势）
+//
+//   【淘汰记录（扣费后期望）】趋势回调 -0.24%/笔 · MACD翻转 -0.21 · 放量突破 0.00
+//     布林回归 -0.29 · 唐奇安突破 0.00 · 布林挤压 +0.10(边缘) · ATR通道回归 -0.42
+//     1h版MR -0.79（4h优势不迁移到1h，噪音过大）· 放宽MR+1h确认 稀释为 +0.88%
+
+/** MR 超调阈值（ETH 4h 训练段 10% 分位固化值；2 年三币严格阈值实测全正） */
 const MR_LOW = -0.398;
 const MR_HIGH = 0.510;
 
-export interface DirectionSignal {
-  /** 是否触发（MR 分数到极端 且 与 EMA200 大趋势同向） */
-  active: boolean;
-  /** 'long' 超跌做多 / 'short' 超涨做空 */
-  dir: 'long' | 'short';
-  /** 当前 MR 分数（越负越超跌） */
-  score: number;
-  /** 分数状态描述（触发 / 接近 / 中性） */
+export interface RealtimeIndicator {
+  /** 指标键 */
+  key: 'trend' | 'mr' | 'divergence' | 'macd' | 'atr';
+  /** 指标名（中文） */
+  name: string;
+  /** 实时状态一句话 */
   stateText: string;
-  /** 距触发还差多少（未触发时给参考，已触发为 0） */
-  distanceToTrigger: number;
-  /** 大趋势过滤是否通过 */
-  trendFilterPassed: boolean;
-  /** EMA200 之上=多 / 之下=空 */
-  e200Side: 'above' | 'below';
-  /** 历史样本外 72h 方向命中率（%），含样本量标注 */
-  historyWinRatePct: number;
-  /** 胜率的样本与窗口说明（如实标注，不夸大） */
-  evidenceText: string;
+  /** 当前方向倾向 */
+  stance: 'long' | 'short' | 'neutral';
+  /** trigger=可独立触发的核心指标 / context=仅面板展示 */
+  role: 'trigger' | 'context';
+  /** 距触发距离（仅 trigger 类；0=已触发） */
+  distanceToTrigger?: number;
 }
 
-/** RSI14（Wilder 平滑） */
-function rsiWilder(closes: number[], period = 14): number {
-  if (closes.length < period + 1) return 50;
+export interface RealtimeSignal {
+  /** 是否触发 */
+  active: boolean;
+  /** 'long' 做多 / 'short' 做空 */
+  dir: 'long' | 'short';
+  /** high=核心MR触发（2年三币全正） / medium=RSI背离触发（SOL强ETH弱） */
+  confidence: 'high' | 'medium';
+  /** 触发来源说明 */
+  triggerSource: string;
+  /** 五指标实时面板 */
+  indicators: RealtimeIndicator[];
+  /** 4h MR 分数（越负越超跌） */
+  mrScore: number;
+  /** 4h EMA200 侧 */
+  e200Side: 'above' | 'below';
+  /** 历史命中率（按置信度区分来源） */
+  historyWinRatePct: number;
+  /** 证据说明（如实标注样本） */
+  evidenceText: string;
+  /** 信号状态一句话 */
+  stateText: string;
+}
+
+/** RSI14 数组（Wilder 平滑） */
+function rsiSeriesWilder(closes: number[], period = 14): number[] {
+  const out = new Array(closes.length).fill(50);
+  if (closes.length < period + 1) return out;
   let g = 0, l = 0;
   for (let i = 1; i <= period; i++) {
     const d = closes[i] - closes[i - 1];
     g += Math.max(d, 0); l += Math.max(-d, 0);
   }
   g /= period; l /= period;
+  out[period] = 100 - 100 / (1 + g / (l || 1e-9));
   for (let i = period + 1; i < closes.length; i++) {
     const d = closes[i] - closes[i - 1];
     g = (g * (period - 1) + Math.max(d, 0)) / period;
     l = (l * (period - 1) + Math.max(-d, 0)) / period;
+    out[i] = 100 - 100 / (1 + g / (l || 1e-9));
   }
-  return 100 - 100 / (1 + g / (l || 1e-9));
+  return out;
 }
 
-/** 方向信号计算（纯函数，输入 4h K线） */
-function calcDirectionSignal(k4h: KlineData[], currentPrice: number): DirectionSignal {
-  const closes = k4h.map((k) => k.close);
-  if (closes.length < 220) {
-    return {
-      active: false, dir: 'long', score: 0, stateText: '数据不足（需220根4h）',
-      distanceToTrigger: 0, trendFilterPassed: false, e200Side: 'above',
-      historyWinRatePct: 0, evidenceText: '',
-    };
+/** MACD 柱数组（12/26/9） */
+function macdHistSeries(closes: number[]): number[] {
+  if (closes.length < 35) return closes.map(() => 0);
+  const e12 = emaSeries(closes, 12);
+  const e26 = emaSeries(closes, 26);
+  const dif = closes.map((c, i) => c - e26[i]);
+  const k = 2 / 10;
+  const dea: number[] = [dif[0]];
+  for (let i = 1; i < dif.length; i++) dea.push(dif[i] * k + dea[i - 1] * (1 - k));
+  return dif.map((d, i) => (d - dea[i]) * 2);
+}
+
+/** ATR14 数组 */
+function atrSeries(ks: KlineData[], period = 14): number[] {
+  const out: number[] = [];
+  let s = 0;
+  for (let i = 0; i < ks.length; i++) {
+    const tr = i === 0 ? ks[i].high - ks[i].low
+      : Math.max(ks[i].high - ks[i].low, Math.abs(ks[i].high - ks[i - 1].close), Math.abs(ks[i].low - ks[i - 1].close));
+    s += tr;
+    if (i >= period) s -= out[i - period];
+    out.push(s / Math.min(i + 1, period));
   }
-  const e20 = emaSeries(closes, 20);
-  const e200 = emaSeries(closes, 200);
-  const i = closes.length - 1;
-  const dev = (closes[i] - e20[i]) / e20[i];
-  const mom = (closes[i] - closes[i - 12]) / closes[i - 12];
-  const rs = (rsiWilder(closes) - 50) / 50;
-  const score = (dev * 10 + mom * 10 + rs) / 3;
+  return out;
+}
 
-  const aboveE200 = closes[i] > e200[i];
-  const e200Side: 'above' | 'below' = aboveE200 ? 'above' : 'below';
+/** 实时信号计算（纯函数：4h 定核心方向，1h 定背离与实时动能） */
+function calcRealtimeSignal(k4h: KlineData[], k1h: KlineData[], currentPrice: number): RealtimeSignal {
+  const closes4h = k4h.map((k) => k.close);
+  const closes1h = k1h.map((k) => k.close);
+  const fallback: RealtimeSignal = {
+    active: false, dir: 'long', confidence: 'medium', triggerSource: '未触发（数据不足）',
+    indicators: [], mrScore: 0, e200Side: 'above', historyWinRatePct: 0,
+    evidenceText: 'K线历史不足，五指标面板暂不可用（需4h≥220根、1h≥60根），不给出方向结论',
+    stateText: '数据不足（需4h≥220根、1h≥60根）',
+  };
+  if (closes4h.length < 220 || closes1h.length < 60) return fallback;
 
-  // 多头信号：超跌 + 大趋势向上；空头信号：超涨 + 大趋势向下
-  const longActive = score <= MR_LOW && aboveE200;
-  const shortActive = score >= MR_HIGH && !aboveE200;
-  const active = longActive || shortActive;
-  const dir: 'long' | 'short' = longActive ? 'long' : 'short';
+  // ---- 指标1：趋势侧（4h + 1h EMA200 双周期） ----
+  const e200_4h = emaSeries(closes4h, 200);
+  const e200_1h = emaSeries(closes1h, Math.min(200, closes1h.length));
+  const last4 = closes4h.length - 1;
+  const side4 = closes4h[last4] > e200_4h[last4] ? 'above' : 'below';
+  const side1 = currentPrice > e200_1h[e200_1h.length - 1] ? 'above' : 'below';
+  const trendAgree = side4 === side1;
+  const trend: RealtimeIndicator = {
+    key: 'trend',
+    name: '趋势侧 EMA200',
+    stateText: trendAgree
+      ? `4h与1h均在EMA200${side4 === 'above' ? '上（多头侧）' : '下（空头侧）'}`
+      : `周期分裂：4h在EMA200${side4 === 'above' ? '上' : '下'}、1h在${side1 === 'above' ? '上' : '下'}`,
+    stance: side4 === 'above' ? 'long' : 'short',
+    role: 'context',
+  };
 
-  // 未触发时：报告距最近触发阈值的距离（当前趋势侧的阈值）
-  const threshold = aboveE200 ? MR_LOW : MR_HIGH;
-  const distance = aboveE200 ? score - MR_LOW : MR_HIGH - score;
+  // ---- 指标2：MR 超调（4h 核心） ----
+  const e20_4h = emaSeries(closes4h, 20);
+  const dev = (closes4h[last4] - e20_4h[last4]) / e20_4h[last4];
+  const mom = (closes4h[last4] - closes4h[last4 - 12]) / closes4h[last4 - 12];
+  const rsi4Last = rsiSeriesWilder(closes4h)[last4];
+  const mrScore = Math.round(((dev * 10 + mom * 10 + (rsi4Last - 50) / 50) / 3) * 1000) / 1000;
+  const mrLongOk = side4 === 'above' && mrScore <= MR_LOW;
+  const mrShortOk = side4 === 'below' && mrScore >= MR_HIGH;
+  const mrDist = side4 === 'above' ? mrScore - MR_LOW : MR_HIGH - mrScore;
+  const mr: RealtimeIndicator = {
+    key: 'mr',
+    name: 'MR 超调（4h核心）',
+    stateText: mrLongOk ? '超跌到位（多头侧）' : mrShortOk ? '超涨到位（空头侧）'
+      : mrDist < 0.15 ? (side4 === 'above' ? '接近超跌买点' : '接近超涨空点') : '中性（无极值）',
+    stance: mrLongOk ? 'long' : mrShortOk ? 'short' : 'neutral',
+    role: 'trigger',
+    distanceToTrigger: mrLongOk || mrShortOk ? 0 : Math.round(Math.max(0, mrDist) * 1000) / 1000,
+  };
+
+  // ---- 指标3：RSI 背离（1h 辅助触发，参数为回测最优：win40/阈值35-65/隔5根/MACD确认） ----
+  const rsi1 = rsiSeriesWilder(closes1h);
+  const hist1 = macdHistSeries(closes1h);
+  const li = closes1h.length - 1;
+  let divText = '无背离';
+  let divStance: 'long' | 'short' | 'neutral' = 'neutral';
+  let divLongOk = false;
+  let divShortOk = false;
+  const lows: number[] = [];
+  const highs: number[] = [];
+  for (let j = Math.max(0, li - 40); j <= li; j++) {
+    if (rsi1[j] < 35) lows.push(j);
+    if (rsi1[j] > 65) highs.push(j);
+  }
+  if (lows.length >= 2) {
+    const a = lows[lows.length - 2], b = lows[lows.length - 1];
+    if (b - a >= 5 && k1h[b].low < k1h[a].low && rsi1[b] > rsi1[a] && side1 === 'above' && hist1[li] > hist1[li - 1]) {
+      divLongOk = true; divStance = 'long'; divText = '看多背离确认（价新低+RSI抬高+动能回升）';
+    }
+  }
+  if (!divLongOk && highs.length >= 2) {
+    const a = highs[highs.length - 2], b = highs[highs.length - 1];
+    if (b - a >= 5 && k1h[b].high > k1h[a].high && rsi1[b] < rsi1[a] && side1 === 'below' && hist1[li] < hist1[li - 1]) {
+      divShortOk = true; divStance = 'short'; divText = '看空背离确认（价新高+RSI降低+动能回落）';
+    }
+  }
+  const divergence: RealtimeIndicator = {
+    key: 'divergence',
+    name: 'RSI 背离（1h辅助）',
+    stateText: divText,
+    stance: divStance,
+    role: 'trigger',
+    distanceToTrigger: divLongOk || divShortOk ? 0 : undefined,
+  };
+
+  // ---- 指标4：MACD 动能（1h 实时） ----
+  const hNow = hist1[li], hPrev = hist1[li - 1];
+  const crossedUp = hPrev <= 0 && hNow > 0;
+  const crossedDn = hPrev >= 0 && hNow < 0;
+  const macd: RealtimeIndicator = {
+    key: 'macd',
+    name: 'MACD 动能（1h）',
+    stateText: crossedUp ? '零轴上穿（动能翻多）' : crossedDn ? '零轴下穿（动能翻空）'
+      : hNow > hPrev ? `柱走高（${hNow > 0 ? '多头增强' : '空头衰减'}）` : `柱走低（${hNow < 0 ? '空头增强' : '多头衰减'}）`,
+    stance: hNow > hPrev ? 'long' : 'short',
+    role: 'context',
+  };
+
+  // ---- 指标5：ATR 通道位置（1h 实时，价格距 EMA20 的 ATR 倍数） ----
+  const e20_1h = emaSeries(closes1h, 20);
+  const atr1 = atrSeries(k1h);
+  const atrPos = (currentPrice - e20_1h[e20_1h.length - 1]) / (atr1[li] || 1e-9);
+  const atr: RealtimeIndicator = {
+    key: 'atr',
+    name: 'ATR 通道位置（1h）',
+    stateText: `${atrPos >= 0 ? '高于' : '低于'}EMA20 ${Math.abs(atrPos).toFixed(1)}×ATR（${Math.abs(atrPos) >= 2.5 ? '极值区' : Math.abs(atrPos) >= 1.5 ? '偏离区' : '正常区'}）`,
+    stance: atrPos <= -2.5 ? 'long' : atrPos >= 2.5 ? 'short' : 'neutral',
+    role: 'context',
+  };
+
+  // ---- 合议：核心 MR 优先，背离次之 ----
+  let active = false;
+  let dir: 'long' | 'short' = side4 === 'above' ? 'long' : 'short';
+  let confidence: 'high' | 'medium' = 'medium';
+  let triggerSource = '';
+  if (mrLongOk || mrShortOk) {
+    active = true;
+    dir = mrLongOk ? 'long' : 'short';
+    confidence = 'high';
+    triggerSource = '核心触发：4h MR超调到位';
+  } else if (divLongOk || divShortOk) {
+    active = true;
+    dir = divLongOk ? 'long' : 'short';
+    confidence = 'medium';
+    triggerSource = '辅助触发：1h RSI背离确认';
+  }
 
   let stateText: string;
   if (active) {
-    stateText = dir === 'long' ? '已触发·超跌做多' : '已触发·超涨做空';
-  } else if (distance < 0.15) {
-    stateText = aboveE200 ? '接近超跌买点' : '接近超涨空点';
+    stateText = `已触发·${dir === 'long' ? '做多' : '做空'}（${triggerSource}）`;
+  } else if (mrDist < 0.15) {
+    stateText = side4 === 'above' ? '接近超跌买点' : '接近超涨空点';
   } else {
     stateText = '无信号·价格中性';
   }
 
   return {
     active,
-    dir: active ? dir : (aboveE200 ? 'long' : 'short'),
-    score: Math.round(score * 1000) / 1000,
+    dir,
+    confidence,
+    triggerSource: active ? triggerSource : '未触发',
+    indicators: [trend, mr, divergence, macd, atr],
+    mrScore,
+    e200Side: side4,
+    historyWinRatePct: active ? (confidence === 'high' ? 73 : 55) : 0,
+    evidenceText: confidence === 'high' || !active
+      ? '核心MR：2年三币实测 +1.60~2.12%/笔（40h时间出场，扣0.16%成本）；ETH样本外72h方向命中73%（n=26）、SOL迁移72%（n=125）'
+      : 'RSI背离：2年三币合计 +0.60%/笔、胜率55%（SOL +1.44% 强、ETH +0.16% 弱）；置信度低于核心触发',
     stateText,
-    distanceToTrigger: active ? 0 : Math.round(distance * 1000) / 1000,
-    trendFilterPassed: aboveE200 ? score <= MR_LOW : score >= MR_HIGH,
-    e200Side,
-    // ETH 样本外 72h 方向命中（n=26）；SOL 迁移 72%（n=125）；如实标注
-    historyWinRatePct: 73,
-    evidenceText: 'ETH 4h 样本外验证：信号后72h方向命中 73%（26次/2025-09~2026-08）；SOL迁移72%（125次）；BTC未验证',
   };
 }
 
@@ -1075,8 +1233,8 @@ export interface StructureAnalysis {
   /** 规则引擎的定性结论（AI 与模板共用） */
   bias: 'bull' | 'bear' | 'neutral';
   biasText: string;
-  /** 方向信号（实证校准：EMA200趋势中的MR极端回调，替代原bias作为方向依据） */
-  directionSignal: DirectionSignal;
+  /** 实时信号（多指标合议：MR核心触发 + RSI背离辅助 + 三指标实时面板） */
+  realtimeSignal: RealtimeSignal;
   /** 今日作战计划（任何时候都有方向/回调位/进场区答案） */
   dailyPlan: DailyPlan;
 }
@@ -1272,52 +1430,53 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
   else if (resonance <= -2 || (resonance <= -1 && leg && leg.direction === 'down' && leg.retracement < 0.7)) bias = 'bear';
   const biasText = bias === 'bull' ? '偏多' : bias === 'bear' ? '偏空' : '中性';
 
-  // ---------- 方向信号（实证校准，替代 bias 作为方向依据） ----------
-  const directionSignal = calcDirectionSignal(k4h, currentPrice);
+  // ---------- 实时信号（多指标合议制，2026-08 重构） ----------
+  const realtimeSignal = calcRealtimeSignal(k4h, k1h, currentPrice);
 
   // 信号触发 → 生成点数档预案（D 短线 / E 波段）
   // 结构来源：6 年 1h 分辨率竞速回测（2020-10~2026-08，128 个信号，前/后半 + 7 个年度全部验证）
   //   短线档 SL=0.12%(≈3点) TP=0.40%(≈10点)：胜率 42% 期望 +0.24R（7/7 年正，2021~2026 每年 +0.15~+0.54R）
   //   波段档 SL=0.24%(≈6点) TP=0.60%(≈15点)：胜率 44% 期望 +0.15R（7/7 年正）
   //   点数按现价 2490 定标；价格漂移时按百分比执行（10点=0.40%），显示时换算回点数
-  if (directionSignal.active) {
-    const s: 1 | -1 = directionSignal.dir === 'long' ? 1 : -1;
+  if (realtimeSignal.active) {
+    const s: 1 | -1 = realtimeSignal.dir === 'long' ? 1 : -1;
     const entry = roundPrice(currentPrice);
     const pts = (pct: number) => Math.round(currentPrice * pct * 10) / 10; // 当前价下的点数
+    const confTag = realtimeSignal.confidence === 'high' ? '核心MR' : '背离辅助';
     const dPlan = buildPlan(
       'D', '信号预案·短线（点数档）',
-      directionSignal.dir === 'long' ? 'long' : 'short',
-      `${directionSignal.stateText}（MR=${directionSignal.score}）· 方向确认后直接进场，目标 +${pts(0.004)}点，止损 ${pts(0.0012)}点，超时 3 天离场`,
+      realtimeSignal.dir === 'long' ? 'long' : 'short',
+      `${realtimeSignal.stateText}（${confTag}，MR=${realtimeSignal.mrScore}）· 方向确认后直接进场，目标 +${pts(0.004)}点，止损 ${pts(0.0012)}点，超时 3 天离场`,
       entry,
       roundPrice(currentPrice - s * currentPrice * 0.0012),
       roundPrice(currentPrice + s * currentPrice * 0.004),
       roundPrice(currentPrice + s * currentPrice * 0.008),
-      'medium',
+      realtimeSignal.confidence,
       {
         tp2Source: `+${pts(0.008)}点（延伸档，TP20/SL3 回测 +0.24R 同样稳定）`,
         tp1ProbabilityPct: 42,
         tp2ProbabilityPct: 42,
       },
     );
-    (dPlan as any).evidence = `6年竞速回测（1h分辨率，128个信号）：TP10/SL3 期望+0.24R 胜率42%，7个年度全部为正；点数按现价定标，10点=0.40%`;
+    (dPlan as any).evidence = realtimeSignal.evidenceText;
     plans.unshift(dPlan);
 
     const ePlan = buildPlan(
       'E', '信号预案·波段（点数档）',
-      directionSignal.dir === 'long' ? 'long' : 'short',
-      `${directionSignal.stateText}（MR=${directionSignal.score}）· 同方向波段档，目标 +${pts(0.006)}点，止损 ${pts(0.0024)}点，超时 5 天离场`,
+      realtimeSignal.dir === 'long' ? 'long' : 'short',
+      `${realtimeSignal.stateText}（${confTag}，MR=${realtimeSignal.mrScore}）· 同方向波段档，目标 +${pts(0.006)}点，止损 ${pts(0.0024)}点，超时 5 天离场`,
       entry,
       roundPrice(currentPrice - s * currentPrice * 0.0024),
       roundPrice(currentPrice + s * currentPrice * 0.006),
       roundPrice(currentPrice + s * currentPrice * 0.008),
-      'medium',
+      realtimeSignal.confidence,
       {
         tp2Source: `+${pts(0.008)}点（TP20/SL6 回测 +0.12R）`,
         tp1ProbabilityPct: 44,
         tp2ProbabilityPct: 32,
       },
     );
-    (ePlan as any).evidence = `6年竞速回测：TP15/SL6 期望+0.15R 胜率44%，7个年度全部为正；15点=0.60%`;
+    (ePlan as any).evidence = realtimeSignal.evidenceText;
     plans.splice(1, 0, ePlan); // 紧随 D
   }
 
@@ -1342,10 +1501,10 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
     atr: roundPrice(atrValue),
     bias,
     biasText,
-    directionSignal,
+    realtimeSignal,
     dailyPlan: calcDailyPlan({
       currentPrice,
-      e200Side: directionSignal.e200Side,
+      e200Side: realtimeSignal.e200Side,
       leg,
       keyLevels,
       volumeNodes: vNodes,

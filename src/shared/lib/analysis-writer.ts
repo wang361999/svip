@@ -148,14 +148,15 @@ function buildLlmInput(a: StructureAnalysis): Record<string, unknown> {
     三周期趋势: { '4h': trendBrief('4h'), '1h': trendBrief('1h'), '15m': trendBrief('15m') },
     共振计数: a.resonanceText,
     规则引擎定性: a.biasText,
-    方向信号_实证校准: a.directionSignal
+    实时信号_多指标合议: a.realtimeSignal
       ? {
-          说明: 'EMA200大趋势中的MR极端回调信号，样本外验证72h方向命中73%（ETH26次/SOL125次），替代上面"规则引擎定性"作为方向结论的唯一依据',
-          状态: a.directionSignal.stateText,
-          MR分数: a.directionSignal.score,
-          EMA200位置: a.directionSignal.e200Side === 'above' ? '价格在EMA200之上（大多头结构）' : '价格在EMA200之下（大空头结构）',
-          触发方向: a.directionSignal.active ? (a.directionSignal.dir === 'long' ? '做多' : '做空') : '未触发（仅监控，不给方向）',
-          距离触发阈值: a.directionSignal.active ? 0 : a.directionSignal.distanceToTrigger,
+          说明: '五个实测挑选的指标实时合议；核心=4h MR超调（2年三币+1.60~2.12%/笔），辅助=1h RSI背离（+0.60%/笔，置信中），其余为面板指标不独立触发',
+          信号状态: a.realtimeSignal.stateText,
+          触发方向: a.realtimeSignal.active ? (a.realtimeSignal.dir === 'long' ? '做多' : '做空') : '未触发',
+          置信度: a.realtimeSignal.confidence === 'high' ? '高（核心MR触发）' : '中（背离辅助触发）',
+          MR分数: a.realtimeSignal.mrScore,
+          EMA200位置: a.realtimeSignal.e200Side === 'above' ? '价格在4h EMA200之上（大多头结构）' : '价格在4h EMA200之下（大空头结构）',
+          指标面板: a.realtimeSignal.indicators.map((i) => ({ 指标: i.name, 状态: i.stateText, 倾向: i.stance === 'long' ? '多' : i.stance === 'short' ? '空' : '中性' })),
         }
       : undefined,
     当前推动腿: a.leg
@@ -245,9 +246,9 @@ export async function generateNarrative(analysis: StructureAnalysis): Promise<An
     const parsed = JSON.parse(raw);
     const narrative: AnalysisNarrative = {
       headline: String(parsed.headline || '').slice(0, 40),
-      // 方向定性唯一依据是实证方向信号：未触发一律中性（旧规则 bias 无预测力，不得外显）
-      biasText: analysis.directionSignal?.active
-        ? analysis.directionSignal.dir === 'long'
+      // 方向定性唯一依据是实证信号：未触发一律中性（结构解读不自动改向）
+      biasText: analysis.realtimeSignal?.active
+        ? analysis.realtimeSignal.dir === 'long'
           ? '偏多'
           : '偏空'
         : '中性',
@@ -320,15 +321,16 @@ export function buildTemplateNarrative(a: StructureAnalysis): AnalysisNarrative 
   }
 
   const planD = a.plans.find((x) => x.id === 'D');
+  const rs = a.realtimeSignal;
 
   return {
-    headline: a.directionSignal?.active
-      ? `${a.directionSignal.dir === 'long' ? '超跌做多信号触发' : '超涨做空信号触发'}（6年点数档回测7/7年正，近两年72h命中78%）`
+    headline: rs?.active
+      ? `${rs.dir === 'long' ? '超跌做多信号触发' : '超涨做空信号触发'}（${rs.confidence === 'high' ? '核心MR' : '背离辅助'}）`
       : a.plans.length === 0
         ? '无信号·结构压缩，观望等方向'
-        : `无信号·${a.directionSignal?.e200Side === 'above' ? '多头结构' : a.directionSignal?.e200Side === 'below' ? '空头结构' : '结构未明'}等极端位，现观望`,
-    biasText: a.directionSignal?.active
-      ? a.directionSignal.dir === 'long'
+        : `无信号·${rs?.e200Side === 'above' ? '多头结构' : rs?.e200Side === 'below' ? '空头结构' : '结构未明'}等极端位，现观望`,
+    biasText: rs?.active
+      ? rs.dir === 'long'
         ? '偏多'
         : '偏空'
       : '中性',

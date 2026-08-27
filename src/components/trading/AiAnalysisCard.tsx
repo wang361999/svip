@@ -122,16 +122,24 @@ interface AnalysisData {
   extendedTarget?: ProfitTarget | null;
   eta?: { bars: number; text: string } | null;
   atr?: number;
-  directionSignal?: {
+  realtimeSignal?: {
     active: boolean;
     dir: 'long' | 'short';
-    score: number;
-    stateText: string;
-    distanceToTrigger: number;
-    trendFilterPassed: boolean;
+    confidence: 'high' | 'medium';
+    triggerSource: string;
+    indicators: {
+      key: string;
+      name: string;
+      stateText: string;
+      stance: 'long' | 'short' | 'neutral';
+      role: 'trigger' | 'context';
+      distanceToTrigger?: number;
+    }[];
+    mrScore: number;
     e200Side: 'above' | 'below';
     historyWinRatePct: number;
     evidenceText: string;
+    stateText: string;
   };
   narrative?: Narrative | null;
   narrativeAt?: number | null;
@@ -248,9 +256,9 @@ export default function AiAnalysisCard() {
     });
   };
 
-  // 徽章方向唯一依据：实证方向信号（未触发一律中性，旧规则 bias 无预测力不再外显）
-  const biasKey = data?.directionSignal?.active
-    ? data.directionSignal.dir === 'long'
+  // 徽章方向唯一依据：实证实时信号（未触发一律中性，结构解读不自动改向）
+  const biasKey = data?.realtimeSignal?.active
+    ? data.realtimeSignal.dir === 'long'
       ? 'bull'
       : 'bear'
     : 'neutral';
@@ -415,56 +423,76 @@ export default function AiAnalysisCard() {
 
           {!loading && data && (
             <>
-              {/* 方向信号卡（实证校准，替代定性偏多偏空作为方向依据） */}
-              {data.directionSignal && (
+              {/* 实时信号卡（五指标合议：核心MR + 背离辅助可触发，其余为面板指标） */}
+              {data.realtimeSignal && (
                 <div
                   className={`rounded-lg border p-3.5 ${
-                    data.directionSignal.active
-                      ? data.directionSignal.dir === 'long'
+                    data.realtimeSignal.active
+                      ? data.realtimeSignal.dir === 'long'
                         ? 'border-emerald-500/40 bg-emerald-500/10'
                         : 'border-rose-500/40 bg-rose-500/10'
                       : 'border-dark-600/60 bg-dark-700/30'
                   }`}
                 >
                   <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                        data.directionSignal.active
-                          ? data.directionSignal.dir === 'long'
+                        data.realtimeSignal.active
+                          ? data.realtimeSignal.dir === 'long'
                             ? 'bg-emerald-500/20 text-emerald-400'
                             : 'bg-rose-500/20 text-rose-400'
                           : 'bg-dark-600/60 text-dark-300'
                       }`}>
-                        {data.directionSignal.active
-                          ? `${data.directionSignal.dir === 'long' ? '▲ 做多' : '▼ 做空'} · 已触发`
-                          : data.directionSignal.distanceToTrigger < 0.15
-                            ? '◆ 接近信号'
-                            : '○ 无信号'}
+                        {data.realtimeSignal.active
+                          ? `${data.realtimeSignal.dir === 'long' ? '▲ 做多' : '▼ 做空'} · ${data.realtimeSignal.confidence === 'high' ? '高置信' : '中置信'}`
+                          : '○ 无信号'}
                       </span>
-                      <span className="text-dark-300 text-xs">方向信号 · 实证校准</span>
+                      <span className="text-dark-300 text-xs">AI实时信号 · 五指标合议</span>
                     </div>
-                    {data.directionSignal.active && (
+                    {data.realtimeSignal.active && (
                       <span className="text-emerald-400 font-mono text-lg font-bold">
-                        {data.directionSignal.historyWinRatePct}%
+                        {data.realtimeSignal.historyWinRatePct}%
                       </span>
                     )}
                   </div>
                   <p className="text-dark-300 text-xs mt-2 leading-relaxed">
-                    {data.directionSignal.active ? (
+                    {data.realtimeSignal.active ? (
                       <>
-                        {data.directionSignal.stateText} · MR {data.directionSignal.score} ·{' '}
-                        {data.directionSignal.e200Side === 'above' ? 'EMA200之上（大多头结构）' : 'EMA200之下（大空头结构）'}
-                        。历史72h方向命中 <span className="text-dark-100 font-medium">{data.directionSignal.historyWinRatePct}%</span>
+                        {data.realtimeSignal.triggerSource} · MR {data.realtimeSignal.mrScore} ·{' '}
+                        {data.realtimeSignal.e200Side === 'above' ? 'EMA200之上（多头结构）' : 'EMA200之下（空头结构）'}
+                        。历史命中 <span className="text-dark-100 font-medium">{data.realtimeSignal.historyWinRatePct}%</span>
                       </>
                     ) : (
                       <>
-                        {data.directionSignal.stateText} · MR {data.directionSignal.score}（
-                        {data.directionSignal.e200Side === 'above' ? '多头结构，等深度回调至超跌位' : '空头结构，等反弹至超涨位'}，距阈值{' '}
-                        {data.directionSignal.distanceToTrigger}）
+                        {data.realtimeSignal.stateText} · MR {data.realtimeSignal.mrScore}（
+                        {data.realtimeSignal.e200Side === 'above' ? '多头结构，等深度回调至超跌位' : '空头结构，等反弹至超涨位'}）
                       </>
                     )}
                   </p>
-                  <p className="text-dark-500 text-[10px] mt-1.5 leading-relaxed">{data.directionSignal.evidenceText}</p>
+                  {/* 五指标面板 */}
+                  {data.realtimeSignal.indicators.length > 0 && (
+                    <div className="mt-2.5 grid grid-cols-1 gap-1">
+                      {data.realtimeSignal.indicators.map((ind) => (
+                        <div key={ind.key} className="flex items-center gap-2 text-[11px] leading-snug">
+                          <span
+                            className={`w-1 h-1 rounded-full shrink-0 ${
+                              ind.stance === 'long'
+                                ? 'bg-emerald-400'
+                                : ind.stance === 'short'
+                                  ? 'bg-rose-400'
+                                  : 'bg-dark-500'
+                            }`}
+                          />
+                          <span className="text-dark-200 shrink-0 font-medium">
+                            {ind.name}
+                            {ind.role === 'trigger' ? '·触发' : ''}
+                          </span>
+                          <span className="text-dark-400 truncate">{ind.stateText}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-dark-500 text-[10px] mt-1.5 leading-relaxed">{data.realtimeSignal.evidenceText}</p>
                 </div>
               )}
 
@@ -474,8 +502,8 @@ export default function AiAnalysisCard() {
                   <div>
                     <p className={`font-semibold ${bias.text} leading-snug`}>
                       {data.narrative?.headline ||
-                        (data.directionSignal?.active
-                          ? data.directionSignal.dir === 'long'
+                        (data.realtimeSignal?.active
+                          ? data.realtimeSignal.dir === 'long'
                             ? '信号触发 · 做多预案生效'
                             : '信号触发 · 做空预案生效'
                           : '无信号 · 结构观望')}
