@@ -662,9 +662,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             }
             if (ov <= 0.5) zoneFill(yOf(c.high), yOf(c.low), projX0, '245, 158, 11', 0.26);
           }
-          // ===== 信号未触发：画利润测算全景（测算开关的观察模式） =====
-          // 8 方法目标位 = 虚线细线 + 标签（方法名/价位/触及概率）；延伸档 = 琥珀虚线。
-          // 信号触发时只画 D 方案色带 + 汇流区（方案即测算，保持行动视图干净）。
+          // ===== 信号未触发：测算观察模式（透明框 + 虚线全景） =====
+          // 盈利投影绿框（现价→汇流区近缘）+ 汇流琥珀框带标签 + 失效红虚线
+          // + 8方法目标位虚线（方法名/价位/触及概率）+ 延伸档琥珀虚线。
+          // 信号触发时切换为 D 方案红绿色带 + 汇流区（方案即测算，行动视图干净）。
           if (!pa) {
             const prec = Math.max(0, Math.min(8, useSymbolStore.getState().pricePrecision));
             const fp = (v: number) => v.toFixed(prec);
@@ -679,6 +680,31 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
               ctx.stroke();
               ctx.restore();
             };
+            // 盈利投影透明框（浅绿）：现价 → 汇流区靠近现价一侧的边缘（测算预期波动区间）
+            const cc = pd.confluence;
+            if (cc) {
+              const zLo = Math.min(cc.low, cc.high);
+              const zHi = Math.max(cc.low, cc.high);
+              const near = zHi < pd.currentPrice ? zHi : zLo > pd.currentPrice ? zLo : null;
+              if (near != null) {
+                const z = zoneFill(yOf(pd.currentPrice), yOf(near), projX0, '34, 197, 94', 0.10);
+                if (z) rayLabel(projX0 + 4, z.mid, `盈利投影 · ${cc.probabilityPct}%`, 'rgba(110, 231, 183, 0.9)');
+              }
+              // 汇流止盈区标签（琥珀框已有，这里补文字说明）
+              const cy = yOf(cc.mid);
+              if (cy != null && cy >= 0 && cy <= paneH) {
+                rayLabel(projX0 + 4, cy, `汇流止盈 ${fp(zLo)}–${fp(zHi)}`, 'rgba(252, 211, 77, 0.95)');
+              }
+            }
+            // 结构失效位（红虚线）：越过则当前测算作废
+            const inv = pd.invalidation;
+            if (inv && !isDupPrice(inv.price)) {
+              const y = yOf(inv.price);
+              if (y != null && y >= 0 && y <= paneH) {
+                dashLine(y, 'rgba(248, 113, 113, 0.75)');
+                rayLabel(projX0 + 4, y, `结构失效 ${fp(inv.price)}`, 'rgba(252, 165, 165, 0.95)');
+              }
+            }
             for (const t of pd.profitTargets || []) {
               if (isDupPrice(t.price)) continue;
               const y = yOf(t.price);
