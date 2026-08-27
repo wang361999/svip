@@ -628,12 +628,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           const projX0 = Math.max(0, xLast - step * 18);
           const pa = pd.plans.find((p) => p.id === 'A');
           if (pa) {
-            // ===== 纯色带画法（按反馈：无线无字，颜色即语义） =====
+            // ===== 纯色带画法（按反馈：无线无字，颜色即语义；透明度加深保证醒目） =====
             // 红 = 风险区（入场↔止损）；浅绿 = TP1 段；深绿 = TP2 段。
             // 色块边界即价位，精确数字在 AI 分析卡片里读。
-            zoneFill(yOf(pa.entry), yOf(pa.stop), projX0, '239, 68, 68', 0.11);
-            zoneFill(yOf(pa.entry), yOf(pa.tp1), projX0, '34, 197, 94', 0.09);
-            zoneFill(yOf(pa.tp1), yOf(pa.tp2), projX0, '34, 197, 94', 0.18);
+            zoneFill(yOf(pa.entry), yOf(pa.stop), projX0, '239, 68, 68', 0.26);
+            zoneFill(yOf(pa.entry), yOf(pa.tp1), projX0, '34, 197, 94', 0.20);
+            zoneFill(yOf(pa.tp1), yOf(pa.tp2), projX0, '34, 197, 94', 0.34);
           }
           // ===== 汇流止盈区（纯平涂色带；与盈利区重叠过半时不画，避免黄绿混叠发脏） =====
           if (pd.confluence) {
@@ -644,7 +644,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
               const zLo = Math.min(pa.entry, pa.tp1, pa.tp2), zHi = Math.max(pa.entry, pa.tp1, pa.tp2);
               ov = Math.max(0, Math.min(hi, zHi) - Math.max(lo, zLo)) / Math.max(1e-9, hi - lo);
             }
-            if (ov <= 0.5) zoneFill(yOf(c.high), yOf(c.low), projX0, '245, 158, 11', 0.12);
+            if (ov <= 0.5) zoneFill(yOf(c.high), yOf(c.low), projX0, '245, 158, 11', 0.26);
           }
           // ===== 汇流止盈区之后的候选位射线已按反馈隐藏 =====
           // （B方案射线 / 延伸档 / 8个方法候选目标位不再画线；
