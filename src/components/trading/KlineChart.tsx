@@ -662,63 +662,17 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             }
             if (ov <= 0.5) zoneFill(yOf(c.high), yOf(c.low), projX0, '245, 158, 11', 0.26);
           }
-          // ===== 信号未触发：测算观察模式（透明框 + 虚线全景） =====
-          // 盈利投影绿框（现价→汇流区近缘）+ 汇流琥珀框带标签 + 失效红虚线
-          // + 8方法目标位虚线（方法名/价位/触及概率）+ 延伸档琥珀虚线。
-          // 信号触发时切换为 D 方案红绿色带 + 汇流区（方案即测算，行动视图干净）。
+          // ===== 信号未触发：测算观察模式（纯透明框，零文字零线条） =====
+          // 盈利投影绿框（现价→汇流区近缘）+ 汇流琥珀框（上方统一绘制）。
+          // 目标位/延伸/失效的具体数字在 AI 分析卡片里读，图上不写字。
+          // 信号触发时切换为 D 方案红绿色带 + 汇流区（方案即测算）。
           if (!pa) {
-            const prec = Math.max(0, Math.min(8, useSymbolStore.getState().pricePrecision));
-            const fp = (v: number) => v.toFixed(prec);
-            const dashLine = (y: number, color: string) => {
-              ctx.save();
-              ctx.strokeStyle = color;
-              ctx.lineWidth = 1;
-              ctx.setLineDash([4, 3]);
-              ctx.beginPath();
-              ctx.moveTo(projX0, Math.round(y) + 0.5);
-              ctx.lineTo(xEnd, Math.round(y) + 0.5);
-              ctx.stroke();
-              ctx.restore();
-            };
-            // 盈利投影透明框（浅绿）：现价 → 汇流区靠近现价一侧的边缘（测算预期波动区间）
             const cc = pd.confluence;
             if (cc) {
               const zLo = Math.min(cc.low, cc.high);
               const zHi = Math.max(cc.low, cc.high);
               const near = zHi < pd.currentPrice ? zHi : zLo > pd.currentPrice ? zLo : null;
-              if (near != null) {
-                const z = zoneFill(yOf(pd.currentPrice), yOf(near), projX0, '34, 197, 94', 0.10);
-                if (z) rayLabel(projX0 + 4, z.mid, `盈利投影 · ${cc.probabilityPct}%`, 'rgba(110, 231, 183, 0.9)');
-              }
-              // 汇流止盈区标签（琥珀框已有，这里补文字说明）
-              const cy = yOf(cc.mid);
-              if (cy != null && cy >= 0 && cy <= paneH) {
-                rayLabel(projX0 + 4, cy, `汇流止盈 ${fp(zLo)}–${fp(zHi)}`, 'rgba(252, 211, 77, 0.95)');
-              }
-            }
-            // 结构失效位（红虚线）：越过则当前测算作废
-            const inv = pd.invalidation;
-            if (inv && !isDupPrice(inv.price)) {
-              const y = yOf(inv.price);
-              if (y != null && y >= 0 && y <= paneH) {
-                dashLine(y, 'rgba(248, 113, 113, 0.75)');
-                rayLabel(projX0 + 4, y, `结构失效 ${fp(inv.price)}`, 'rgba(252, 165, 165, 0.95)');
-              }
-            }
-            for (const t of pd.profitTargets || []) {
-              if (isDupPrice(t.price)) continue;
-              const y = yOf(t.price);
-              if (y == null || y < 0 || y > paneH) continue;
-              dashLine(y, 'rgba(52, 211, 153, 0.55)');
-              rayLabel(projX0 + 4, y, `${t.label} ${fp(t.price)} · ${t.probabilityPct}%`, 'rgba(110, 231, 183, 0.95)');
-            }
-            const ext = pd.extendedTarget;
-            if (ext && !isDupPrice(ext.price)) {
-              const y = yOf(ext.price);
-              if (y != null && y >= 0 && y <= paneH) {
-                dashLine(y, 'rgba(245, 158, 11, 0.6)');
-                rayLabel(projX0 + 4, y, `延伸·${ext.label} ${fp(ext.price)}`, 'rgba(252, 211, 77, 0.95)');
-              }
+              if (near != null) zoneFill(yOf(pd.currentPrice), yOf(near), projX0, '34, 197, 94', 0.10);
             }
           }
         }
@@ -1275,7 +1229,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
                   try { window.localStorage.setItem(PROFIT_PREF_KEY, v ? '1' : '0'); } catch {}
                 }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showProfit ? 'text-amber-400' : 'text-dark-600'}`}
-                title="利润测算画线（结构分析：预案 / 汇流止盈区 / 目标位）"
+                title="利润测算透明框（结构分析：预案色带 / 汇流止盈区 / 盈利投影），具体数字见 AI 分析卡片"
               >
                 止盈
               </button>
