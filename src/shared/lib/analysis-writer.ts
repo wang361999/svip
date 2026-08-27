@@ -28,6 +28,8 @@ export interface AnalysisNarrative {
   planBComment: string;
   /** 方案 C 点评（超短线，可能不存在） */
   planCComment: string;
+  /** 方案D点评（实证信号预案，可能不存在） */
+  planDComment: string;
   /** 失效条件（数字必须与规则引擎一致） */
   invalidation: string;
   /** 风险提醒 */
@@ -223,6 +225,7 @@ const SYSTEM_PROMPT = `你是"结构共振交易法"的资深交易分析师，�
   "planAComment": "对方案A的一句话点评，说明它为什么是首选",
   "planBComment": "对方案B的一句话点评，说明它适合什么情况",
   "planCComment": "对方案C（超短线）的一句话点评：止损约1%量级、须maker挂单执行、ETH近期样本外先到止盈偏低需保守；若无C方案输出空字符串",
+  "planDComment": "对方案D（实证信号预案）的一句话点评：它有回测胜率支撑（72h方向命中73%）、止损1×ATR、TP1出半仓后止损移到开仓价是期望的主要来源；若无D方案输出空字符串",
   "invalidation": "失效条件一句话，必须包含失效价格数字",
   "reminder": "风险提醒一句话，结合当前波动特点"
 }`;
@@ -262,6 +265,7 @@ export async function generateNarrative(analysis: StructureAnalysis): Promise<An
       planAComment: String(parsed.planAComment || ''),
       planBComment: String(parsed.planBComment || ''),
       planCComment: String(parsed.planCComment || ''),
+      planDComment: String(parsed.planDComment || ''),
       invalidation: String(parsed.invalidation || template.invalidation),
       reminder: String(parsed.reminder || template.reminder),
       source: 'ai',
@@ -328,6 +332,7 @@ export function buildTemplateNarrative(a: StructureAnalysis): AnalysisNarrative 
   const planA = a.plans.find((x) => x.id === 'A');
   const planB = a.plans.find((x) => x.id === 'B');
   const planC = a.plans.find((x) => x.id === 'C');
+  const planD = a.plans.find((x) => x.id === 'D');
 
   return {
     headline: a.directionSignal?.active
@@ -353,6 +358,9 @@ export function buildTemplateNarrative(a: StructureAnalysis): AnalysisNarrative 
       : '结构不明，暂无突破预案。',
     planCComment: planC
       ? `超短线（1h 腿）：入场 ${planC.entry}（挂单），止损 ${planC.stop}（风险 ${planC.riskPct}%），快止盈 ${planC.tp1}。止损仅 ${planC.riskPct}% 量级，必须 maker 挂单执行，taker 费率会吃掉优势；ETH 近期样本外先到止盈比表值低 3~7pp，保守看待。`
+      : '',
+    planDComment: planD
+      ? `实证信号预案：${planD.side === 'long' ? '超跌做多' : '超涨做空'}，入场 ${planD.entry}，止损 ${planD.stop}（1×ATR），TP1 ${planD.tp1} 出半仓后止损移至开仓价，TP2 ${planD.tp2} 清仓。历史 72h 方向命中 73%（样本外 26 次），平均 RR +0.46。`
       : '',
     invalidation: a.invalidation ? a.invalidation.note : '暂无明确失效位（结构压缩期）。',
     reminder: '数据仅供参考，不构成投资建议。条件单进场，止损必带，破位不扛。',

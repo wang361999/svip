@@ -1010,7 +1010,7 @@ function calcDirectionSignal(k4h: KlineData[], currentPrice: number): DirectionS
 // ==================== 预案生成 ====================
 
 export interface TradePlan {
-  id: 'A' | 'B' | 'C';
+  id: 'A' | 'B' | 'C' | 'D';
   name: string;
   side: 'long' | 'short';
   /** 触发条件描述 */
@@ -1055,7 +1055,7 @@ function roundPrice(p: number): number {
 }
 
 function buildPlan(
-  id: 'A' | 'B' | 'C',
+  id: 'A' | 'B' | 'C' | 'D',
   name: string,
   side: 'long' | 'short',
   trigger: string,
@@ -1475,7 +1475,7 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
     const tp1 = roundPrice(currentPrice + s * atrValue * 1.5);
     const tp2 = roundPrice(currentPrice + s * atrValue * 3);
     const c = buildPlan(
-      'C', '信号预案·趋势回调',
+      'D', '信号预案·趋势回调',
       directionSignal.dir === 'long' ? 'long' : 'short',
       `${directionSignal.stateText}（MR=${directionSignal.score}，${directionSignal.e200Side === 'above' ? 'EMA200之上' : 'EMA200之下'}）`,
       entry, stop, tp1, tp2,
@@ -1488,7 +1488,7 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
     );
     // 信号的历史依据（RR 来自回测均值，如实标注样本量）
     (c as any).evidence = '回测：平均RR +0.46，盈利比53.6%（ETH 4h 全段84次）；72h方向命中73%（样本外26次）';
-    plans.push(c);
+    plans.unshift(c); // D 是有实证胜率的首选，置顶
   }
 
   return {

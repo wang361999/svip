@@ -555,8 +555,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     const drawnPrices: number[] = [];
     const refPrice = pd?.currentPrice || (klines.length ? klines[klines.length - 1].close : 1);
     if (pd && showProfit) {
-      // 信号预案（C）优先：有实证校准依据；未触发时回落到结构方案 A
-      const pa = pd.plans.find((p) => p.id === 'C') || pd.plans.find((p) => p.id === 'A');
+      // 信号预案（D）优先：有实证校准依据；未触发时回落到结构方案 A（C 是超短线不铺色带）
+      const pa = pd.plans.find((p) => p.id === 'D') || pd.plans.find((p) => p.id === 'A');
       if (pa) drawnPrices.push(pa.entry, pa.stop, pa.tp1, pa.tp2);
     }
     const isDupPrice = (p: number) => drawnPrices.some((x) => Math.abs(x - p) / refPrice < 0.002);
@@ -641,8 +641,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           const step = Math.max(1, Math.abs(xLast - xPrev));
           // 色带从最新K线向左铺 8 根（原18根过宽，压缩后不遮历史走势，仍够读色块边界）
           const projX0 = Math.max(0, xLast - step * 8);
-          // 信号预案（C）优先：色带跟随实证信号方向；未触发时画结构方案 A
-          const pa = pd.plans.find((p) => p.id === 'C') || pd.plans.find((p) => p.id === 'A');
+          // 信号预案（D）优先：色带跟随实证信号方向；未触发时画结构方案 A
+          const pa = pd.plans.find((p) => p.id === 'D') || pd.plans.find((p) => p.id === 'A');
           if (pa) {
             // ===== 纯色带画法（按反馈：无线无字，颜色即语义；透明度加深保证醒目） =====
             // 红 = 风险区（入场↔止损）；浅绿 = TP1 段；深绿 = TP2 段。

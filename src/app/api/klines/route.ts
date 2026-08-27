@@ -40,7 +40,7 @@ export const GET = createHandler(async ({ req }) => {
   const interval = VALID_INTERVALS.has(searchParams.get('interval') || '')
     ? searchParams.get('interval')!
     : '1h';
-  const limit = Math.max(50, Math.min(1000, parseInt(searchParams.get('limit') || '500')));
+  const limit = Math.max(50, Math.min(1000, parseInt(searchParams.get('limit') || '500') || 500));
 
   // 1. Binance（镜像 → 主站 → api1）
   for (const host of BINANCE_HOSTS) {
