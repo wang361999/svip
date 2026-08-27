@@ -459,57 +459,20 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       }
     }
 
-    // —— 利润测算画线（结构分析：预案 / 汇流止盈区 / 目标位） + 微观结构位（池/FVG，独立开关） ——
-    const pdata = profitDataRef.current;
-    if ((showProfit || showMicro) && isMember && pdata && pdata.symbol === symbol) {
-      // 去重：距已画线 < 0.2% 现价的位不再重复画（TP2 与汇流区中值常重合）
-      const drawn: number[] = [];
-      const ref = pdata.currentPrice || klines[klines.length - 1].close;
-      const isDup = (p: number) => {
-        if (drawn.some((x) => Math.abs(x - p) / ref < 0.002)) return true;
-        drawn.push(p);
-        return false;
-      };
-      const addLine = (price: number, color: string, width: 1 | 2, style: number, title: string) => {
-        if (!Number.isFinite(price) || price <= 0 || isDup(price)) return;
-        try {
-          const pl = series.createPriceLine({
-            price,
-            color,
-            lineWidth: width,
-            lineStyle: style,
-            axisLabelVisible: true,
-            title,
-          });
-          profitLinesRef.current.push(pl);
-        } catch {}
-      };
-
-      // ===== 止盈组（受「止盈」徽章控制） =====
-      // 仅方案A四条画原生满宽价格线（价格轴精确读数）；
-      // 区域/池/FVG 由 drawZones 画布层呈现，候选位射线按反馈隐藏
-      if (showProfit) {
-        const pa = pdata.plans.find((p) => p.id === 'A');
-        if (pa) {
-          // 原生线只留纯名称：概率并入画布芯片（TP1 +x%·y%），
-          // 避免「TP1 75%(概率)」与「TP1 +2.8%(涨幅)」双百分比混淆
-          addLine(pa.entry, 'rgba(59, 130, 246, 0.95)', 2, 0, ` 入场`);
-          addLine(pa.stop, 'rgba(239, 68, 68, 0.95)', 2, 0, ` 止损`);
-          addLine(pa.tp1, 'rgba(34, 197, 94, 0.85)', 1, 2, ` TP1`);
-          addLine(pa.tp2, 'rgba(34, 197, 94, 0.95)', 2, 2, ` TP2`);
-        }
-      }
-    }
+    // —— 利润测算（预案/汇流/微构 全部由画布层 drawZones 融合呈现） ——
+    // 原生价格线已按反馈移除：与透明测算框叠加曾致同一价位双线双标签。
 
     // 透明测算框（风险/盈利/汇流/FVG 区域化呈现，叠加画布绘制）
     drawZonesRef.current();
   }, [showAutoAB9, showFibonacci, showProfit, showMicro, isMember, symbol]);
 
-  // === 测算与结构画线（画布层：渐变区 / 两点连线 / 芯片标签） ===
+  // === 测算与结构画线（画布层：渐变区 / 边界线 / 芯片标签） ===
   // 画法原则（按用户反馈收敛）：
-  //   AB9/FIB/方案A → 原生满宽价格线（价格轴精确读数，经典画法）
+  //   AB9/FIB → 原生满宽价格线（价格轴精确读数，经典画法）
   //   流动性池 → 等高/等低两点连线 + 端点圆（EQH/EQL 经典标法）
-  //   风险/盈利/汇流/FVG 区 → 渐变面 + 右侧芯片（精确百分比）
+  //   方案A（止损/入场/TP1/TP2）→ 区域边界即线：渐变面 + 贴边细线 + 带价格芯片，
+  //     一个价位只出现一次（原生满宽线已移除，避免三层叠加双标签）
+  //   汇流/FVG 区 → 渐变面 + 上下沿边线
   //   其余候选位射线（B方案/延伸档/目标位/FVG CE/池延伸）→ 已隐藏，数据在AI卡片呈现
   const drawZones = useCallback(() => {
     const canvas = zoneCanvasRef.current;
@@ -646,10 +609,18 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         const cw = ctx.measureText(text).width + 14;
         const ch = 17;
         const cx = x0 + 4;
-        const cy = Math.round(yMid - ch / 2);
+        // 碰撞时先上让 18px 再下让，仍冲突才丢弃（薄区域不丢价格标签）
+        let mid = yMid;
+        if (occupiedY.some((sy) => Math.abs(sy - mid) < 16)) {
+          mid = yMid - 18;
+          if (occupiedY.some((sy) => Math.abs(sy - mid) < 16)) {
+            mid = yMid + 18;
+            if (occupiedY.some((sy) => Math.abs(sy - mid) < 16)) return;
+          }
+        }
+        const cy = Math.round(mid - ch / 2);
         if (cx < 8 || cy < 3 || cy + ch > paneH - 3) return;
-        if (occupiedY.some((sy) => Math.abs(sy - (cy + ch / 2)) < 15)) return;
-        occupiedY.push(cy + ch / 2);
+        occupiedY.push(mid);
       const r = 3.5;
       ctx.beginPath();
       ctx.moveTo(cx + r, cy);
@@ -704,16 +675,24 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           const pa = pd.plans.find((p) => p.id === 'A');
           if (pa) {
             const dist = (a: number, b: number) => ((Math.abs(a - b) / pa.entry) * 100).toFixed(1);
-            // 芯片同时承载涨幅+概率（原生线只剩纯名称），一处读全两个维度
-            // 风险区（入场↔止损，红渐变）
-            const rz = zoneFill(yOf(pa.entry), yOf(pa.stop), projX0, '239, 68, 68', 0.13);
-            if (rz && rz.h >= 17) chip(rz.mid, `止损 −${dist(pa.stop, pa.entry)}%`, '#f87171', 'rgba(239, 68, 68, 0.45)', projX0);
-            // 盈利区①（入场↔TP1，浅绿）
-            const z1 = zoneFill(yOf(pa.entry), yOf(pa.tp1), projX0, '34, 197, 94', 0.10);
-            if (z1 && z1.h >= 17) chip(z1.mid, `TP1 +${dist(pa.tp1, pa.entry)}%${pa.tp1ProbabilityPct != null ? `·${pa.tp1ProbabilityPct}%` : ''}`, '#4ade80', 'rgba(34, 197, 94, 0.45)', projX0);
-            // 盈利区②（TP1↔TP2，绿加深一档：越远的目标颜色越实）
-            const z2 = zoneFill(yOf(pa.tp1), yOf(pa.tp2), projX0, '34, 197, 94', 0.17);
-            if (z2 && z2.h >= 17) chip(z2.mid, `TP2 +${dist(pa.tp2, pa.entry)}%${pa.tp2ProbabilityPct != null ? `·${pa.tp2ProbabilityPct}%` : ''}`, '#4ade80', 'rgba(34, 197, 94, 0.45)', projX0);
+            const fmt = (p: number) => (p >= 100 ? p.toFixed(1) : p.toFixed(2));
+            // ===== 融合画法：区域边界即价格线，一个价位只出现一次 =====
+            // 三块渐变面（风险 / 盈利① / 盈利②）+ 四条贴边细线 + 四枚带价格芯片。
+            // 替代旧版「原生满宽线 + 区域 + 双标签」三层叠加。
+            zoneFill(yOf(pa.entry), yOf(pa.stop), projX0, '239, 68, 68', 0.13);
+            zoneFill(yOf(pa.entry), yOf(pa.tp1), projX0, '34, 197, 94', 0.10);
+            zoneFill(yOf(pa.tp1), yOf(pa.tp2), projX0, '34, 197, 94', 0.17);
+            const yE = yOf(pa.entry), yS = yOf(pa.stop), yT1 = yOf(pa.tp1), yT2 = yOf(pa.tp2);
+            // 边界线：入场（蓝，分界突出）/ 止损（红）/ TP1（绿细）/ TP2（绿）
+            if (yS != null) hline(yS, projX0, 'rgba(239, 68, 68, 0.9)', 1.5, []);
+            if (yE != null) hline(yE, projX0, 'rgba(59, 130, 246, 0.95)', 1.5, []);
+            if (yT1 != null) hline(yT1, projX0, 'rgba(34, 197, 94, 0.9)', 1, []);
+            if (yT2 != null) hline(yT2, projX0, 'rgba(34, 197, 94, 0.95)', 1.5, []);
+            // 芯片贴各边界线：名称 + 价格 + 距离%（概率），左侧锚定
+            if (yS != null) chip(yS, `止损 ${fmt(pa.stop)} −${dist(pa.stop, pa.entry)}%`, '#f87171', 'rgba(239, 68, 68, 0.45)', projX0);
+            if (yE != null) chip(yE, `入场 ${fmt(pa.entry)}`, '#60a5fa', 'rgba(59, 130, 246, 0.45)', projX0);
+            if (yT1 != null) chip(yT1, `TP1 ${fmt(pa.tp1)} +${dist(pa.tp1, pa.entry)}%${pa.tp1ProbabilityPct != null ? `·${pa.tp1ProbabilityPct}%` : ''}`, '#4ade80', 'rgba(34, 197, 94, 0.45)', projX0);
+            if (yT2 != null) chip(yT2, `TP2 ${fmt(pa.tp2)} +${dist(pa.tp2, pa.entry)}%${pa.tp2ProbabilityPct != null ? `·${pa.tp2ProbabilityPct}%` : ''}`, '#4ade80', 'rgba(34, 197, 94, 0.45)', projX0);
           }
           // ===== 画法二：汇流止盈区（渐变面 + 上下沿边线，中值线取消） =====
           if (pd.confluence) {
