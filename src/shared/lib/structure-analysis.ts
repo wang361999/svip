@@ -1007,6 +1007,77 @@ function calcDirectionSignal(k4h: KlineData[], currentPrice: number): DirectionS
   };
 }
 
+// ==================== 15m 动量确认过滤器（超短线 C 方案专用） ====================
+//
+// 背景：独立 15m/30m/1h 均值回归信号经 22 个月 walk-forward 回测无稳定期望（详见研究记录），
+// 不可独立做单。但 C 方案（1h 推动腿 61.8% 回踩）叠加"入场确认时 15m 动量同向且强"过滤后
+// 质量显著提升 —— 动量延续逻辑：强推动腿后的浅回踩，若确认时动量未衰竭，延续概率高。
+//
+// 回测口径（2024-10 ~ 2026-08，前70%定阈值/后30%样本外，4h 竞速窗，去重后）：
+//   ETH: TP1先到 55-75% / 先SL 10-25% / 期望 +0.19~+0.50R，频率≈0.15笔/天（每6.6天1笔）
+//   SOL: TP1先到 54-70% / 先SL 14-28% / 期望 +0.20~+0.42R，迁移通过
+//   BTC: 样本外前半为负 → 未验证，过滤器仅展示不背书
+//   反向对照（动量弱侧）：ETH 样本外 TP1 仅 10% —— 动量不足时该 setup 直接放弃
+//
+// 阈值 = 各币"确认时刻 MR 分布"训练段 10/90 分位（非全 bar 分布，二者有偏）。
+// MR15 = (偏离EMA50% ×10 + 24根(6h)动量% ×10 + (RSI14-50)/50) / 3
+// 注意：过滤时点 = 入场确认那一刻（触及后 15m 收回有利侧时），非挂单时刻。
+
+/** 各币动量阈值（确认时刻 MR 训练段 10/90 分位）；verified=false 表示回测未通过仅参考 */
+const MOMENTUM_THRESHOLDS: Record<string, { lo: number; hi: number; verified: boolean }> = {
+  ETHUSDT: { lo: -0.142, hi: 0.098, verified: true },
+  SOLUSDT: { lo: -0.143, hi: 0.129, verified: true },
+  BTCUSDT: { lo: -0.160, hi: 0.151, verified: false },
+};
+
+export interface MomentumFilter {
+  /** 当前 15m MR 分数 */
+  mrNow: number;
+  /** 本方向达标阈值：多单=hi，空单=lo */
+  threshold: number;
+  /** strong=当前已达标 / near=距阈值<0.05 / weak=动量不足（反向侧） */
+  state: 'strong' | 'near' | 'weak';
+  /** 该币是否通过样本外验证 */
+  verified: boolean;
+  /** 执行说明 */
+  note: string;
+}
+
+/** 15m 动量分数（与回测完全同公式：EMA50 偏离 + 24根动量 + RSI14）
+ *  热身验证：80根与全历史(66732根)算出的MR差<0.001，EMA50/RSI14在80根内已收敛 */
+function calcMomentum15m(k15m: KlineData[]): number | null {
+  const closes = k15m.map((k) => k.close);
+  if (closes.length < 80) return null; // 与线上数据校验下限一致
+  const e50 = emaSeries(closes, 50);
+  const i = closes.length - 1;
+  const dev = (closes[i] - e50[i]) / e50[i];
+  const mom = (closes[i] - closes[i - 24]) / closes[i - 24];
+  const rs = (rsiWilder(closes) - 50) / 50;
+  return Math.round(((dev * 10 + mom * 10 + rs) / 3) * 1000) / 1000;
+}
+
+/** C 方案动量过滤状态（多单看 hi / 空单看 lo） */
+function momentumState(symbol: string, side: 'long' | 'short', mrNow: number | null): MomentumFilter | null {
+  const th = MOMENTUM_THRESHOLDS[symbol];
+  if (!th || mrNow === null) return null;
+  const threshold = side === 'long' ? th.hi : th.lo;
+  const opposite = side === 'long' ? th.lo : th.hi;
+  const inWeakZone = side === 'long' ? mrNow <= opposite : mrNow >= opposite;
+  let state: 'strong' | 'near' | 'weak';
+  if (side === 'long' ? mrNow >= threshold : mrNow <= threshold) state = 'strong';
+  else if (inWeakZone) state = 'weak';
+  else state = 'near';
+  return {
+    mrNow,
+    threshold,
+    state,
+    verified: th.verified,
+    note: th.verified
+      ? `入场确认时 15m 动量需 ${side === 'long' ? '≥' : '≤'} ${threshold} 才执行；当前 ${mrNow}（${state === 'strong' ? '已达标' : state === 'near' ? '接近' : '动量不足·放弃'}）。回测：TP1先到55-75%/先SL10-28%/期望+0.2~0.5R`
+      : `BTC 该过滤器样本外未通过验证，仅展示动量读数不构成执行依据`,
+  };
+}
+
 // ==================== 预案生成 ====================
 
 export interface TradePlan {
@@ -1046,6 +1117,8 @@ export interface TradePlan {
   windowRace?: WindowRaceRow[];
   /** 触发概率主观标记：high=回调类（结构内），medium=突破类（需动能确认） */
   confidence: 'high' | 'medium';
+  /** 15m 动量确认过滤器（仅 C 方案）：入场确认时动量达标才执行 */
+  momentum?: MomentumFilter;
 }
 
 function roundPrice(p: number): number {
@@ -1071,6 +1144,7 @@ function buildPlan(
     tp1FirstPct?: number;
     slFirstPct?: number;
     windowRace?: WindowRaceRow[];
+    momentum?: MomentumFilter;
   },
 ): TradePlan {
   const risk = Math.abs(entry - stop);
@@ -1097,6 +1171,7 @@ function buildPlan(
     slFirstPct: extras?.slFirstPct,
     windowRace: extras?.windowRace,
     confidence,
+    momentum: extras?.momentum,
   };
 }
 
@@ -1382,12 +1457,13 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
       if (stopIntact && nearEnough && rr1C >= 0.8) {
         const rowsC = scalpRaceOutcomes(entryC, tp1C, stopC);
         const lastC = rowsC.length > 0 ? rowsC[rowsC.length - 1] : undefined;
+        const momentumC = momentumState(symbol, legC.side, calcMomentum15m(k15m));
         plans.push(
           buildPlan(
             'C',
             legC.side === 'long' ? '超短线做多（快进快出）' : '超短线做空（快进快出）',
             legC.side,
-            `1h 腿 61.8% 回撤 ${roundPrice(entryC)} 挂单，15m 触及后收回确认；快止盈 ${roundPrice(tp1C)}，盈亏比<1 属正常（高胜率小目标），建议 maker 挂单执行`,
+            `1h 腿 61.8% 回撤 ${roundPrice(entryC)} 挂单，15m 触及后收回确认${momentumC?.verified ? '，且确认时 15m 动量达标（见动量过滤器）' : ''}；快止盈 ${roundPrice(tp1C)}，盈亏比<1 属正常（高胜率小目标），建议 maker 挂单执行`,
             entryC,
             stopC,
             tp1C,
@@ -1398,6 +1474,7 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
               tp1FirstPct: lastC?.tp1FirstPct,
               slFirstPct: lastC?.slFirstPct,
               windowRace: rowsC.length > 0 ? rowsC : undefined,
+              momentum: momentumC ?? undefined,
             },
           ),
         );
