@@ -974,7 +974,7 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
         tp2SourceA = `${zoneA.methods.join(' + ')} 汇流`;
       }
       plans.push(
-        buildPlan('A', '回调做多（首选）', 'long', `回踩 ${roundPrice(entryA)} 需求区（本腿 61.8% 回撤），15m 出现止跌结构后入场`, entryA, stopA, tp1A, tp2A, 'high', {
+        buildPlan('A', '回调做多（首选）', 'long', `回踩 ${roundPrice(entryA)} 需求区（推动腿 61.8% 回撤），15m 出现止跌结构后入场`, entryA, stopA, tp1A, tp2A, 'high', {
           tp2Source: tp2SourceA,
           tp1ProbabilityPct: tpProbFrom(entryA, tp1A, 'pullback'),
           tp2ProbabilityPct: tpProbFrom(entryA, tp2A, 'pullback'),
@@ -999,7 +999,7 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
           tp2ProbabilityPct: tpProbFrom(entryB, tp2B, 'breakout'),
         }),
       );
-      invalidation = { price: roundPrice(stopA), note: `4h 收盘跌破 ${roundPrice(stopA)} 则本腿结构失效，做多预案作废` };
+      invalidation = { price: roundPrice(stopA), note: `4h 收盘跌破 ${roundPrice(stopA)} 则该推动腿结构失效，做多预案作废` };
     } else {
       // ---- 下跌腿：反弹做空 + 跌破追空 ----
       const swingHigh = highs.length > 0 ? highs[highs.length - 1].price : fib(0.786);
@@ -1013,7 +1013,7 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
         tp2SourceA = `${zoneA.methods.join(' + ')} 汇流`;
       }
       plans.push(
-        buildPlan('A', '反弹做空（首选）', 'short', `反弹至 ${roundPrice(entryA)} 供给区（本腿 61.8% 回撤），15m 出现滞涨结构后入场`, entryA, stopA, tp1A, tp2A, 'high', {
+        buildPlan('A', '反弹做空（首选）', 'short', `反弹至 ${roundPrice(entryA)} 供给区（推动腿 61.8% 回撤），15m 出现滞涨结构后入场`, entryA, stopA, tp1A, tp2A, 'high', {
           tp2Source: tp2SourceA,
           tp1ProbabilityPct: tpProbFrom(entryA, tp1A, 'pullback'),
           tp2ProbabilityPct: tpProbFrom(entryA, tp2A, 'pullback'),
@@ -1037,20 +1037,20 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
           tp2ProbabilityPct: tpProbFrom(entryB, tp2B, 'breakout'),
         }),
       );
-      invalidation = { price: roundPrice(stopA), note: `4h 收盘升破 ${roundPrice(stopA)} 则本腿结构失效，做空预案作废` };
+      invalidation = { price: roundPrice(stopA), note: `4h 收盘升破 ${roundPrice(stopA)} 则该推动腿结构失效，做空预案作废` };
     }
   }
 
   // ---------- 关键位 ----------
   const rawLevels: { price: number; label: string }[] = [];
   if (leg) {
-    rawLevels.push({ price: leg.endPrice, label: '本腿端点' });
-    rawLevels.push({ price: leg.startPrice, label: '本腿起点' });
+    rawLevels.push({ price: leg.endPrice, label: '推动腿端点' });
+    rawLevels.push({ price: leg.startPrice, label: '推动腿起点' });
     for (const f of leg.fibRetracements) {
-      rawLevels.push({ price: f.price, label: `本腿${Math.round(f.ratio * 100)}%回撤` });
+      rawLevels.push({ price: f.price, label: `推动腿${Math.round(f.ratio * 100)}%回撤` });
     }
     for (const e of leg.fibExtensions) {
-      rawLevels.push({ price: e.price, label: `本腿${e.ratio}扩展` });
+      rawLevels.push({ price: e.price, label: `推动腿${e.ratio}扩展` });
     }
   }
   for (const g of gannLevels) {

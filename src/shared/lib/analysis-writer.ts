@@ -147,12 +147,13 @@ function buildLlmInput(a: StructureAnalysis): Record<string, unknown> {
     三周期趋势: { '4h': trendBrief('4h'), '1h': trendBrief('1h'), '15m': trendBrief('15m') },
     共振计数: a.resonanceText,
     规则引擎定性: a.biasText,
-    本腿结构: a.leg
+    当前推动腿: a.leg
       ? {
-          方向: a.leg.direction === 'up' ? '上涨腿' : '下跌腿',
-          起点: round2(a.leg.startPrice),
-          端点: round2(a.leg.endPrice),
-          腿长百分比: a.leg.rangePct,
+          术语定义: '推动腿（Impulse Leg）＝最近一段单方向显著推动行情，由 ZigZag(4%) 识别的摆动端点界定；是全部回撤/扩展测算的锚定结构',
+          方向: a.leg.direction === 'up' ? '上行推动（摆动低点→摆动高点）' : '下行推动（摆动高点→摆动低点）',
+          起点价: round2(a.leg.startPrice),
+          端点价: round2(a.leg.endPrice),
+          推动幅度百分比: a.leg.rangePct,
           当前回撤比例: Math.round(a.leg.retracement * 1000) / 10,
           斐波那契回撤位: a.leg.fibRetracements.map((f) => ({ [Math.round(f.ratio * 100) + '%']: round2(f.price) })),
           斐波那契扩展位: a.leg.fibExtensions.map((e) => ({ [String(e.ratio)]: round2(e.price) })),
@@ -195,6 +196,7 @@ const SYSTEM_PROMPT = `你是"结构共振交易法"的资深交易分析师，�
 3. 只用简体中文，专业克制的交易员复盘口吻，不喊单、不绝对化
 4. 严格输出 JSON，不要 markdown 代码块，不要多余文字
 5. 若存在"汇流止盈区"，解读中须点出它由哪些方法叠加、为什么可信度更高；仅当预案的"目标2依据"含"汇流"时才把 TP2 与汇流区价格绑定，否则汇流区应描述为现价附近的第一目标带（减仓参考），不要与 TP2 混淆
+6. 术语规范：使用"推动腿"（Impulse Leg）指代最近一段单方向显著推动行情，首次出现须自然带出定义（如"最近一段自摆动低点 X 推升至摆动高点 Y 的上行推动（推动腿）"），不使用"腿"单字；回撤比例指现价沿该推动自端点向起点折返的深度
 
 输出 JSON 结构：
 {
@@ -270,14 +272,17 @@ export function buildTemplateNarrative(a: StructureAnalysis): AnalysisNarrative 
   const paragraphs: string[] = [];
 
   if (a.leg) {
-    const legDir = a.leg.direction === 'up' ? '上涨' : '下跌';
+    const isUpLeg = a.leg.direction === 'up';
+    const legDir = isUpLeg ? '上行' : '下行';
+    const startPt = isUpLeg ? '摆动低点' : '摆动高点';
+    const endPt = isUpLeg ? '摆动高点' : '摆动低点';
     const retPct = Math.round(a.leg.retracement * 100);
     paragraphs.push(
-      `当前处于一段${legDir}腿的消化阶段：从 ${round2(a.leg.startPrice)} 推动到 ${round2(a.leg.endPrice)}（${a.leg.rangePct}%），现价 ${a.currentPrice} 已回撤 ${retPct}%。${trendLine}`,
+      `结构锚定最近一段${legDir}推动腿（Impulse Leg，即自${startPt} ${round2(a.leg.startPrice)} 推动至${endPt} ${round2(a.leg.endPrice)} 的单边行情，幅度 ${a.leg.rangePct}%）：现价 ${a.currentPrice} 已自端点回撤 ${retPct}%，处于该推动的回撤消化阶段。${trendLine}`,
     );
     paragraphs.push(
       a.plans.length > 0 && a.plans[0]
-        ? `按结构共振法的纪律，现价不在入场区：三周期未形成同向共振，直接追的止损无处安放。方案A 等回踩 ${a.plans[0].entry} 需求区（本腿 61.8% 回撤结构位），方案B 等突破 ${round2(a.leg.endPrice)} 后回踩确认，两者都挂条件单等触发，都不触发就空仓等待。`
+        ? `按结构共振法的纪律，现价不在入场区：三周期未形成同向共振，直接追的止损无处安放。方案A 等回踩 ${a.plans[0].entry} 需求区（推动腿 61.8% 回撤结构位），方案B 等突破 ${round2(a.leg.endPrice)} 后回踩确认，两者都挂条件单等触发，都不触发就空仓等待。`
         : trendLine,
     );
     if (a.confluence) {
