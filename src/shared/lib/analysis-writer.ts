@@ -206,7 +206,9 @@ const SYSTEM_PROMPT = `你是"结构共振交易法"的资深交易分析师，�
 
 铁律（违反即废稿）：
 1. 所有价格、百分比、盈亏比数字必须与输入 JSON 完全一致，禁止自行计算、换算、四舍五入或编造任何数字
-2. 偏向结论（偏多/偏空/中性）必须与"规则引擎定性"一致
+2. 方向结论的唯一依据是"方向信号_实证校准"字段（不是"规则引擎定性"——那是无预测力的旧指标，仅作结构参考）：
+   - 方向信号"状态"为未触发时：headline 和全文禁止出现任何方向倾向词（偏空/偏多/看空/看涨/转弱/转强均算），biasText 必须是"中性"，落点必须是"无信号·观望等待"，可客观描述结构压缩或多空结构位置，但不得给出任何可被理解为做单方向的暗示
+   - 方向信号已触发时：方向与信号一致（做多/做空），围绕它写触发依据与执行纪律
 3. 只用简体中文，专业克制的交易员复盘口吻，不喊单、不绝对化
 4. 严格输出 JSON，不要 markdown 代码块，不要多余文字
 5. 若存在"汇流止盈区"，解读中须点出它由哪些方法叠加、为什么可信度更高；仅当预案的"目标2依据"含"汇流"时才把 TP2 与汇流区价格绑定，否则汇流区应描述为现价附近的第一目标带（减仓参考），不要与 TP2 混淆
@@ -216,8 +218,8 @@ const SYSTEM_PROMPT = `你是"结构共振交易法"的资深交易分析师，�
 
 输出 JSON 结构：
 {
-  "headline": "一句话结论，20字内，包含方向判断",
-  "paragraphs": ["结构解读段落，2-4段，每段60-120字：为什么是这个方向、当前处于什么位置、为什么现在不能直接追"],
+  "headline": "一句话结论，20字内。方向信号未触发时必须以'无信号'开头（如'无信号·多头结构等回调'），禁止任何方向倾向词；触发时包含信号方向",
+  "paragraphs": ["结构解读段落，2-4段，每段60-120字：结构现状、当前位置、为什么现在不能进场（未触发时）或执行纪律（触发时）"],
   "planAComment": "对方案A的一句话点评，说明它为什么是首选",
   "planBComment": "对方案B的一句话点评，说明它适合什么情况",
   "planCComment": "对方案C（超短线）的一句话点评：止损约1%量级、须maker挂单执行、ETH近期样本外先到止盈偏低需保守；若无C方案输出空字符串",
@@ -248,7 +250,12 @@ export async function generateNarrative(analysis: StructureAnalysis): Promise<An
     const parsed = JSON.parse(raw);
     const narrative: AnalysisNarrative = {
       headline: String(parsed.headline || '').slice(0, 40),
-      biasText: analysis.biasText, // 永远以规则引擎为准
+      // 方向定性唯一依据是实证方向信号：未触发一律中性（旧规则 bias 无预测力，不得外显）
+      biasText: analysis.directionSignal?.active
+        ? analysis.directionSignal.dir === 'long'
+          ? '偏多'
+          : '偏空'
+        : '中性',
       paragraphs: Array.isArray(parsed.paragraphs)
         ? parsed.paragraphs.map((p: unknown) => String(p)).filter((p: string) => p.length > 10).slice(0, 4)
         : [],
@@ -326,9 +333,13 @@ export function buildTemplateNarrative(a: StructureAnalysis): AnalysisNarrative 
     headline: a.directionSignal?.active
       ? `${a.directionSignal.dir === 'long' ? '超跌做多信号触发' : '超涨做空信号触发'}（历史72h命中73%）`
       : a.plans.length === 0
-        ? '结构压缩，观望等方向'
-        : `无极端信号·${a.biasText}，等回踩或突破再进`,
-    biasText: a.biasText,
+        ? '无信号·结构压缩，观望等方向'
+        : `无信号·${a.directionSignal?.e200Side === 'above' ? '多头结构' : a.directionSignal?.e200Side === 'below' ? '空头结构' : '结构未明'}等极端位，现观望`,
+    biasText: a.directionSignal?.active
+      ? a.directionSignal.dir === 'long'
+        ? '偏多'
+        : '偏空'
+      : '中性',
     paragraphs,
     planAComment: planA
       ? `首选回调单：入场 ${planA.entry}，止损 ${planA.stop}（风险 ${planA.riskPct}%），TP2 盈亏比 ${planA.rrTp2}${

@@ -227,7 +227,13 @@ export default function AiAnalysisCard() {
     });
   };
 
-  const bias = BIAS_STYLES[data?.bias || 'neutral'];
+  // 徽章方向唯一依据：实证方向信号（未触发一律中性，旧规则 bias 无预测力不再外显）
+  const biasKey = data?.directionSignal?.active
+    ? data.directionSignal.dir === 'long'
+      ? 'bull'
+      : 'bear'
+    : 'neutral';
+  const bias = BIAS_STYLES[biasKey];
 
   const renderPlan = (plan: Plan, comment: string) => {
     const isLong = plan.side === 'long';
