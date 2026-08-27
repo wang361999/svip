@@ -18,6 +18,8 @@ import {
   HistogramData,
   LineData,
   Time,
+  CrosshairMode,
+  LineStyle,
 } from 'lightweight-charts';
 import {
   INTERVALS,
@@ -44,6 +46,16 @@ const AB9_COLORS: Record<number, string> = {
   8: 'rgba(59, 130, 246, 0.85)',
   9: 'rgba(168, 85, 247, 0.85)',
 };
+
+// ===== 图表视觉主题（全局统一：Binance 色系 + 点状淡网格 + 统一字体） =====
+const CHART_FONT = '-apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif';
+const CANDLE_UP = '#0ecb81';    // 涨·Binance 绿
+const CANDLE_DOWN = '#f6465d';  // 跌·Binance 红
+const GRID_COLOR = 'rgba(132, 142, 156, 0.10)';
+const GRID_COLOR_FAINT = 'rgba(132, 142, 156, 0.06)';
+const AXIS_BORDER = 'rgba(132, 142, 156, 0.18)';
+const CROSSHAIR_COLOR = '#586ea0';
+const CROSSHAIR_LABEL_BG = '#3d4451';
 
 interface KlineChartProps {
   isFullscreen?: boolean;
@@ -160,6 +172,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // 利润测算画线（结构分析：预案/汇流止盈区/目标位）
   const [showProfit, setShowProfit] = useState(loadProfitPref);
   const [showMicro, setShowMicro] = useState(loadMicroPref);
+  // 左上角 OHLC 图例：随十字线联动（悬停读历史K线，离开回落到最新一根，tick 实时刷新）
+  interface LegendInfo { o: number; h: number; l: number; c: number; pct: number }
+  const [legend, setLegend] = useState<LegendInfo | null>(null);
+  const legendOf = useCallback((o: number, h: number, l: number, c: number): LegendInfo => ({
+    o, h, l, c, pct: o > 0 ? ((c - o) / o) * 100 : 0,
+  }), []);
   // AB9线 ref
   const autoLinesRef = useRef<ISeriesApi<'Line'>[]>([]);
   const autoPriceLinesRef = useRef<any[]>([]);
@@ -315,7 +333,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             histData.push({
               time: klines[i].time as Time,
               value: macdData.hist[i] as number,
-              color: (macdData.hist[i] as number) >= 0 ? '#4ade80' : '#f87171',
+              color: (macdData.hist[i] as number) >= 0 ? 'rgba(14, 203, 129, 0.75)' : 'rgba(246, 70, 93, 0.75)',
             });
           }
           if (macdData.dif[i] != null) {
@@ -709,7 +727,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     const volumeData: HistogramData[] = klines.map((k) => ({
       time: k.time as Time,
       value: k.volume,
-      color: k.close >= k.open ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)',
+      color: k.close >= k.open ? 'rgba(14, 203, 129, 0.45)' : 'rgba(246, 70, 93, 0.45)',
     }));
 
     candleSeries.current.setData(candleData);
@@ -724,6 +742,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       candleSeries.current.setMarkers([]);
     }
 
+    // 图例初始化为最新一根K线
+    const lk = klines[klines.length - 1];
+    if (lk) setLegend(legendOf(lk.open, lk.high, lk.low, lk.close));
+
     // 视图定位：
     // - 切换周期（intv 有值）：直接定位到最右端约 72 根，跳过 fitContent 避免视图缩放跳变
     // - 初始加载或币种切换：先 fitContent 再定位到右端，确保价格轴适配新范围
@@ -736,7 +758,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       }
       mainChart.current.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx + 4 });
     }
-  }, [updateIndicators, redrawOverlayLines]);
+  }, [updateIndicators, redrawOverlayLines, legendOf]);
 
   // 切换画线开关时仅重画线（不再整图重载、不重置视图）
   useEffect(() => {
@@ -786,10 +808,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       time: last.time as Time,
       open: last.open, high: last.high, low: last.low, close: last.close,
     });
+    // 图例跟随实时价（50ms 节流内更新，开销可忽略）
+    setLegend(legendOf(last.open, last.high, last.low, last.close));
 
     // 实时价可能推动价格刻度缩放，透明框的纵向坐标随之刷新（画几个矩形，开销可忽略）
     drawZonesRef.current();
-  }, []);
+  }, [legendOf]);
 
   const updateTick = useCallback((price: number) => {
     pendingTickRef.current = price;
@@ -822,7 +846,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       volumeSeries.current.update({
         time: kline.time as Time,
         value: kline.volume,
-        color: kline.close >= kline.open ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)',
+        color: kline.close >= kline.open ? 'rgba(14, 203, 129, 0.45)' : 'rgba(246, 70, 93, 0.45)',
       });
     } else if (kline.time > last.time) {
       klines.push(kline);
@@ -833,9 +857,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       volumeSeries.current.update({
         time: kline.time as Time,
         value: kline.volume,
-        color: kline.close >= kline.open ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)',
+        color: kline.close >= kline.open ? 'rgba(14, 203, 129, 0.45)' : 'rgba(246, 70, 93, 0.45)',
       });
     }
+    // 图例跟随最新K线（新开的一根或盘中波动）
+    setLegend(legendOf(kline.open, kline.high, kline.low, kline.close));
 
     if (isFinal) {
       updateIndicators();
@@ -843,7 +869,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       // 修复此前盘中形成的新高/新低要等手动刷新才会体现在画线上的问题
       redrawOverlayLines();
     }
-  }, [updateIndicators, redrawOverlayLines]);
+  }, [updateIndicators, redrawOverlayLines, legendOf]);
 
   // 获取K线 — 用 ref 引用最新的 updateChart，避免指标切换导致重新拉取K线和重连WS
   const updateChartRef = useRef(updateChart);
@@ -872,31 +898,45 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   useEffect(() => {
     if (!mainChartRef.current || !macdChartRef.current) return;
 
-    // 主图
+    // 主图（视觉统一：Binance 色系、点状极淡网格、统一字体、右侧留白）
     const chart = createChart(mainChartRef.current, {
-      layout: { background: { color: 'transparent' }, textColor: '#94a3b8' },
+      layout: {
+        background: { color: 'transparent' },
+        textColor: '#848e9c',
+        fontSize: 11,
+        fontFamily: CHART_FONT,
+      },
       grid: {
-        vertLines: { color: 'rgba(71, 85, 105, 0.2)' },
-        horzLines: { color: 'rgba(71, 85, 105, 0.2)' },
+        vertLines: { color: GRID_COLOR, style: LineStyle.Dotted },
+        horzLines: { color: GRID_COLOR, style: LineStyle.Dotted },
       },
       crosshair: {
-        mode: 0,
-        vertLine: { color: '#3b82f6', width: 1, style: 2, labelBackgroundColor: '#3b82f6' },
-        horzLine: { color: '#3b82f6', width: 1, style: 2, labelBackgroundColor: '#3b82f6' },
+        mode: CrosshairMode.Normal,
+        vertLine: { color: CROSSHAIR_COLOR, width: 1, style: LineStyle.Dashed, labelBackgroundColor: CROSSHAIR_LABEL_BG },
+        horzLine: { color: CROSSHAIR_COLOR, width: 1, style: LineStyle.Dashed, labelBackgroundColor: CROSSHAIR_LABEL_BG },
       },
-      timeScale: { borderColor: 'rgba(71, 85, 105, 0.4)', timeVisible: true, secondsVisible: false },
-      rightPriceScale: { borderColor: 'rgba(71, 85, 105, 0.4)' },
+      timeScale: {
+        borderColor: AXIS_BORDER,
+        timeVisible: true,
+        secondsVisible: false,
+        rightOffset: 8,
+        minBarSpacing: 1.2,
+      },
+      rightPriceScale: {
+        borderColor: AXIS_BORDER,
+        scaleMargins: { top: 0.08, bottom: 0.08 },
+      },
     });
 
     const candle = chart.addCandlestickSeries({
-      upColor: '#22c55e', downColor: '#ef4444',
-      borderUpColor: '#22c55e', borderDownColor: '#ef4444',
-      wickUpColor: '#22c55e', wickDownColor: '#ef4444',
+      upColor: CANDLE_UP, downColor: CANDLE_DOWN,
+      borderUpColor: CANDLE_UP, borderDownColor: CANDLE_DOWN,
+      wickUpColor: CANDLE_UP, wickDownColor: CANDLE_DOWN,
       lastValueVisible: true,
       priceLineVisible: true,
-      priceLineColor: 'rgba(148, 163, 184, 0.5)',
+      priceLineColor: 'rgba(132, 142, 156, 0.55)',
       priceLineWidth: 1,
-      priceLineStyle: 2,
+      priceLineStyle: LineStyle.Dotted,
     });
 
     const volume = chart.addHistogramSeries({
@@ -907,15 +947,33 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     });
     chart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
 
-    // MACD 副图
+    // 十字线联动左上角 OHLC 图例（离开图表回落到最新一根）
+    chart.subscribeCrosshairMove((param) => {
+      if (!param || param.time == null) {
+        const ks = allKlinesRef.current;
+        if (ks.length) {
+          const k = ks[ks.length - 1];
+          setLegend(legendOf(k.open, k.high, k.low, k.close));
+        }
+        return;
+      }
+      const d = param.seriesData.get(candle) as CandlestickData | undefined;
+      if (d) setLegend(legendOf(d.open, d.high, d.low, d.close));
+    });
+
+    // MACD 副图（时间轴隐藏：时间刻度统一由主图呈现，不再三排重复；配色与主图同主题）
     const mChart = createChart(macdChartRef.current, {
-      layout: { background: { color: 'transparent' }, textColor: '#94a3b8' },
+      layout: { background: { color: 'transparent' }, textColor: '#848e9c', fontSize: 10, fontFamily: CHART_FONT },
       grid: {
-        vertLines: { color: 'rgba(71, 85, 105, 0.12)' },
-        horzLines: { color: 'rgba(71, 85, 105, 0.12)' },
+        vertLines: { color: GRID_COLOR, style: LineStyle.Dotted },
+        horzLines: { color: GRID_COLOR_FAINT, style: LineStyle.Dotted },
       },
-      timeScale: { borderColor: 'rgba(71, 85, 105, 0.4)', timeVisible: true },
-      rightPriceScale: { borderColor: 'rgba(71, 85, 105, 0.4)' },
+      timeScale: { visible: false, borderColor: AXIS_BORDER, timeVisible: true },
+      rightPriceScale: { borderColor: AXIS_BORDER },
+      crosshair: {
+        vertLine: { color: CROSSHAIR_COLOR, width: 1, style: LineStyle.Dashed, labelBackgroundColor: CROSSHAIR_LABEL_BG },
+        horzLine: { color: CROSSHAIR_COLOR, width: 1, style: LineStyle.Dashed, labelBackgroundColor: CROSSHAIR_LABEL_BG },
+      },
     });
 
     const hist = mChart.addHistogramSeries({ priceFormat: { type: 'price', precision: 4 } });
@@ -929,13 +987,17 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     let rUnder: ISeriesApi<'Line'> | null = null;
     if (rsiChartRef.current) {
       rChart = createChart(rsiChartRef.current, {
-        layout: { background: { color: 'transparent' }, textColor: '#94a3b8' },
+        layout: { background: { color: 'transparent' }, textColor: '#848e9c', fontSize: 10, fontFamily: CHART_FONT },
         grid: {
-          vertLines: { color: 'rgba(71, 85, 105, 0.12)' },
-          horzLines: { color: 'rgba(71, 85, 105, 0.12)' },
+          vertLines: { color: GRID_COLOR, style: LineStyle.Dotted },
+          horzLines: { color: GRID_COLOR_FAINT, style: LineStyle.Dotted },
         },
-        timeScale: { borderColor: 'rgba(71, 85, 105, 0.4)', timeVisible: true },
-        rightPriceScale: { borderColor: 'rgba(71, 85, 105, 0.4)', autoScale: true },
+        timeScale: { visible: false, borderColor: AXIS_BORDER, timeVisible: true },
+        rightPriceScale: { borderColor: AXIS_BORDER, autoScale: true },
+        crosshair: {
+          vertLine: { color: CROSSHAIR_COLOR, width: 1, style: LineStyle.Dashed, labelBackgroundColor: CROSSHAIR_LABEL_BG },
+          horzLine: { color: CROSSHAIR_COLOR, width: 1, style: LineStyle.Dashed, labelBackgroundColor: CROSSHAIR_LABEL_BG },
+        },
       });
       rLine = rChart.addLineSeries({
         color: '#f97316',
@@ -1221,11 +1283,46 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           </div>
         )}
         <div className="relative w-full" style={{ height: isFullscreen ? 'calc(100vh - 40px)' : '620px' }}>
+          {/* 币种水印：图表背景透明，水印置于K线之下透出（专业图表标配） */}
+          <div
+            className="absolute inset-0 flex items-center justify-center pointer-events-none select-none overflow-hidden"
+            style={{ zIndex: 0 }}
+          >
+            <div className="text-center" style={{ opacity: 0.055 }}>
+              <div className="text-5xl font-bold text-slate-100 tracking-wider">{symbolLabel}</div>
+              <div className="mt-1.5 text-lg text-slate-100 tracking-[0.35em]">
+                {INTERVALS.find((i) => i.value === interval)?.label ?? ''}
+              </div>
+            </div>
+          </div>
           <div
             ref={mainChartRef}
             className="w-full h-full"
-            style={{ cursor: 'default' }}
+            style={{ cursor: 'default', position: 'relative', zIndex: 1 }}
           />
+          {/* 左上角 OHLC 图例：十字线联动，颜色跟涨跌 */}
+          {legend && (
+            <div className="absolute top-2.5 left-3 z-[3] pointer-events-none flex flex-col gap-0.5">
+              <div className="flex items-baseline gap-2">
+                <span className="text-[13px] font-semibold text-slate-200">{symbolLabel}</span>
+                <span className="text-[11px] text-dark-400">
+                  {INTERVALS.find((i) => i.value === interval)?.label}
+                </span>
+              </div>
+              <div
+                className="flex items-center gap-2.5 text-[11px] font-mono tabular-nums"
+                style={{ color: legend.pct >= 0 ? CANDLE_UP : CANDLE_DOWN }}
+              >
+                <span>O {legend.o.toFixed(Math.max(0, Math.min(8, pricePrecision)))}</span>
+                <span>H {legend.h.toFixed(Math.max(0, Math.min(8, pricePrecision)))}</span>
+                <span>L {legend.l.toFixed(Math.max(0, Math.min(8, pricePrecision)))}</span>
+                <span>C {legend.c.toFixed(Math.max(0, Math.min(8, pricePrecision)))}</span>
+                <span className="font-semibold">
+                  {legend.pct >= 0 ? '+' : ''}{legend.pct.toFixed(2)}%
+                </span>
+              </div>
+            </div>
+          )}
           {/* 测算透明框层：风险/盈利/汇流/FVG 区域化呈现；pointer-events-none 不挡K线交互 */}
           <canvas
             ref={zoneCanvasRef}
@@ -1236,13 +1333,19 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       </div>
 
       {/* MACD 副图（全屏时隐藏） */}
-      <div className={`border-t border-dark-700/30 ${isFullscreen ? 'hidden' : ''}`}>
+      <div className={`relative border-t border-dark-700/30 ${isFullscreen ? 'hidden' : ''}`}>
         <div ref={macdChartRef} className="w-full" style={{ height: '120px' }} />
+        <span className="absolute top-1.5 left-3 text-[10px] text-dark-400 pointer-events-none">
+          MACD({periods.macdFast},{periods.macdSlow},{periods.macdSignal})
+        </span>
       </div>
 
       {/* RSI 副图（全屏时隐藏） */}
-      <div className={`border-t border-dark-700/30 ${isFullscreen ? 'hidden' : ''}`}>
+      <div className={`relative border-t border-dark-700/30 ${isFullscreen ? 'hidden' : ''}`}>
         <div ref={rsiChartRef} className="w-full" style={{ height: '100px' }} />
+        <span className="absolute top-1.5 left-3 text-[10px] text-dark-400 pointer-events-none">
+          RSI({periods.rsiPeriod})
+        </span>
       </div>
     </div>
   );
