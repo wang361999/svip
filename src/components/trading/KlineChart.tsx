@@ -639,7 +639,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         const xPrev = xOf(klines[klines.length - 2].time);
         if (xLast != null && xPrev != null) {
           const step = Math.max(1, Math.abs(xLast - xPrev));
-          const projX0 = Math.max(0, xLast - step * 18);
+          // 色带从最新K线向左铺 8 根（原18根过宽，压缩后不遮历史走势，仍够读色块边界）
+          const projX0 = Math.max(0, xLast - step * 8);
           // 信号预案（C）优先：色带跟随实证信号方向；未触发时画结构方案 A
           const pa = pd.plans.find((p) => p.id === 'C') || pd.plans.find((p) => p.id === 'A');
           if (pa) {
