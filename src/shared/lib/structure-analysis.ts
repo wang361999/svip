@@ -17,6 +17,7 @@
  */
 
 import { KlineData } from './market-data';
+import { FundingPoint } from './funding-data';
 
 // ==================== 基础指标 ====================
 
@@ -755,7 +756,7 @@ const MR_HIGH = 0.510;
 
 export interface RealtimeIndicator {
   /** 指标键 */
-  key: 'trend' | 'mr' | 'divergence' | 'macd' | 'atr';
+  key: 'trend' | 'mr' | 'divergence' | 'macd' | 'atr' | 'funding' | 'tsmom';
   /** 指标名（中文） */
   name: string;
   /** 实时状态一句话 */
@@ -773,17 +774,21 @@ export interface RealtimeSignal {
   active: boolean;
   /** 'long' 做多 / 'short' 做空 */
   dir: 'long' | 'short';
-  /** high=核心MR触发（2年三币全正） / medium=RSI背离触发（SOL强ETH弱） */
+  /** high=核心MR触发（2年三币全正） / medium=其余实证触发 */
   confidence: 'high' | 'medium';
+  /** 触发源类别（用于文案标注与优先级） */
+  triggerKind: 'mr' | 'funding-div' | 'tsmom' | 'rsi-div' | 'none';
   /** 触发来源说明 */
   triggerSource: string;
-  /** 五指标实时面板 */
+  /** 指标实时面板 */
   indicators: RealtimeIndicator[];
   /** 4h MR 分数（越负越超跌） */
   mrScore: number;
   /** 4h EMA200 侧 */
   e200Side: 'above' | 'below';
-  /** 历史命中率（按置信度区分来源） */
+  /** 资金费率 z-score（168 事件窗口；数据不可用时为 null） */
+  fundingZ: number | null;
+  /** 历史命中率（按触发源区分） */
   historyWinRatePct: number;
   /** 证据说明（如实标注样本） */
   evidenceText: string;
@@ -837,14 +842,22 @@ function atrSeries(ks: KlineData[], period = 14): number[] {
   return out;
 }
 
-/** 实时信号计算（纯函数：4h 定核心方向，1h 定背离与实时动能） */
-function calcRealtimeSignal(k4h: KlineData[], k1h: KlineData[], currentPrice: number): RealtimeSignal {
+/** 实时信号计算（纯函数：4h 定核心方向，1h 定背离与实时动能）
+ * 资金费率与 TSMOM 仅在 ETH 上有实证（BTC/SOL 回测无效，只展示不触发） */
+function calcRealtimeSignal(
+  k4h: KlineData[],
+  k1h: KlineData[],
+  currentPrice: number,
+  funding: FundingPoint[] = [],
+  symbol = '',
+): RealtimeSignal {
   const closes4h = k4h.map((k) => k.close);
   const closes1h = k1h.map((k) => k.close);
+  const isETH = symbol.toUpperCase().startsWith('ETH');
   const fallback: RealtimeSignal = {
-    active: false, dir: 'long', confidence: 'medium', triggerSource: '未触发（数据不足）',
-    indicators: [], mrScore: 0, e200Side: 'above', historyWinRatePct: 0,
-    evidenceText: 'K线历史不足，五指标面板暂不可用（需4h≥220根、1h≥60根），不给出方向结论',
+    active: false, dir: 'long', confidence: 'medium', triggerKind: 'none', triggerSource: '未触发（数据不足）',
+    indicators: [], mrScore: 0, e200Side: 'above', fundingZ: null, historyWinRatePct: 0,
+    evidenceText: 'K线历史不足，指标面板暂不可用（需4h≥220根、1h≥60根），不给出方向结论',
     stateText: '数据不足（需4h≥220根、1h≥60根）',
   };
   if (closes4h.length < 220 || closes1h.length < 60) return fallback;
@@ -945,21 +958,127 @@ function calcRealtimeSignal(k4h: KlineData[], k1h: KlineData[], currentPrice: nu
     role: 'context',
   };
 
-  // ---- 合议：核心 MR 优先，背离次之 ----
+  // ---- 指标6：资金费率背离（4h 价格 × 费率 z-score；ETH 专属触发） ----
+  // 实证（2024-10~2026-07 ETH，费率 z win=168、新高/新低回看30根、z阈值0.5、持有20根4h）：
+  //   12/12 参数组合全部正期望 +0.73~1.49%/笔，胜率 55~62%；基准 +1.33%/笔 n=60
+  //   BTC/SOL 同规格回测≈0 或负 → 仅 ETH 触发，其他币种只展示
+  let fundingZ: number | null = null;
+  let fundingLongOk = false;
+  let fundingShortOk = false;
+  let fundingText = '数据不可用';
+  let fundingStance: 'long' | 'short' | 'neutral' = 'neutral';
+  if (funding.length >= 200) {
+    // bar 信号时刻已结算的最新费率 + 其 168 事件 z-score
+    const knowTime = k4h[k4h.length - 1].time; // 最后一根（forming）bar 的开盘时刻已知的费率
+    let idx = -1;
+    for (let j = funding.length - 1; j >= 0; j--) { if (funding[j].t <= knowTime) { idx = j; break; } }
+    if (idx >= 168) {
+      const w = funding.slice(idx - 167, idx + 1).map((x) => x.r);
+      const mean = w.reduce((a, b) => a + b, 0) / w.length;
+      const sd = Math.sqrt(w.reduce((a, b) => a + (b - mean) ** 2, 0) / (w.length - 1));
+      fundingZ = sd > 0 ? Math.round(((funding[idx].r - mean) / sd) * 100) / 100 : 0;
+      // 滞后检测：最新费率事件超过 5 天视为月包兜底滞后，不触发
+      const stale = Date.now() / 1000 - funding[idx].t > 5 * 86400;
+      // 价格 30 根新高/新低（回看已收的 bar，不含最后一根 forming）
+      const LB = 30;
+      const ref = k4h.slice(k4h.length - 1 - LB, k4h.length - 1);
+      const hi = Math.max(...ref.map((b) => b.high));
+      const lo = Math.min(...ref.map((b) => b.low));
+      const priceNewHigh = currentPrice > hi;
+      const priceNewLow = currentPrice < lo;
+      const fDivShort = priceNewHigh && fundingZ < 0.5; // 价新高但费率不配合 → 多头燃料衰竭
+      const fDivLong = priceNewLow && fundingZ > -0.5; // 价新低但费率不配合 → 空头衰竭
+      if (stale) {
+        fundingText = `费率数据滞后（最新事件 ${new Date(funding[idx].t * 1000).toISOString().slice(0, 10)}，月包未含当月），只展示不触发`;
+      } else if (fDivShort || fDivLong) {
+        fundingLongOk = isETH && fDivLong;
+        fundingShortOk = isETH && fDivShort;
+        fundingStance = fDivShort ? 'short' : 'long';
+        fundingText = `${fDivShort ? '价新高·费率z不配合（背离做空）' : '价新低·费率z不配合（背离做多）'}，z=${fundingZ}${isETH ? '' : '（本币种回测无效，仅展示）'}`;
+      } else {
+        fundingText = `无背离（z=${fundingZ}，价格未破30根高/低点）`;
+      }
+    }
+  }
+  const fundingInd: RealtimeIndicator = {
+    key: 'funding',
+    name: '资金费率背离（4h×费率）',
+    stateText: fundingText,
+    stance: fundingStance,
+    role: fundingLongOk || fundingShortOk ? 'trigger' : 'context',
+    distanceToTrigger: fundingLongOk || fundingShortOk ? 0 : undefined,
+  };
+
+  // ---- 指标7：30日时序动量 TSMOM（4h；ETH 专属触发） ----
+  // 实证（2024-10~2026-07 ETH，N=180根4h、t=30日动量/波动>1、持有40根4h）：
+  //   N=150~240 全部正期望 +0.84~1.76%/笔；分年 2024 +0.27% / 2025 +1.59% / 2026 +2.35%（走强）
+  //   BTC/SOL 分年不稳定 → 仅 ETH 触发
+  const N = 180;
+  let tsLongOk = false;
+  let tsShortOk = false;
+  let tsText = '数据不足';
+  let tsStance: 'long' | 'short' | 'neutral' = 'neutral';
+  if (closes4h.length > N + 31) {
+    const last = closes4h.length - 1;
+    const ret30d = (closes4h[last] - closes4h[last - N]) / closes4h[last - N];
+    const rets: number[] = [];
+    for (let j = last - 29; j <= last; j++) rets.push((closes4h[j] - closes4h[j - 1]) / closes4h[j - 1]);
+    const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+    const sd = Math.sqrt(rets.reduce((a, b) => a + (b - mean) ** 2, 0) / rets.length) * Math.sqrt(30);
+    const tStat = sd > 0 ? ret30d / sd : 0;
+    if (tStat > 1) { tsStance = 'long'; tsLongOk = isETH; }
+    else if (tStat < -1) { tsStance = 'short'; tsShortOk = isETH; }
+    tsText = `30日动量 ${(ret30d * 100).toFixed(1)}%（t=${tStat.toFixed(2)}，|t|>1 触发）${tStat > 1 || tStat < -1 ? (isETH ? '' : '（本币种回测无效，仅展示）') : '·动能未达阈值'}`;
+  }
+  const tsInd: RealtimeIndicator = {
+    key: 'tsmom',
+    name: '30日动量 TSMOM（4h）',
+    stateText: tsText,
+    stance: tsStance,
+    role: tsLongOk || tsShortOk ? 'trigger' : 'context',
+    distanceToTrigger: tsLongOk || tsShortOk ? 0 : undefined,
+  };
+
+  // ---- 合议：核心 MR 优先，费率背离次之，TSMOM 第三，RSI背离垫底 ----
   let active = false;
   let dir: 'long' | 'short' = side4 === 'above' ? 'long' : 'short';
   let confidence: 'high' | 'medium' = 'medium';
+  let triggerKind: RealtimeSignal['triggerKind'] = 'none';
   let triggerSource = '';
+  let historyWinRatePct = 0;
+  let evidenceText = '';
   if (mrLongOk || mrShortOk) {
     active = true;
     dir = mrLongOk ? 'long' : 'short';
     confidence = 'high';
+    triggerKind = 'mr';
     triggerSource = '核心触发：4h MR超调到位';
+    historyWinRatePct = 73;
+    evidenceText = '核心MR：2年三币实测 +1.60~2.12%/笔（40h时间出场，扣0.16%成本）；ETH样本外72h方向命中73%（n=26）、SOL迁移72%（n=125）';
+  } else if (fundingLongOk || fundingShortOk) {
+    active = true;
+    dir = fundingLongOk ? 'long' : 'short';
+    confidence = 'medium';
+    triggerKind = 'funding-div';
+    triggerSource = '实证触发：资金费率背离（ETH专属）';
+    historyWinRatePct = 62;
+    evidenceText = '费率背离：ETH 2年实测 12/12 参数组正期望 +0.73~1.49%/笔（基准 n=60 胜率62%，20根4h时间出场扣0.16%成本）；BTC/SOL 同规格无效，仅ETH触发';
+  } else if (tsLongOk || tsShortOk) {
+    active = true;
+    dir = tsLongOk ? 'long' : 'short';
+    confidence = 'medium';
+    triggerKind = 'tsmom';
+    triggerSource = '实证触发：30日时序动量（ETH专属）';
+    historyWinRatePct = 45;
+    evidenceText = 'TSMOM：ETH 2年实测 +1.70%/笔（n=99，持有40根4h时间出场扣0.16%；胜率45%低但盈亏比高，N=150~240全参数组+0.84~1.76%）；BTC/SOL 不稳定，仅ETH触发';
   } else if (divLongOk || divShortOk) {
     active = true;
     dir = divLongOk ? 'long' : 'short';
     confidence = 'medium';
+    triggerKind = 'rsi-div';
     triggerSource = '辅助触发：1h RSI背离确认';
+    historyWinRatePct = 55;
+    evidenceText = 'RSI背离：2年三币合计 +0.60%/笔、胜率55%（SOL +1.44% 强、ETH +0.16% 弱）；置信度低于核心触发';
   }
 
   let stateText: string;
@@ -975,14 +1094,14 @@ function calcRealtimeSignal(k4h: KlineData[], k1h: KlineData[], currentPrice: nu
     active,
     dir,
     confidence,
+    triggerKind: active ? triggerKind : 'none',
     triggerSource: active ? triggerSource : '未触发',
-    indicators: [trend, mr, divergence, macd, atr],
+    indicators: [trend, mr, divergence, macd, atr, fundingInd, tsInd],
     mrScore,
     e200Side: side4,
-    historyWinRatePct: active ? (confidence === 'high' ? 73 : 55) : 0,
-    evidenceText: confidence === 'high' || !active
-      ? '核心MR：2年三币实测 +1.60~2.12%/笔（40h时间出场，扣0.16%成本）；ETH样本外72h方向命中73%（n=26）、SOL迁移72%（n=125）'
-      : 'RSI背离：2年三币合计 +0.60%/笔、胜率55%（SOL +1.44% 强、ETH +0.16% 弱）；置信度低于核心触发',
+    fundingZ,
+    historyWinRatePct: active ? historyWinRatePct : 0,
+    evidenceText: evidenceText || '核心MR：2年三币实测 +1.60~2.12%/笔（40h时间出场，扣0.16%成本）；ETH样本外72h方向命中73%（n=26）、SOL迁移72%（n=125）',
     stateText,
   };
 }
@@ -1151,6 +1270,18 @@ function roundPrice(p: number): number {
   return Math.round(p * 100000) / 100000;
 }
 
+/**
+ * 点数档专用取整：保证 TP/SL 距离比例不被取整噪声破坏。
+ * 0.1 级取整在小止损（如 ETH 3 点）上会造成 ~5% 的盈亏比漂移，
+ * 这里按价格量级自适应小数位，把量化误差压到 ≤0.3%。
+ */
+function roundFine(p: number): number {
+  const a = Math.abs(p);
+  const dec = a >= 10000 ? 1 : a >= 100 ? 2 : 3;
+  const m = 10 ** dec;
+  return Math.round(p * m) / m;
+}
+
 function buildPlan(
   id: 'D' | 'E',
   name: string,
@@ -1166,7 +1297,9 @@ function buildPlan(
     tp1ProbabilityPct?: number;
     tp2ProbabilityPct?: number;
   },
+  fine = false,
 ): TradePlan {
+  const r = fine ? roundFine : roundPrice;
   const risk = Math.abs(entry - stop);
   const rrTp1 = Math.abs(tp1 - entry) / risk;
   const rrTp2 = Math.abs(tp2 - entry) / risk;
@@ -1175,10 +1308,10 @@ function buildPlan(
     name,
     side,
     trigger,
-    entry: roundPrice(entry),
-    stop: roundPrice(stop),
-    tp1: roundPrice(tp1),
-    tp2: roundPrice(tp2),
+    entry: r(entry),
+    stop: r(stop),
+    tp1: r(tp1),
+    tp2: r(tp2),
     risk: roundPrice(risk),
     riskPct: Math.round((risk / entry) * 1000) / 10,
     rrTp1: Math.round(rrTp1 * 100) / 100,
@@ -1244,6 +1377,8 @@ export interface StructureInput {
   k4h: KlineData[];
   k1h: KlineData[];
   k15m: KlineData[];
+  /** 资金费率历史（可选；缺失时费率指标显示不可用，不参与触发） */
+  funding?: FundingPoint[];
 }
 
 /**
@@ -1430,8 +1565,8 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
   else if (resonance <= -2 || (resonance <= -1 && leg && leg.direction === 'down' && leg.retracement < 0.7)) bias = 'bear';
   const biasText = bias === 'bull' ? '偏多' : bias === 'bear' ? '偏空' : '中性';
 
-  // ---------- 实时信号（多指标合议制，2026-08 重构） ----------
-  const realtimeSignal = calcRealtimeSignal(k4h, k1h, currentPrice);
+  // ---------- 实时信号（多指标合议制，2026-08 重构：新增费率背离与TSMOM两个ETH专属触发） ----------
+  const realtimeSignal = calcRealtimeSignal(k4h, k1h, currentPrice, input.funding || [], symbol);
 
   // 信号触发 → 生成点数档预案（D 短线 / E 波段）
   // 结构来源：6 年 1h 分辨率竞速回测（2020-10~2026-08，128 个信号，前/后半 + 7 个年度全部验证）
@@ -1442,21 +1577,30 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
     const s: 1 | -1 = realtimeSignal.dir === 'long' ? 1 : -1;
     const entry = roundPrice(currentPrice);
     const pts = (pct: number) => Math.round(currentPrice * pct * 10) / 10; // 当前价下的点数
-    const confTag = realtimeSignal.confidence === 'high' ? '核心MR' : '背离辅助';
+    // 距离从取整后的入场价推导并精细取整，保证 TP/SL 比例精确（回测口径）
+    const dist = (pct: number) => roundFine(entry * pct);
+    const confTag = {
+      mr: '核心MR',
+      'funding-div': '费率背离',
+      tsmom: 'TSMOM动量',
+      'rsi-div': 'RSI背离',
+      none: '',
+    }[realtimeSignal.triggerKind];
     const dPlan = buildPlan(
       'D', '信号预案·短线（点数档）',
       realtimeSignal.dir === 'long' ? 'long' : 'short',
       `${realtimeSignal.stateText}（${confTag}，MR=${realtimeSignal.mrScore}）· 方向确认后直接进场，目标 +${pts(0.004)}点，止损 ${pts(0.0012)}点，超时 3 天离场`,
       entry,
-      roundPrice(currentPrice - s * currentPrice * 0.0012),
-      roundPrice(currentPrice + s * currentPrice * 0.004),
-      roundPrice(currentPrice + s * currentPrice * 0.008),
+      entry - s * dist(0.0012),
+      entry + s * dist(0.004),
+      entry + s * dist(0.008),
       realtimeSignal.confidence,
       {
         tp2Source: `+${pts(0.008)}点（延伸档，TP20/SL3 回测 +0.24R 同样稳定）`,
         tp1ProbabilityPct: 42,
         tp2ProbabilityPct: 42,
       },
+      true,
     );
     (dPlan as any).evidence = realtimeSignal.evidenceText;
     plans.unshift(dPlan);
@@ -1466,15 +1610,16 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
       realtimeSignal.dir === 'long' ? 'long' : 'short',
       `${realtimeSignal.stateText}（${confTag}，MR=${realtimeSignal.mrScore}）· 同方向波段档，目标 +${pts(0.006)}点，止损 ${pts(0.0024)}点，超时 5 天离场`,
       entry,
-      roundPrice(currentPrice - s * currentPrice * 0.0024),
-      roundPrice(currentPrice + s * currentPrice * 0.006),
-      roundPrice(currentPrice + s * currentPrice * 0.008),
+      entry - s * dist(0.0024),
+      entry + s * dist(0.006),
+      entry + s * dist(0.008),
       realtimeSignal.confidence,
       {
         tp2Source: `+${pts(0.008)}点（TP20/SL6 回测 +0.12R）`,
         tp1ProbabilityPct: 44,
         tp2ProbabilityPct: 32,
       },
+      true,
     );
     (ePlan as any).evidence = realtimeSignal.evidenceText;
     plans.splice(1, 0, ePlan); // 紧随 D

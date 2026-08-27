@@ -126,6 +126,7 @@ interface AnalysisData {
     active: boolean;
     dir: 'long' | 'short';
     confidence: 'high' | 'medium';
+    triggerKind: 'mr' | 'funding-div' | 'tsmom' | 'rsi-div' | 'none';
     triggerSource: string;
     indicators: {
       key: string;
@@ -137,6 +138,7 @@ interface AnalysisData {
     }[];
     mrScore: number;
     e200Side: 'above' | 'below';
+    fundingZ: number | null;
     historyWinRatePct: number;
     evidenceText: string;
     stateText: string;
@@ -447,7 +449,7 @@ export default function AiAnalysisCard() {
                           ? `${data.realtimeSignal.dir === 'long' ? '▲ 做多' : '▼ 做空'} · ${data.realtimeSignal.confidence === 'high' ? '高置信' : '中置信'}`
                           : '○ 无信号'}
                       </span>
-                      <span className="text-dark-300 text-xs">AI实时信号 · 五指标合议</span>
+                      <span className="text-dark-300 text-xs">AI实时信号 · 七指标合议</span>
                     </div>
                     {data.realtimeSignal.active && (
                       <span className="text-emerald-400 font-mono text-lg font-bold">

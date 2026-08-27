@@ -16,6 +16,7 @@ import { requireUser } from '@/shared/api/auth-guard';
 import { KlineData } from '@/shared/lib/market-data';
 import { analyzeStructure, StructureAnalysis } from '@/shared/lib/structure-analysis';
 import { generateNarrative, AnalysisNarrative } from '@/shared/lib/analysis-writer';
+import { fetchFundingHistory, FundingPoint } from '@/shared/lib/funding-data';
 import { llmModelName } from '@/shared/lib/llm-client';
 
 export const dynamic = 'force-dynamic';
@@ -117,11 +118,12 @@ export const GET = createHandler(async ({ req }) => {
     });
   }
 
-  // 并行拉三周期
-  const [k4h, k1h, k15m] = await Promise.all([
+  // 并行拉三周期 + 资金费率（费率失败不阻塞，指标降级为"不可用"）
+  const [k4h, k1h, k15m, funding] = await Promise.all([
     fetchKlines(symbol, '4h', 300),
     fetchKlines(symbol, '1h', 300),
     fetchKlines(symbol, '15m', 300),
+    fetchFundingHistory(symbol).catch(() => [] as FundingPoint[]),
   ]);
 
   if (k4h.length < 80 || k1h.length < 80 || k15m.length < 80) {
@@ -129,7 +131,7 @@ export const GET = createHandler(async ({ req }) => {
   }
 
   // 规则引擎（数字层，确定性）
-  const structure = analyzeStructure({ symbol, k4h, k1h, k15m });
+  const structure = analyzeStructure({ symbol, k4h, k1h, k15m, funding });
 
   // 文案层（结构解读）：默认不生成；narrative=1 手动触发时才调 LLM（失败降级模板）
   let narrative: AnalysisNarrative | null = null;

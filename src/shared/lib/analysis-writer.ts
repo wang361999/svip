@@ -150,11 +150,13 @@ function buildLlmInput(a: StructureAnalysis): Record<string, unknown> {
     规则引擎定性: a.biasText,
     实时信号_多指标合议: a.realtimeSignal
       ? {
-          说明: '五个实测挑选的指标实时合议；核心=4h MR超调（2年三币+1.60~2.12%/笔），辅助=1h RSI背离（+0.60%/笔，置信中），其余为面板指标不独立触发',
+          说明: '七个实测挑选的指标实时合议，按优先级取触发源；触发类=4h MR超调（三币+1.60~2.12%/笔·高置信73%）>资金费率背离（ETH专属+0.73~1.49%/笔·62%）>30日时序动量TSMOM（ETH专属+1.70%/笔）>1h RSI背离（+0.60%/笔·55%）；其余为面板指标不独立触发',
           信号状态: a.realtimeSignal.stateText,
           触发方向: a.realtimeSignal.active ? (a.realtimeSignal.dir === 'long' ? '做多' : '做空') : '未触发',
-          置信度: a.realtimeSignal.confidence === 'high' ? '高（核心MR触发）' : '中（背离辅助触发）',
+          置信度: a.realtimeSignal.confidence === 'high' ? '高（核心MR触发）' : '中（实证触发源见指标面板）',
+          触发源: a.realtimeSignal.triggerSource,
           MR分数: a.realtimeSignal.mrScore,
+          费率z分数: a.realtimeSignal.fundingZ,
           EMA200位置: a.realtimeSignal.e200Side === 'above' ? '价格在4h EMA200之上（大多头结构）' : '价格在4h EMA200之下（大空头结构）',
           指标面板: a.realtimeSignal.indicators.map((i) => ({ 指标: i.name, 状态: i.stateText, 倾向: i.stance === 'long' ? '多' : i.stance === 'short' ? '空' : '中性' })),
         }
@@ -322,10 +324,13 @@ export function buildTemplateNarrative(a: StructureAnalysis): AnalysisNarrative 
 
   const planD = a.plans.find((x) => x.id === 'D');
   const rs = a.realtimeSignal;
+  const trigTag = rs?.active
+    ? ({ mr: '核心MR', 'funding-div': '费率背离', tsmom: 'TSMOM动量', 'rsi-div': 'RSI背离', none: '' } as Record<string, string>)[rs.triggerKind] || ''
+    : '';
 
   return {
     headline: rs?.active
-      ? `${rs.dir === 'long' ? '超跌做多信号触发' : '超涨做空信号触发'}（${rs.confidence === 'high' ? '核心MR' : '背离辅助'}）`
+      ? `${rs.dir === 'long' ? '超跌做多信号触发' : '超涨做空信号触发'}（${trigTag}）`
       : a.plans.length === 0
         ? '无信号·结构压缩，观望等方向'
         : `无信号·${rs?.e200Side === 'above' ? '多头结构' : rs?.e200Side === 'below' ? '空头结构' : '结构未明'}等极端位，现观望`,
