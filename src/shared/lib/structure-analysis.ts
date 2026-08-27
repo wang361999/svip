@@ -48,7 +48,6 @@ export interface MacdSnapshot {
 
 function macdSnapshot(closes: number[]): MacdSnapshot | null {
   if (closes.length < 40) return null;
-  const e12 = emaSeries(closes, 12);
   const e26 = emaSeries(closes, 26);
   const dif = closes.map((c, i) => c - e26[i]);
   // DEA = DIF 的 EMA9
@@ -551,14 +550,6 @@ function atr(klines: KlineData[], period = 14): number {
     sum += tr;
   }
   return sum / period;
-}
-
-/** 标准正态 CDF（Zelen & Severo 近似，误差 < 7.5e-8） */
-function normCdf(z: number): number {
-  const t = 1 / (1 + 0.2316419 * Math.abs(z));
-  const d = 0.3989422804014327 * Math.exp((-z * z) / 2);
-  const p = d * t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
-  return z >= 0 ? 1 - p : p;
 }
 
 /**

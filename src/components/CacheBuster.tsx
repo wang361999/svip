@@ -30,7 +30,6 @@ export default function CacheBuster() {
       );
 
       // 清除 localStorage（保留 token 以免重新登录）
-      const token = localStorage.getItem('token');
       const keysToRemove = Object.keys(localStorage).filter(
         (key) => key !== VERSION_KEY && key !== 'token',
       );

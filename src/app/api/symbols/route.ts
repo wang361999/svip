@@ -47,34 +47,6 @@ const createSymbolSchema = z.object({
   sortOrder: z.number().int().default(0),
 });
 
-/** 按价格量级推断显示精度（无 exchangeInfo 时的兜底 — 低价币不至于全显示成 0.00） */
-function inferPricePrecision(price: number): number {
-  if (!Number.isFinite(price) || price <= 0) return 2;
-  if (price >= 100) return 2;
-  if (price >= 1) return 4;
-  if (price >= 0.01) return 6;
-  return 8;
-}
-
-function buildSymbolMeta(symbol: string, index: number, price?: number) {
-  const baseAsset = symbol.replace('USDT', '');
-  return {
-    symbol,
-    okxId: `${baseAsset}-USDT`,
-    label: `${baseAsset}/USDT`,
-    baseAsset,
-    quoteAsset: 'USDT',
-    pricePrecision: inferPricePrecision(price ?? 0),
-    qtyPrecision: 4,
-    minQty: 0,
-    minNotional: 5,
-    active: true,
-    autoTrade: AUTO_TRADE_DEFAULTS.has(symbol),
-    isPopular: index < 10,
-    sortOrder: index,
-  };
-}
-
 /**
  * 热门币保障清单：交易页每次拉取 active 列表时幂等补建/标热门。
  * 精度参数取自 Binance exchangeInfo 实测（SNDKB tickSize 0.01 / stepSize 0.0001）。

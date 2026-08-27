@@ -178,11 +178,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const legendOf = useCallback((o: number, h: number, l: number, c: number): LegendInfo => ({
     o, h, l, c, pct: o > 0 ? ((c - o) / o) * 100 : 0,
   }), []);
-  // AB9线 ref
-  const autoLinesRef = useRef<ISeriesApi<'Line'>[]>([]);
+  // AB9线 ref（原生价格线）
   const autoPriceLinesRef = useRef<any[]>([]);
-  // 斐波那契线 ref
-  const fibLinesRef = useRef<ISeriesApi<'Line'>[]>([]);
+  // 斐波那契线 ref（原生价格线）
   const fibPriceLinesRef = useRef<any[]>([]);
   // 利润测算线 ref + 数据缓存（结构分析接口，服务端 4h 级缓存）
   const profitLinesRef = useRef<any[]>([]);
@@ -281,9 +279,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       if (s) { try { mainChart.current?.removeSeries(s); } catch {} }
     });
     bbUpper.current = bbMiddle.current = bbLower.current = emaSeries.current = null;
-
-    const from = klines[0].time;
-    const to = klines[klines.length - 1].time;
 
     // EMA 均线
     if (indicators.EMA) {

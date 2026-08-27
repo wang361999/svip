@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic';
 export const GET = createHandler(async ({ req }) => {
   requireAdmin();
   const query = parseQuery(listUsersQuerySchema, req);
-  const { items, total, page, pageSize, totalPages } = await usersService.list(query);
+  const { items, total, page, pageSize } = await usersService.list(query);
   return apiSuccessPaginated(items, total, page, pageSize);
 });
 

@@ -3,7 +3,6 @@
  * POST /api/symbols/toggle
  * Body: { id: string, active?: boolean, autoTrade?: boolean }
  */
-import { NextResponse } from 'next/server';
 import { createHandler } from '@/shared/api/handler';
 import { apiSuccess } from '@/shared/api/response';
 import { prisma } from '@/shared/lib/prisma';
