@@ -485,9 +485,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   //   方案（止损/入场/TP1/TP2）→ 纯平涂色带：红=风险、浅绿=TP1段、深绿=TP2段，
   //     无线无字，色块边界即价位（精确数字在 AI 分析卡片）
   //   汇流区 → 平涂琥珀色带（与盈利区重叠过半时不画）
+  //   信号未触发时 → 测算观察模式：8方法目标位虚线+标签、延伸档琥珀虚线
   //   流动性池 → 等高/等低两点连线 + 端点圆（EQH/EQL 经典标法）
   //   FVG → 渐变面（微构开关独立控制）
-  //   其余候选位（B方案/延伸档/目标位/FVG CE/池延伸）→ 已隐藏，数据在AI卡片呈现
   const drawZones = useCallback(() => {
     const canvas = zoneCanvasRef.current;
     const chart = mainChart.current;
@@ -641,7 +641,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           const step = Math.max(1, Math.abs(xLast - xPrev));
           // 色带从最新K线向左铺 8 根（原18根过宽，压缩后不遮历史走势，仍够读色块边界）
           const projX0 = Math.max(0, xLast - step * 8);
-          // 色带仅跟随 D 方案（短线点数档）；信号未触发时不画色带
+          // 色带仅跟随 D 方案（短线点数档）；信号未触发时无色带（下方画测算全景替代）
           const pa = pd.plans.find((p) => p.id === 'D');
           if (pa) {
             // ===== 纯色带画法（按反馈：无线无字，颜色即语义；透明度加深保证醒目） =====
@@ -662,9 +662,39 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             }
             if (ov <= 0.5) zoneFill(yOf(c.high), yOf(c.low), projX0, '245, 158, 11', 0.26);
           }
-          // ===== 汇流止盈区之后的候选位射线已按反馈隐藏 =====
-          // （延伸档 / 8个方法候选目标位不再画线；
-          //   数据仍在 AI 分析卡片中完整呈现，图表只保留方案色带 + 汇流区）
+          // ===== 信号未触发：画利润测算全景（测算开关的观察模式） =====
+          // 8 方法目标位 = 虚线细线 + 标签（方法名/价位/触及概率）；延伸档 = 琥珀虚线。
+          // 信号触发时只画 D 方案色带 + 汇流区（方案即测算，保持行动视图干净）。
+          if (!pa) {
+            const prec = Math.max(0, Math.min(8, useSymbolStore.getState().pricePrecision));
+            const fp = (v: number) => v.toFixed(prec);
+            const dashLine = (y: number, color: string) => {
+              ctx.save();
+              ctx.strokeStyle = color;
+              ctx.lineWidth = 1;
+              ctx.setLineDash([4, 3]);
+              ctx.beginPath();
+              ctx.moveTo(projX0, Math.round(y) + 0.5);
+              ctx.lineTo(xEnd, Math.round(y) + 0.5);
+              ctx.stroke();
+              ctx.restore();
+            };
+            for (const t of pd.profitTargets || []) {
+              if (isDupPrice(t.price)) continue;
+              const y = yOf(t.price);
+              if (y == null || y < 0 || y > paneH) continue;
+              dashLine(y, 'rgba(52, 211, 153, 0.55)');
+              rayLabel(projX0 + 4, y, `${t.label} ${fp(t.price)} · ${t.probabilityPct}%`, 'rgba(110, 231, 183, 0.95)');
+            }
+            const ext = pd.extendedTarget;
+            if (ext && !isDupPrice(ext.price)) {
+              const y = yOf(ext.price);
+              if (y != null && y >= 0 && y <= paneH) {
+                dashLine(y, 'rgba(245, 158, 11, 0.6)');
+                rayLabel(projX0 + 4, y, `延伸·${ext.label} ${fp(ext.price)}`, 'rgba(252, 211, 77, 0.95)');
+              }
+            }
+          }
         }
       }
     }
