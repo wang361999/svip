@@ -829,6 +829,135 @@ function calcDirectionSignal(k4h: KlineData[], currentPrice: number): DirectionS
   };
 }
 
+// ==================== 今日作战计划（无信号时也有方向答案） ====================
+
+export interface PullbackLevel {
+  price: number;
+  label: string;
+  source: 'fib382' | 'fib500' | 'fib618' | 'fib786' | 'key' | 'volume' | 'ema200' | 'pool';
+}
+
+export interface DailyPlan {
+  /** 今日方向：EMA200 之上=多（等回调低吸），之下=空（等反抽高空） */
+  bias: 'long' | 'short';
+  /** 方向一句话（交易员口吻） */
+  biasText: string;
+  /** 回调参考位（方向侧潜在回调目标，按离现价由近到远，最多6个） */
+  pullbackLevels: PullbackLevel[];
+  /** 最佳进场区：2+ 位重叠聚类（容差0.8%）；无重叠时回落到 fib 0.5–0.618 段 */
+  entryZone: { low: number; high: number; mid: number; methods: string[] } | null;
+  /** 进场区保护位：区域外沿留 0.6% 缓冲 */
+  stopHint: number | null;
+  /** 方向失效位（引擎 invalidation，可能为 null） */
+  invalidationPrice: number | null;
+}
+
+function calcDailyPlan(a: {
+  currentPrice: number;
+  e200Side: 'above' | 'below';
+  leg: Leg | null;
+  keyLevels: KeyLevel[];
+  volumeNodes: { price: number; volume: number }[];
+  liquidityPools: LiquidityPool[];
+  ema2004h: number;
+  invalidation: { price: number; note: string } | null;
+}): DailyPlan {
+  const { currentPrice, e200Side, leg, keyLevels, volumeNodes, liquidityPools, ema2004h, invalidation } = a;
+  const isLong = e200Side === 'above';
+
+  // ---- 收集方向侧回调参考位（多头=下方支撑，空头=上方阻力；0.4%~8% 内有效） ----
+  const cands: PullbackLevel[] = [];
+  const inBand = (p: number) => {
+    const d = Math.abs(currentPrice - p) / currentPrice;
+    return d >= 0.004 && d <= 0.08;
+  };
+  const onSide = (p: number) => (isLong ? p < currentPrice : p > currentPrice);
+
+  if (leg) {
+    const fibMap: [number, PullbackLevel['source'], string][] = [
+      [0.382, 'fib382', '回调38.2%'],
+      [0.5, 'fib500', '回调50%'],
+      [0.618, 'fib618', '回调61.8%'],
+      [0.786, 'fib786', '回调78.6%'],
+    ];
+    for (const [ratio, src, label] of fibMap) {
+      const f = leg.fibRetracements.find((x) => x.ratio === ratio);
+      if (f && onSide(f.price) && inBand(f.price)) cands.push({ price: f.price, label, source: src });
+    }
+  }
+  for (const k of keyLevels) {
+    if (onSide(k.price) && inBand(k.price)) cands.push({ price: k.price, label: k.label, source: 'key' });
+  }
+  for (const v of [...volumeNodes].sort((x, y) => y.volume - x.volume).slice(0, 2)) {
+    if (onSide(v.price) && inBand(v.price)) cands.push({ price: v.price, label: '成交密集区', source: 'volume' });
+  }
+  if (onSide(ema2004h) && inBand(ema2004h)) cands.push({ price: ema2004h, label: '4h EMA200', source: 'ema200' });
+  for (const p of liquidityPools.slice(0, 4)) {
+    if (onSide(p.price) && inBand(p.price)) {
+      cands.push({ price: p.price, label: `流动性池·${p.side === 'low' ? '等低' : '等高'}`, source: 'pool' });
+    }
+  }
+
+  // 去重（同价位 0.3% 内只留一个，优先 fib > key > 其他）
+  const priority: Record<PullbackLevel['source'], number> = { fib382: 0, fib500: 0, fib618: 0, fib786: 0, key: 1, volume: 2, ema200: 3, pool: 4 };
+  cands.sort((x, y) => priority[x.source] - priority[y.source]);
+  const dedup: PullbackLevel[] = [];
+  for (const c of cands) {
+    if (!dedup.some((d) => Math.abs(d.price - c.price) / c.price < 0.003)) dedup.push(c);
+  }
+  dedup.sort((x, y) => Math.abs(currentPrice - x.price) - Math.abs(currentPrice - y.price));
+  const pullbackLevels = dedup.slice(0, 6);
+
+  // ---- 最佳进场区：滑窗聚类（容差 0.8%），取成员最多且离现价最近的簇 ----
+  let entryZone: DailyPlan['entryZone'] = null;
+  const sorted = [...pullbackLevels].sort((x, y) => x.price - y.price);
+  for (let i = 0; i < sorted.length; i++) {
+    const grp = [sorted[i]];
+    for (let j = i + 1; j < sorted.length; j++) {
+      if ((sorted[j].price - sorted[i].price) / sorted[i].price <= 0.008) grp.push(sorted[j]);
+      else break;
+    }
+    if (grp.length >= 2) {
+      const lo = Math.min(...grp.map((g) => g.price));
+      const hi = Math.max(...grp.map((g) => g.price));
+      if (
+        !entryZone ||
+        grp.length > entryZone.methods.length ||
+        (grp.length === entryZone.methods.length && Math.abs(currentPrice - (lo + hi) / 2) < Math.abs(currentPrice - entryZone.mid))
+      ) {
+        entryZone = { low: lo, high: hi, mid: (lo + hi) / 2, methods: grp.map((g) => g.label) };
+      }
+    }
+  }
+  // 无重叠簇：回落到 fib 0.5–0.618 段（经典回调进场带）
+  if (!entryZone && leg) {
+    const f5 = leg.fibRetracements.find((x) => x.ratio === 0.5);
+    const f618 = leg.fibRetracements.find((x) => x.ratio === 0.618);
+    if (f5 && f618 && onSide(f5.price) && onSide(f618.price)) {
+      const lo = Math.min(f5.price, f618.price);
+      const hi = Math.max(f5.price, f618.price);
+      entryZone = { low: lo, high: hi, mid: (lo + hi) / 2, methods: ['回调50–61.8%带'] };
+    }
+  }
+
+  const stopHint = entryZone
+    ? isLong
+      ? roundPrice(entryZone.low * 0.994)
+      : roundPrice(entryZone.high * 1.006)
+    : null;
+
+  return {
+    bias: isLong ? 'long' : 'short',
+    biasText: isLong
+      ? '多头方向：等回调至进场区分批低吸，跌破保护位观望'
+      : '空头方向：等反抽至进场区分批高空，升破保护位观望',
+    pullbackLevels,
+    entryZone,
+    stopHint,
+    invalidationPrice: invalidation ? invalidation.price : null,
+  };
+}
+
 // ==================== 预案生成 ====================
 
 export interface TradePlan {
@@ -948,6 +1077,8 @@ export interface StructureAnalysis {
   biasText: string;
   /** 方向信号（实证校准：EMA200趋势中的MR极端回调，替代原bias作为方向依据） */
   directionSignal: DirectionSignal;
+  /** 今日作战计划（任何时候都有方向/回调位/进场区答案） */
+  dailyPlan: DailyPlan;
 }
 
 export interface StructureInput {
@@ -1212,5 +1343,16 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
     bias,
     biasText,
     directionSignal,
+    dailyPlan: calcDailyPlan({
+      currentPrice,
+      e200Side: directionSignal.e200Side,
+      leg,
+      keyLevels,
+      volumeNodes: vNodes,
+      liquidityPools,
+      // 4h EMA200（数据不足 200 根时退化为 EMA60，仅作参考位）
+      ema2004h: k4h.length >= 200 ? emaSeries(k4h.map((k) => k.close), 200).slice(-1)[0] : t4h.ema60,
+      invalidation,
+    }),
   };
 }

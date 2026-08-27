@@ -138,6 +138,11 @@ interface ProfitLineData {
   invalidation: { price: number; note: string } | null;
   liquidityPools?: { price: number; side: 'high' | 'low'; distancePct: number; formedAt?: number; firstAt?: number }[];
   fairValueGaps?: { low: number; high: number; ce: number; dir: 'bull' | 'bear'; distancePct: number; formedAt?: number }[];
+  dailyPlan?: {
+    bias: 'long' | 'short';
+    entryZone: { low: number; high: number; mid: number; methods: string[] } | null;
+    stopHint: number | null;
+  } | null;
 }
 
 export default function KlineChart({ isFullscreen = false, onToggleFullscreen }: KlineChartProps) {
@@ -661,6 +666,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
               ov = Math.max(0, Math.min(hi, zHi) - Math.max(lo, zLo)) / Math.max(1e-9, hi - lo);
             }
             if (ov <= 0.5) zoneFill(yOf(c.high), yOf(c.low), projX0, '245, 158, 11', 0.26);
+          }
+          // ===== 今日进场区（蓝色透明框：多头=现价下方回调带，空头=上方反抽带；纯色块无文字） =====
+          const dp = pd.dailyPlan;
+          if (dp?.entryZone) {
+            zoneFill(yOf(dp.entryZone.high), yOf(dp.entryZone.low), projX0, '59, 130, 246', 0.16);
           }
           // ===== 信号未触发：测算观察模式（纯透明框，零文字零线条） =====
           // 盈利投影绿框（现价→汇流区近缘）+ 汇流琥珀框（上方统一绘制）。

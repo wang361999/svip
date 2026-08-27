@@ -136,6 +136,14 @@ interface AnalysisData {
   narrative?: Narrative | null;
   narrativeAt?: number | null;
   narrativeSource?: 'ai' | 'template' | null;
+  dailyPlan?: {
+    bias: 'long' | 'short';
+    biasText: string;
+    pullbackLevels: { price: number; label: string }[];
+    entryZone: { low: number; high: number; mid: number; methods: string[] } | null;
+    stopHint: number | null;
+    invalidationPrice: number | null;
+  } | null;
   model: string;
   cached: boolean;
 }
@@ -478,6 +486,75 @@ export default function AiAnalysisCard() {
                   </div>
                 </div>
               </div>
+
+              {/* 今日作战计划（任何时候都有：方向 / 回调位 / 最佳进场区） */}
+              {data.dailyPlan && (
+                <div className="rounded-lg bg-dark-800/40 border border-dark-700/40 p-3.5">
+                  <div className="flex items-center justify-between gap-2 mb-2.5">
+                    <span className="text-dark-300 text-xs font-semibold">今日作战计划</span>
+                    <span
+                      className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                        data.dailyPlan.bias === 'long'
+                          ? 'text-green-400 border-green-500/30 bg-green-500/10'
+                          : 'text-red-400 border-red-500/30 bg-red-500/10'
+                      }`}
+                    >
+                      {data.dailyPlan.bias === 'long' ? '看多 · 等回调低吸' : '看空 · 等反抽高空'}
+                    </span>
+                  </div>
+
+                  {data.dailyPlan.entryZone ? (
+                    <div className="grid grid-cols-3 gap-2 mb-2.5">
+                      <div className="rounded-md bg-dark-900/60 border border-dark-700/50 px-2.5 py-2">
+                        <p className="text-dark-500 text-[10px] mb-0.5">最佳进场区</p>
+                        <p className="text-dark-100 font-mono text-xs leading-tight">
+                          {formatPrice(data.dailyPlan.entryZone.low)}–{formatPrice(data.dailyPlan.entryZone.high)}
+                        </p>
+                        <p className="text-dark-500 text-[10px] mt-0.5 truncate" title={data.dailyPlan.entryZone.methods.join(' + ')}>
+                          {data.dailyPlan.entryZone.methods.join('+')}
+                        </p>
+                      </div>
+                      <div className="rounded-md bg-dark-900/60 border border-dark-700/50 px-2.5 py-2">
+                        <p className="text-dark-500 text-[10px] mb-0.5">保护位</p>
+                        <p className="text-amber-400 font-mono text-xs leading-tight">
+                          {data.dailyPlan.stopHint != null ? formatPrice(data.dailyPlan.stopHint) : '—'}
+                        </p>
+                        <p className="text-dark-500 text-[10px] mt-0.5">区域外沿 −0.6%</p>
+                      </div>
+                      <div className="rounded-md bg-dark-900/60 border border-dark-700/50 px-2.5 py-2">
+                        <p className="text-dark-500 text-[10px] mb-0.5">距进场区</p>
+                        <p className="text-dark-100 font-mono text-xs leading-tight">
+                          {data.dailyPlan.bias === 'long'
+                            ? ((data.currentPrice / data.dailyPlan.entryZone.high - 1) * 100).toFixed(1)
+                            : ((data.dailyPlan.entryZone.low / data.currentPrice - 1) * 100).toFixed(1)}
+                          %
+                        </p>
+                        <p className="text-dark-500 text-[10px] mt-0.5">
+                          {data.dailyPlan.bias === 'long' ? '回调幅度' : '反抽幅度'}
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-dark-500 text-xs mb-2.5">当前无有效进场区（回调位均超 8% 或结构缺失），等信号触发再看预案。</p>
+                  )}
+
+                  {data.dailyPlan.pullbackLevels.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {data.dailyPlan.pullbackLevels.map((p, i) => (
+                        <span
+                          key={i}
+                          className="text-[10px] px-1.5 py-0.5 rounded bg-dark-900/60 border border-dark-700/50 text-dark-400"
+                        >
+                          {p.label} <span className="text-dark-200 font-mono">{formatPrice(p.price)}</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-dark-500 text-[10px] mt-2">
+                    {data.dailyPlan.biasText}；此为结构参考位（非触发信号），激进单到此为止、破保护位离场。
+                  </p>
+                </div>
+              )}
 
               {/* 交易预案（仅 D 短线 / E 波段，信号触发时出现） */}
               {data.plans.length > 0 && (
