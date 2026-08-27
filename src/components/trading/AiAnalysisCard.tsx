@@ -133,6 +133,17 @@ interface AnalysisData {
   extendedTarget?: ProfitTarget | null;
   eta?: { bars: number; text: string } | null;
   atr?: number;
+  directionSignal?: {
+    active: boolean;
+    dir: 'long' | 'short';
+    score: number;
+    stateText: string;
+    distanceToTrigger: number;
+    trendFilterPassed: boolean;
+    e200Side: 'above' | 'below';
+    historyWinRatePct: number;
+    evidenceText: string;
+  };
   narrative: Narrative;
   narrativeSource: 'ai' | 'template';
   model: string;
@@ -412,6 +423,59 @@ export default function AiAnalysisCard() {
 
           {!loading && data && (
             <>
+              {/* 方向信号卡（实证校准，替代定性偏多偏空作为方向依据） */}
+              {data.directionSignal && (
+                <div
+                  className={`rounded-lg border p-3.5 ${
+                    data.directionSignal.active
+                      ? data.directionSignal.dir === 'long'
+                        ? 'border-emerald-500/40 bg-emerald-500/10'
+                        : 'border-rose-500/40 bg-rose-500/10'
+                      : 'border-dark-600/60 bg-dark-700/30'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                        data.directionSignal.active
+                          ? data.directionSignal.dir === 'long'
+                            ? 'bg-emerald-500/20 text-emerald-400'
+                            : 'bg-rose-500/20 text-rose-400'
+                          : 'bg-dark-600/60 text-dark-300'
+                      }`}>
+                        {data.directionSignal.active
+                          ? `${data.directionSignal.dir === 'long' ? '▲ 做多' : '▼ 做空'} · 已触发`
+                          : data.directionSignal.distanceToTrigger < 0.15
+                            ? '◆ 接近信号'
+                            : '○ 无信号'}
+                      </span>
+                      <span className="text-dark-300 text-xs">方向信号 · 实证校准</span>
+                    </div>
+                    {data.directionSignal.active && (
+                      <span className="text-emerald-400 font-mono text-lg font-bold">
+                        {data.directionSignal.historyWinRatePct}%
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-dark-300 text-xs mt-2 leading-relaxed">
+                    {data.directionSignal.active ? (
+                      <>
+                        {data.directionSignal.stateText} · MR {data.directionSignal.score} ·{' '}
+                        {data.directionSignal.e200Side === 'above' ? 'EMA200之上（大多头结构）' : 'EMA200之下（大空头结构）'}
+                        。历史72h方向命中 <span className="text-dark-100 font-medium">{data.directionSignal.historyWinRatePct}%</span>
+                      </>
+                    ) : (
+                      <>
+                        {data.directionSignal.stateText} · MR {data.directionSignal.score}（
+                        {data.directionSignal.e200Side === 'above' ? '多头结构，等深度回调至超跌位' : '空头结构，等反弹至超涨位'}，距阈值{' '}
+                        {data.directionSignal.distanceToTrigger}）
+                      </>
+                    )}
+                  </p>
+                  <p className="text-dark-500 text-[10px] mt-1.5 leading-relaxed">{data.directionSignal.evidenceText}</p>
+                </div>
+              )}
+
               {/* 结论区 */}
               <div className={`rounded-lg border p-3.5 ${bias.badge.replace('text-', 'border-').replace(/bg-\S+/, (m) => m.replace('/15', '/10'))}`}>
                 <div className="flex items-start justify-between gap-3">

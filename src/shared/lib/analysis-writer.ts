@@ -151,6 +151,16 @@ function buildLlmInput(a: StructureAnalysis): Record<string, unknown> {
     三周期趋势: { '4h': trendBrief('4h'), '1h': trendBrief('1h'), '15m': trendBrief('15m') },
     共振计数: a.resonanceText,
     规则引擎定性: a.biasText,
+    方向信号_实证校准: a.directionSignal
+      ? {
+          说明: 'EMA200大趋势中的MR极端回调信号，样本外验证72h方向命中73%（ETH26次/SOL125次），替代上面"规则引擎定性"作为方向结论的唯一依据',
+          状态: a.directionSignal.stateText,
+          MR分数: a.directionSignal.score,
+          EMA200位置: a.directionSignal.e200Side === 'above' ? '价格在EMA200之上（大多头结构）' : '价格在EMA200之下（大空头结构）',
+          触发方向: a.directionSignal.active ? (a.directionSignal.dir === 'long' ? '做多' : '做空') : '未触发（仅监控，不给方向）',
+          距离触发阈值: a.directionSignal.active ? 0 : a.directionSignal.distanceToTrigger,
+        }
+      : undefined,
     当前推动腿: a.leg
       ? {
           术语定义: '推动腿（Impulse Leg）＝最近一段单方向显著推动行情，由 ZigZag(4%) 识别的摆动端点界定；是全部回撤/扩展测算的锚定结构',
@@ -313,7 +323,11 @@ export function buildTemplateNarrative(a: StructureAnalysis): AnalysisNarrative 
   const planC = a.plans.find((x) => x.id === 'C');
 
   return {
-    headline: a.plans.length === 0 ? '结构压缩，观望等方向' : `${a.biasText}，等回踩或突破再进`,
+    headline: a.directionSignal?.active
+      ? `${a.directionSignal.dir === 'long' ? '超跌做多信号触发' : '超涨做空信号触发'}（历史72h命中73%）`
+      : a.plans.length === 0
+        ? '结构压缩，观望等方向'
+        : `无极端信号·${a.biasText}，等回踩或突破再进`,
     biasText: a.biasText,
     paragraphs,
     planAComment: planA

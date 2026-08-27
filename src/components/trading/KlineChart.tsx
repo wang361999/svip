@@ -555,7 +555,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     const drawnPrices: number[] = [];
     const refPrice = pd?.currentPrice || (klines.length ? klines[klines.length - 1].close : 1);
     if (pd && showProfit) {
-      const pa = pd.plans.find((p) => p.id === 'A');
+      // 信号预案（C）优先：有实证校准依据；未触发时回落到结构方案 A
+      const pa = pd.plans.find((p) => p.id === 'C') || pd.plans.find((p) => p.id === 'A');
       if (pa) drawnPrices.push(pa.entry, pa.stop, pa.tp1, pa.tp2);
     }
     const isDupPrice = (p: number) => drawnPrices.some((x) => Math.abs(x - p) / refPrice < 0.002);
@@ -639,7 +640,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         if (xLast != null && xPrev != null) {
           const step = Math.max(1, Math.abs(xLast - xPrev));
           const projX0 = Math.max(0, xLast - step * 18);
-          const pa = pd.plans.find((p) => p.id === 'A');
+          // 信号预案（C）优先：色带跟随实证信号方向；未触发时画结构方案 A
+          const pa = pd.plans.find((p) => p.id === 'C') || pd.plans.find((p) => p.id === 'A');
           if (pa) {
             // ===== 纯色带画法（按反馈：无线无字，颜色即语义；透明度加深保证醒目） =====
             // 红 = 风险区（入场↔止损）；浅绿 = TP1 段；深绿 = TP2 段。

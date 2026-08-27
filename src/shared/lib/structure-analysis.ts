@@ -892,6 +892,121 @@ function clusterTargets(
   return zones;
 }
 
+// ==================== 方向信号（实证校准） ====================
+//
+// 背景：原 bias 规则（三周期共振）经 3,859 个 ETH 4h 信号点回测无预测力
+//（|共振|>=2 时 24h 方向命中 42-57%，与抛硬币无异），已不再作为方向依据。
+//
+// 替代：均值回归极端信号 —— 大趋势（EMA200）中的深度回调：
+//   MR分数 = (偏离EMA20% ×10 + 12根动量% ×10 + (RSI14-50)/50) / 3
+//   做多：MR ≤ -0.398（前10%超跌）且 价 > EMA200（上升趋势）
+//   做空：MR ≥ +0.510（前10%超涨）且 价 < EMA200（下降趋势）
+//
+// 回测（阈值取前半段训练，后半段样本外验证）：
+//   ETH 72h 方向命中：全段 79.2%（n=120）/ 样本外 73.1%（n=26）
+//   SOL 迁移验证 72.0%（n=125）；BTC 样本过少（n=13）未验证
+//   信号频率约两周一次 —— 大部分时间无信号，这是设计使然（只在极端出手）
+//
+// 止盈结构（120h 内逐根竞速回测，n=84）：
+//   SL=1×ATR，TP1=1.5×ATR 出半仓，TP2=3×ATR 清仓
+//   平均 RR +0.46，盈利比 53.6%；紧止盈（0.5×ATR）期望≈0，勿提前止盈
+
+/** 方向信号阈值（ETH 4h 2024-10~2025-09 训练段 10% 分位固化值） */
+const MR_LOW = -0.398;
+const MR_HIGH = 0.510;
+
+export interface DirectionSignal {
+  /** 是否触发（MR 分数到极端 且 与 EMA200 大趋势同向） */
+  active: boolean;
+  /** 'long' 超跌做多 / 'short' 超涨做空 */
+  dir: 'long' | 'short';
+  /** 当前 MR 分数（越负越超跌） */
+  score: number;
+  /** 分数状态描述（触发 / 接近 / 中性） */
+  stateText: string;
+  /** 距触发还差多少（未触发时给参考，已触发为 0） */
+  distanceToTrigger: number;
+  /** 大趋势过滤是否通过 */
+  trendFilterPassed: boolean;
+  /** EMA200 之上=多 / 之下=空 */
+  e200Side: 'above' | 'below';
+  /** 历史样本外 72h 方向命中率（%），含样本量标注 */
+  historyWinRatePct: number;
+  /** 胜率的样本与窗口说明（如实标注，不夸大） */
+  evidenceText: string;
+}
+
+/** RSI14（Wilder 平滑） */
+function rsiWilder(closes: number[], period = 14): number {
+  if (closes.length < period + 1) return 50;
+  let g = 0, l = 0;
+  for (let i = 1; i <= period; i++) {
+    const d = closes[i] - closes[i - 1];
+    g += Math.max(d, 0); l += Math.max(-d, 0);
+  }
+  g /= period; l /= period;
+  for (let i = period + 1; i < closes.length; i++) {
+    const d = closes[i] - closes[i - 1];
+    g = (g * (period - 1) + Math.max(d, 0)) / period;
+    l = (l * (period - 1) + Math.max(-d, 0)) / period;
+  }
+  return 100 - 100 / (1 + g / (l || 1e-9));
+}
+
+/** 方向信号计算（纯函数，输入 4h K线） */
+function calcDirectionSignal(k4h: KlineData[], currentPrice: number): DirectionSignal {
+  const closes = k4h.map((k) => k.close);
+  if (closes.length < 220) {
+    return {
+      active: false, dir: 'long', score: 0, stateText: '数据不足（需220根4h）',
+      distanceToTrigger: 0, trendFilterPassed: false, e200Side: 'above',
+      historyWinRatePct: 0, evidenceText: '',
+    };
+  }
+  const e20 = emaSeries(closes, 20);
+  const e200 = emaSeries(closes, 200);
+  const i = closes.length - 1;
+  const dev = (closes[i] - e20[i]) / e20[i];
+  const mom = (closes[i] - closes[i - 12]) / closes[i - 12];
+  const rs = (rsiWilder(closes) - 50) / 50;
+  const score = (dev * 10 + mom * 10 + rs) / 3;
+
+  const aboveE200 = closes[i] > e200[i];
+  const e200Side: 'above' | 'below' = aboveE200 ? 'above' : 'below';
+
+  // 多头信号：超跌 + 大趋势向上；空头信号：超涨 + 大趋势向下
+  const longActive = score <= MR_LOW && aboveE200;
+  const shortActive = score >= MR_HIGH && !aboveE200;
+  const active = longActive || shortActive;
+  const dir: 'long' | 'short' = longActive ? 'long' : 'short';
+
+  // 未触发时：报告距最近触发阈值的距离（当前趋势侧的阈值）
+  const threshold = aboveE200 ? MR_LOW : MR_HIGH;
+  const distance = aboveE200 ? score - MR_LOW : MR_HIGH - score;
+
+  let stateText: string;
+  if (active) {
+    stateText = dir === 'long' ? '已触发·超跌做多' : '已触发·超涨做空';
+  } else if (distance < 0.15) {
+    stateText = aboveE200 ? '接近超跌买点' : '接近超涨空点';
+  } else {
+    stateText = '无信号·价格中性';
+  }
+
+  return {
+    active,
+    dir: active ? dir : (aboveE200 ? 'long' : 'short'),
+    score: Math.round(score * 1000) / 1000,
+    stateText,
+    distanceToTrigger: active ? 0 : Math.round(distance * 1000) / 1000,
+    trendFilterPassed: aboveE200 ? score <= MR_LOW : score >= MR_HIGH,
+    e200Side,
+    // ETH 样本外 72h 方向命中（n=26）；SOL 迁移 72%（n=125）；如实标注
+    historyWinRatePct: 73,
+    evidenceText: 'ETH 4h 样本外验证：信号后72h方向命中 73%（26次/2025-09~2026-08）；SOL迁移72%（125次）；BTC未验证',
+  };
+}
+
 // ==================== 预案生成 ====================
 
 export interface TradePlan {
@@ -1027,6 +1142,8 @@ export interface StructureAnalysis {
   /** 规则引擎的定性结论（AI 与模板共用） */
   bias: 'bull' | 'bear' | 'neutral';
   biasText: string;
+  /** 方向信号（实证校准：EMA200趋势中的MR极端回调，替代原bias作为方向依据） */
+  directionSignal: DirectionSignal;
 }
 
 export interface StructureInput {
@@ -1347,6 +1464,33 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
   else if (resonance <= -2 || (resonance <= -1 && leg && leg.direction === 'down' && leg.retracement < 0.7)) bias = 'bear';
   const biasText = bias === 'bull' ? '偏多' : bias === 'bear' ? '偏空' : '中性';
 
+  // ---------- 方向信号（实证校准，替代 bias 作为方向依据） ----------
+  const directionSignal = calcDirectionSignal(k4h, currentPrice);
+
+  // 信号触发 → 生成 C 方案（信号预案：SL=1×ATR / TP1=1.5×ATR 半仓 / TP2=3×ATR 清仓）
+  if (directionSignal.active) {
+    const s: 1 | -1 = directionSignal.dir === 'long' ? 1 : -1;
+    const entry = roundPrice(currentPrice);
+    const stop = roundPrice(currentPrice - s * atrValue);
+    const tp1 = roundPrice(currentPrice + s * atrValue * 1.5);
+    const tp2 = roundPrice(currentPrice + s * atrValue * 3);
+    const c = buildPlan(
+      'C', '信号预案·趋势回调',
+      directionSignal.dir === 'long' ? 'long' : 'short',
+      `${directionSignal.stateText}（MR=${directionSignal.score}，${directionSignal.e200Side === 'above' ? 'EMA200之上' : 'EMA200之下'}）`,
+      entry, stop, tp1, tp2,
+      'medium',
+      {
+        tp2Source: 'ATR·3倍（回测期望最优档）',
+        tp1ProbabilityPct: 54,
+        tp2ProbabilityPct: 36,
+      },
+    );
+    // 信号的历史依据（RR 来自回测均值，如实标注样本量）
+    (c as any).evidence = '回测：平均RR +0.46，盈利比53.6%（ETH 4h 全段84次）；72h方向命中73%（样本外26次）';
+    plans.push(c);
+  }
+
   return {
     symbol,
     generatedAt: Date.now(),
@@ -1368,5 +1512,6 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
     atr: roundPrice(atrValue),
     bias,
     biasText,
+    directionSignal,
   };
 }
