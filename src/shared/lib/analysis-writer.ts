@@ -121,8 +121,8 @@ function buildLlmInput(a: StructureAnalysis): Record<string, unknown> {
     盈亏比TP1: p.rrTp1,
     盈亏比TP2: p.rrTp2,
     加权盈亏比: p.rrBlended,
-    触及概率TP1: p.tp1ProbabilityPct != null ? `${p.tp1ProbabilityPct}%（自入场价，30根4h内估算）` : null,
-    触及概率TP2: p.tp2ProbabilityPct != null ? `${p.tp2ProbabilityPct}%（自入场价，30根4h内估算）` : null,
+    触及概率TP1: p.tp1ProbabilityPct != null ? `${p.tp1ProbabilityPct}%（条件概率：触发条件确认入场后，自入场价30根4h内触及；按入场情境校准的历史回测值，非理论推导）` : null,
+    触及概率TP2: p.tp2ProbabilityPct != null ? `${p.tp2ProbabilityPct}%（条件概率：触发条件确认入场后，自入场价30根4h内触及；按入场情境校准的历史回测值，非理论推导）` : null,
   });
 
   const trendBrief = (tf: '4h' | '1h' | '15m') => {
@@ -163,7 +163,7 @@ function buildLlmInput(a: StructureAnalysis): Record<string, unknown> {
       目标位: (a.profitTargets || []).map((t) => ({
         方法: t.label,
         价格: t.price,
-        触及概率: `${t.probabilityPct}%（自现价，30根4h内估算）`,
+        触及概率: `${t.probabilityPct}%（自现价，30根4h内，历史回测校准值）`,
       })),
       汇流止盈区: a.confluence
         ? {

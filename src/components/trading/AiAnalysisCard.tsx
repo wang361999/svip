@@ -225,6 +225,11 @@ export default function AiAnalysisCard() {
             加权盈亏比 <span className="text-amber-400 font-mono font-semibold">{plan.rrBlended}</span>
           </span>
         </div>
+        {(plan.tp1ProbabilityPct != null || plan.tp2ProbabilityPct != null) && (
+          <p className="mt-1.5 text-[10px] text-dark-500">
+            TP 百分比为条件概率：触发条件确认入场后 30 根 4h 内触及（历史回测校准值）；未触发前不成立
+          </p>
+        )}
         {plan.tp2Source && (
           <div className="mt-1.5 text-[11px] text-amber-400/90">
             TP2 依据：{plan.tp2Source}
@@ -435,7 +440,7 @@ export default function AiAnalysisCard() {
                             </span>
                           </div>
                           <p className="text-dark-500 text-[10px] mt-1">
-                            中值 {formatPrice(data.confluence.mid)} · 自现价 30 根 4h 内触及概率（ATR 估算）
+                            中值 {formatPrice(data.confluence.mid)} · 自现价 30 根 4h 内触及概率（历史回测校准值）
                           </p>
                         </div>
                       )}
@@ -459,7 +464,7 @@ export default function AiAnalysisCard() {
                       {data.eta && <p className="text-dark-500 text-[11px]">{data.eta.text}</p>}
                       {data.atr != null && data.atr > 0 && (
                         <p className="text-dark-600 text-[10px]">
-                          概率基于 4h ATR(14) = {data.atr} 的随机游走估算，仅供参考非精确预测
+                          概率为 ETH/BTC/SOL 4h 约 22 个月走查回放的分距离实测校准值（仅覆盖三大主流币，极端行情可能偏离），非理论推导，仅供参考非精确预测
                         </p>
                       )}
                     </div>

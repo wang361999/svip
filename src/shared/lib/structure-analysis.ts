@@ -9,6 +9,11 @@
  *
  * 设计原则：纯函数、零副作用、确定性 —— 同样的 K 线永远算出同样的数字。
  * AI 层只负责把这些数字组织成文字，不允许自己算数。
+ *
+ * 触及概率为经验校准值：基于 ETH/BTC/SOL 4h×4000 根（2024-10~2026-08）
+ * 走查回放 16,606 个目标位样本统计得出（见 TOUCH_CALIB），非理论模型推导。
+ * 校准数据的局限：仅覆盖三个主流币、约 22 个月行情；极端行情与小币种
+ * 的实际触及率可能偏离校准值。
  */
 
 import { KlineData } from './market-data';
@@ -394,8 +399,8 @@ export interface LiquidityPool {
 /**
  * 等高/等低点对 → 流动性池
  * 判定：两摆动点价差 < 0.3%，间隔 >= 8 根；第二端点确认后至今池位未被扫过（未破=池子还在）
- * 回测口径（Binance 4h×1000 根，ETH/BTC/SOL）：触及率 68-76%，触及后反转率 62-78%，
- * 平均扫过幅度 0.85-0.93×ATR —— 池位本身即可作为止盈挂单位
+ * 实测口径（ETH/BTC/SOL 4h×4000 根走查回放，2024-10~2026-08，n≈3000）：
+ * 30 根内触及率 32%，60 根 41%，90 根 49% —— 池是中期参考位，不是短期必达位
  */
 function findLiquidityPools(klines: KlineData[], currentPrice: number): LiquidityPool[] {
   const seg = klines.slice(-120);
@@ -464,7 +469,9 @@ export interface FairValueGap {
 /**
  * 三K失衡缺口 → FVG
  * 判定：K1.high < K3.low（上缺口）或 K1.low > K3.high（下缺口），宽 >= 0.15×ATR，且 CE 至今未被触及
- * 回测口径（Binance 4h×1000 根，ETH/BTC/SOL）：50% CE 回补率 80-88%，是所有目标位中"必达率"最高的一类
+ * 实测口径（ETH/BTC/SOL 4h×4000 根走查回放，2024-10~2026-08，n≈5900）：
+ * 30 根内 CE 回补率 38%，60 根 48%，90 根 54%，180 根 61% —— 是有效的中期目标位，
+ * 但并非"必达"，使用时按触及概率折算而非当作确定事件
  */
 function findFairValueGaps(klines: KlineData[], currentPrice: number, atrValue: number): FairValueGap[] {
   const seg = klines.slice(-90);
@@ -555,15 +562,109 @@ function normCdf(z: number): number {
 }
 
 /**
- * 无漂移随机游走近似下，n 根 K 线内价格触及目标的概率
- * 反射原理：P(max ≥ T) = 2·P(S_n ≥ T)，按 ATR 波动率归一化
- * 结果截断在 [1%, 95%]，只做量级参考不做精确预测
+ * 触及概率经验校准表（30 根 4h 窗口）
+ *
+ * 数据来源：ETH/BTC/SOL USDT 4h×4000 根（2024-10 ~ 2026-08）走查回放，
+ * 16,606 个利润测算目标位样本，按归一化距离 d=|ln(T/P)|/(σ√30) 分桶统计
+ * 实际 30 根内触及率，再做加权等渗回归（保证单调不增）。
+ * 表项 [d0, rate] 为 [d0, d0+0.1) 桶的平均触及率（查表取桶中点插值，见 lookupCalib）。
+ *
+ * 为何不用理论公式：原反射原理公式 2·(1-Φ(d)) 假设零漂移随机游走，
+ * 实测系统性高估 15~30 个百分点（d=0.5 处声称 62%、实际 39.5%；
+ * d=1.0 处声称 31%、实际 13.8%）——趋势市的持续性与均值回复让
+ * 远目标的真实触及率远低于理论值。此表为实测值，无模型假设。
+ */
+const TOUCH_CALIB: [number, number][] = [
+  [0.0, 0.903], // n=827
+  [0.1, 0.810], // n=1837
+  [0.2, 0.676], // n=1704
+  [0.3, 0.584], // n=1386
+  [0.4, 0.476], // n=1310
+  [0.5, 0.395], // n=1271
+  [0.6, 0.285], // n=1163
+  [0.7, 0.262], // n=1083
+  [0.8, 0.212], // n=960
+  [0.9, 0.186], // n=885
+  [1.0, 0.138], // n=741
+  [1.1, 0.103], // n=669
+  [1.2, 0.100], // n=521
+  [1.3, 0.087], // n=772
+  [1.5, 0.064], // n=280
+  [1.6, 0.064], // n=234
+  [1.7, 0.049], // n=432
+];
+
+/**
+ * 自锚定价起 30 根 4h 内触及目标的概率（经验校准值，0-1）
+ * d 为按 ATR 归一化的对数距离；仅校准于 PROB_BARS=30 窗口
  */
 function touchProbability(anchorPrice: number, target: number, sigmaPerBar: number, bars: number): number {
   if (anchorPrice <= 0 || target <= 0 || sigmaPerBar <= 0 || bars <= 0) return 0;
-  const z = Math.abs(Math.log(target / anchorPrice)) / (sigmaPerBar * Math.sqrt(bars));
-  const p = 2 * (1 - normCdf(z));
-  return Math.min(0.95, Math.max(0.01, p));
+  const d = Math.abs(Math.log(target / anchorPrice)) / (sigmaPerBar * Math.sqrt(bars));
+  return lookupCalib(TOUCH_CALIB, d, 0.1); // 0.1 宽分桶拟合
+}
+
+/**
+ * TP 触及概率校准表 —— 分入场情境（同样距离下两种情境的实际触及率差近一倍）
+ *
+ * 数据来源与 TOUCH_CALIB 同批走查回放，但按预案实际用法条件化：
+ *   A 回调入场：价格回踩触及入场位后，出现止跌确认K线（收盘回到入场位有利侧）起算
+ *   B 突破回踩：突破触及→回踩触及→站稳确认K线起算（对齐"突破后回踩不破"触发说明）
+ * 确认K线为 4h 级别对"15m 止跌结构"的近似代理。
+ * 样本：A n=2644 / B n=2028；样本外（时间切分后30%）验证偏差 A +7.7pp / B +1.5pp。
+ * 表项 [d0, rate] 为 [d0, d0+0.15) 桶的平均触及率（查表取桶中点插值，见 lookupCalib）。
+ */
+const TP_CALIB_PULLBACK: [number, number][] = [
+  [0.0, 0.904], // n=240
+  [0.15, 0.796], // n=554
+  [0.3, 0.588], // n=643
+  [0.45, 0.468], // n=457
+  [0.6, 0.333], // n=303
+  [0.75, 0.293], // n=184
+  [0.9, 0.202], // n=129
+  [1.05, 0.174], // n=69
+];
+const TP_CALIB_BREAKOUT: [number, number][] = [
+  [0.0, 0.953], // n=779
+  [0.15, 0.862], // n=651
+  [0.3, 0.745], // n=282
+  [0.45, 0.514], // n=142
+  [0.6, 0.278], // n=79
+];
+
+/**
+ * 校准表查表（线性插值）。
+ *
+ * 表项 [d0, rate] 是分桶统计的"桶内平均触及率"（桶区间 [d0, d0+step)），
+ * 不是 d0 单点的率 —— 所以插值节点取桶中点（d0 + step/2），而不是左端点。
+ * 若直接在左端点上插值，桶内样本会被系统性拉向下一桶的低率，整体压低预测
+ * （回放检验：A 情境预测均值偏差 -6.8pp、B 情境 -3.3pp，改中点插值后
+ * 分别收敛到 -1.1pp / +2.6pp，Brier 同步下降）。
+ * 表外：d 小于首桶中点取首值，超过末桶中点取末值。
+ */
+function lookupCalib(table: [number, number][], d: number, step: number): number {
+  if (table.length === 0) return 0;
+  const mid = (i: number) => table[i][0] + step / 2;
+  if (d <= mid(0)) return table[0][1];
+  for (let i = 1; i < table.length; i++) {
+    if (d <= mid(i)) {
+      const p0 = table[i - 1][1];
+      const p1 = table[i][1];
+      const w = (d - mid(i - 1)) / (mid(i) - mid(i - 1));
+      return p0 + w * (p1 - p0);
+    }
+  }
+  return table[table.length - 1][1];
+}
+
+/**
+ * 自入场价起 30 根 4h 内触及 TP 的概率（按入场情境查对应校准表，0-1）
+ * ctx: 'pullback'=A回调确认入场 / 'breakout'=B突破回踩确认入场
+ */
+function tpProbability(entry: number, tp: number, sigmaPerBar: number, bars: number, ctx: 'pullback' | 'breakout'): number {
+  if (entry <= 0 || tp <= 0 || sigmaPerBar <= 0 || bars <= 0) return 0;
+  const d = Math.abs(Math.log(tp / entry)) / (sigmaPerBar * Math.sqrt(bars));
+  return lookupCalib(ctx === 'pullback' ? TP_CALIB_PULLBACK : TP_CALIB_BREAKOUT, d, 0.15); // 0.15 宽分桶拟合
 }
 
 /** 取方向侧最近的一个位（dir=1 上方 / -1 下方，限制最大距离） */
@@ -774,6 +875,9 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
 
   const sigmaPerBar = currentPrice > 0 ? atrValue / currentPrice : 0;
   const probFrom = (anchor: number, tp: number) => Math.round(touchProbability(anchor, tp, sigmaPerBar, PROB_BARS) * 100);
+  // 预案 TP 概率：按入场情境查对应校准表（A=回调确认 / B=突破回踩确认）
+  const tpProbFrom = (entry: number, tp: number, ctx: 'pullback' | 'breakout') =>
+    Math.round(tpProbability(entry, tp, sigmaPerBar, PROB_BARS, ctx) * 100);
 
   let profitTargets: ProfitTarget[] = [];
   let confluence: ConfluenceZone | null = null;
@@ -816,12 +920,12 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
     // 江恩八分位（方向侧最近一档）
     const gn = nearestInDirection(gannLevels, currentPrice, dirSign, 0.15);
     if (gn) pushTarget('gann', gn.label, gn.price);
-    // 流动性池（方向侧最近一个未扫池：止损簇扫荡位，触及后反转率 62-86%）
+    // 流动性池（方向侧最近一个未扫池：止损簇扫荡位，实测30根触及率约32%，中期参考位）
     const pool = liquidityPools
       .filter((p) => (p.price - currentPrice) * dirSign > currentPrice * 0.005)
       .sort((a, b) => (a.price - b.price) * dirSign)[0];
     if (pool) pushTarget('liquidity', `流动性池·${pool.side === 'high' ? '等高' : '等低'}`, pool.price);
-    // FVG 50% 回补位（方向侧最近一个未回补缺口，回补率 80-88%）
+    // FVG 50% 回补位（方向侧最近一个未回补缺口，实测30根回补率约38%，中期参考位）
     const fvg = fairValueGaps
       .filter((f) => (f.ce - currentPrice) * dirSign > currentPrice * 0.005)
       .sort((a, b) => (a.ce - b.ce) * dirSign)[0];
@@ -872,8 +976,8 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
       plans.push(
         buildPlan('A', '回调做多（首选）', 'long', `回踩 ${roundPrice(entryA)} 需求区（本腿 61.8% 回撤），15m 出现止跌结构后入场`, entryA, stopA, tp1A, tp2A, 'high', {
           tp2Source: tp2SourceA,
-          tp1ProbabilityPct: probFrom(entryA, tp1A),
-          tp2ProbabilityPct: probFrom(entryA, tp2A),
+          tp1ProbabilityPct: tpProbFrom(entryA, tp1A, 'pullback'),
+          tp2ProbabilityPct: tpProbFrom(entryA, tp2A, 'pullback'),
         }),
       );
       const entryB = leg.endPrice * 1.005; // 突破前高后回踩
@@ -891,8 +995,8 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
       plans.push(
         buildPlan('B', '突破追多（备选）', 'long', `1h 放量突破 ${roundPrice(leg.endPrice)} 后回踩不破`, entryB, stopB, tp1B, tp2B, 'medium', {
           tp2Source: tp2SourceB,
-          tp1ProbabilityPct: probFrom(entryB, tp1B),
-          tp2ProbabilityPct: probFrom(entryB, tp2B),
+          tp1ProbabilityPct: tpProbFrom(entryB, tp1B, 'breakout'),
+          tp2ProbabilityPct: tpProbFrom(entryB, tp2B, 'breakout'),
         }),
       );
       invalidation = { price: roundPrice(stopA), note: `4h 收盘跌破 ${roundPrice(stopA)} 则本腿结构失效，做多预案作废` };
@@ -911,8 +1015,8 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
       plans.push(
         buildPlan('A', '反弹做空（首选）', 'short', `反弹至 ${roundPrice(entryA)} 供给区（本腿 61.8% 回撤），15m 出现滞涨结构后入场`, entryA, stopA, tp1A, tp2A, 'high', {
           tp2Source: tp2SourceA,
-          tp1ProbabilityPct: probFrom(entryA, tp1A),
-          tp2ProbabilityPct: probFrom(entryA, tp2A),
+          tp1ProbabilityPct: tpProbFrom(entryA, tp1A, 'pullback'),
+          tp2ProbabilityPct: tpProbFrom(entryA, tp2A, 'pullback'),
         }),
       );
       const entryB = leg.endPrice * 0.995;
@@ -929,8 +1033,8 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
       plans.push(
         buildPlan('B', '跌破追空（备选）', 'short', `1h 放量跌破 ${roundPrice(leg.endPrice)} 后反抽不破`, entryB, stopB, tp1B, tp2B, 'medium', {
           tp2Source: tp2SourceB,
-          tp1ProbabilityPct: probFrom(entryB, tp1B),
-          tp2ProbabilityPct: probFrom(entryB, tp2B),
+          tp1ProbabilityPct: tpProbFrom(entryB, tp1B, 'breakout'),
+          tp2ProbabilityPct: tpProbFrom(entryB, tp2B, 'breakout'),
         }),
       );
       invalidation = { price: roundPrice(stopA), note: `4h 收盘升破 ${roundPrice(stopA)} 则本腿结构失效，做空预案作废` };
