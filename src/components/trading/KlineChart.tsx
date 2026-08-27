@@ -600,57 +600,49 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     // ===== 第一层：利润测算 / 微构（区域 + 芯片优先占槽位，核心信息不让位） =====
     if (pd && (showProfit || showMicro)) {
 
-    // 标签芯片：深底 + 彩字 + 细描边的圆角胶囊，锚定透明测算框左边缘（x0）；
-      // 槽位写入统一 occupiedY（芯片高度 17px，间隔阈值 15px），射线标签后续避让
-      ctx.textBaseline = 'middle';
-      ctx.textAlign = 'center';
-      const chip = (yMid: number, text: string, color: string, border: string, x0 = 0) => {
-        ctx.font = '600 10px -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif';
-        const cw = ctx.measureText(text).width + 14;
-        const ch = 17;
-        const cx = x0 + 4;
-        // 碰撞时先上让 18px 再下让，仍冲突才丢弃（薄区域不丢价格标签）
-        let mid = yMid;
-        if (occupiedY.some((sy) => Math.abs(sy - mid) < 16)) {
-          mid = yMid - 18;
-          if (occupiedY.some((sy) => Math.abs(sy - mid) < 16)) {
-            mid = yMid + 18;
-            if (occupiedY.some((sy) => Math.abs(sy - mid) < 16)) return;
-          }
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+
+    // 右缘纯文字标签：无底框无边框，颜色即语义（TradingView 头寸工具读数风格）；
+    // 右对齐贴价格轴一侧，碰撞时上下让 12px；深色描边保证压 K 线时可读
+    const tag = (y: number, text: string, color: string) => {
+      let yy = y;
+      if (occupiedY.some((sy) => Math.abs(sy - yy) < 12)) {
+        yy = y - 12;
+        if (occupiedY.some((sy) => Math.abs(sy - yy) < 12)) {
+          yy = y + 12;
+          if (occupiedY.some((sy) => Math.abs(sy - yy) < 12)) return;
         }
-        const cy = Math.round(mid - ch / 2);
-        if (cx < 8 || cy < 3 || cy + ch > paneH - 3) return;
-        occupiedY.push(mid);
-      const r = 3.5;
-      ctx.beginPath();
-      ctx.moveTo(cx + r, cy);
-      ctx.arcTo(cx + cw, cy, cx + cw, cy + ch, r);
-      ctx.arcTo(cx + cw, cy + ch, cx, cy + ch, r);
-      ctx.arcTo(cx, cy + ch, cx, cy, r);
-      ctx.arcTo(cx, cy, cx + cw, cy, r);
-      ctx.closePath();
-      ctx.fillStyle = 'rgba(10, 14, 23, 0.88)';
-      ctx.fill();
-      ctx.lineWidth = 1;
-      ctx.strokeStyle = border;
-      ctx.stroke();
+      }
+      if (yy < 7 || yy > paneH - 7) return;
+      occupiedY.push(yy);
+      ctx.font = '600 10px -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(8, 12, 20, 0.85)';
+      ctx.strokeText(text, xEnd - 5, yy);
       ctx.fillStyle = color;
-      ctx.fillText(text, cx + cw / 2, cy + ch / 2 + 0.5);
+      ctx.fillText(text, xEnd - 5, yy);
     };
 
-    // 渐变填充区：左实右虚（头寸工具经典渐隐），边界交给价格线，不描框
+    // 色带填充：a1 省略 = 平涂（TradingView 头寸工具风格）；传 a1 = 左实右虚渐变（微构沿用）
     const zoneFill = (
       y1: number | null, y2: number | null, x0: number,
-      rgb: string, a0: number, a1 = 0.02,
+      rgb: string, a0: number, a1?: number,
     ): { top: number; mid: number; h: number } | null => {
       if (y1 == null || y2 == null || !Number.isFinite(y1) || !Number.isFinite(y2)) return null;
       const top = Math.max(0, Math.min(y1, y2));
       const bot = Math.min(paneH, Math.max(y1, y2));
       if (bot - top < 1.5 || xEnd - x0 < 8) return null;
-      const g = ctx.createLinearGradient(x0, 0, xEnd, 0);
-      g.addColorStop(0, `rgba(${rgb}, ${a0})`);
-      g.addColorStop(1, `rgba(${rgb}, ${a1})`);
-      ctx.fillStyle = g;
+      if (a1 == null) {
+        ctx.fillStyle = `rgba(${rgb}, ${a0})`;
+      } else {
+        const g = ctx.createLinearGradient(x0, 0, xEnd, 0);
+        g.addColorStop(0, `rgba(${rgb}, ${a0})`);
+        g.addColorStop(1, `rgba(${rgb}, ${a1})`);
+        ctx.fillStyle = g;
+      }
       ctx.fillRect(x0, top, xEnd - x0, bot - top);
       return { top, mid: (top + bot) / 2, h: bot - top };
     };
@@ -676,35 +668,31 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           if (pa) {
             const dist = (a: number, b: number) => ((Math.abs(a - b) / pa.entry) * 100).toFixed(1);
             const fmt = (p: number) => (p >= 100 ? p.toFixed(1) : p.toFixed(2));
-            // ===== 融合画法：区域边界即价格线，一个价位只出现一次 =====
-            // 三块渐变面（风险 / 盈利① / 盈利②）+ 四条贴边细线 + 四枚带价格芯片。
-            // 替代旧版「原生满宽线 + 区域 + 双标签」三层叠加。
-            zoneFill(yOf(pa.entry), yOf(pa.stop), projX0, '239, 68, 68', 0.13);
-            zoneFill(yOf(pa.entry), yOf(pa.tp1), projX0, '34, 197, 94', 0.10);
-            zoneFill(yOf(pa.tp1), yOf(pa.tp2), projX0, '34, 197, 94', 0.17);
+            // ===== TradingView 头寸工具画法 =====
+            // 平涂色带（红=风险 / 绿=盈利，TP2 档加深）+ 细线（入场虚线、目标点线）
+            // + 右缘纯文字（名称+价格+距离/概率）。无渐变、无底框、无粗线。
+            zoneFill(yOf(pa.entry), yOf(pa.stop), projX0, '239, 68, 68', 0.09);
+            zoneFill(yOf(pa.entry), yOf(pa.tp1), projX0, '34, 197, 94', 0.07);
+            zoneFill(yOf(pa.tp1), yOf(pa.tp2), projX0, '34, 197, 94', 0.13);
             const yE = yOf(pa.entry), yS = yOf(pa.stop), yT1 = yOf(pa.tp1), yT2 = yOf(pa.tp2);
-            // 边界线：入场（蓝，分界突出）/ 止损（红）/ TP1（绿细）/ TP2（绿）
-            if (yS != null) hline(yS, projX0, 'rgba(239, 68, 68, 0.9)', 1.5, []);
-            if (yE != null) hline(yE, projX0, 'rgba(59, 130, 246, 0.95)', 1.5, []);
-            if (yT1 != null) hline(yT1, projX0, 'rgba(34, 197, 94, 0.9)', 1, []);
-            if (yT2 != null) hline(yT2, projX0, 'rgba(34, 197, 94, 0.95)', 1.5, []);
-            // 芯片贴各边界线：名称 + 价格 + 距离%（概率），左侧锚定
-            if (yS != null) chip(yS, `止损 ${fmt(pa.stop)} −${dist(pa.stop, pa.entry)}%`, '#f87171', 'rgba(239, 68, 68, 0.45)', projX0);
-            if (yE != null) chip(yE, `入场 ${fmt(pa.entry)}`, '#60a5fa', 'rgba(59, 130, 246, 0.45)', projX0);
-            if (yT1 != null) chip(yT1, `TP1 ${fmt(pa.tp1)} +${dist(pa.tp1, pa.entry)}%${pa.tp1ProbabilityPct != null ? `·${pa.tp1ProbabilityPct}%` : ''}`, '#4ade80', 'rgba(34, 197, 94, 0.45)', projX0);
-            if (yT2 != null) chip(yT2, `TP2 ${fmt(pa.tp2)} +${dist(pa.tp2, pa.entry)}%${pa.tp2ProbabilityPct != null ? `·${pa.tp2ProbabilityPct}%` : ''}`, '#4ade80', 'rgba(34, 197, 94, 0.45)', projX0);
+            if (yE != null) hline(yE, projX0, 'rgba(96, 165, 250, 0.85)', 1, [5, 4]);
+            if (yS != null) hline(yS, projX0, 'rgba(248, 113, 113, 0.7)', 1, [2, 3]);
+            if (yT1 != null) hline(yT1, projX0, 'rgba(74, 222, 128, 0.7)', 1, [2, 3]);
+            if (yT2 != null) hline(yT2, projX0, 'rgba(74, 222, 128, 0.8)', 1, [2, 3]);
+            if (yS != null) tag(yS, `止损 ${fmt(pa.stop)} −${dist(pa.stop, pa.entry)}%`, '#f87171');
+            if (yE != null) tag(yE, `入场 ${fmt(pa.entry)}`, '#60a5fa');
+            if (yT1 != null) tag(yT1, `TP1 ${fmt(pa.tp1)} +${dist(pa.tp1, pa.entry)}%${pa.tp1ProbabilityPct != null ? `·${pa.tp1ProbabilityPct}%` : ''}`, '#4ade80');
+            if (yT2 != null) tag(yT2, `TP2 ${fmt(pa.tp2)} +${dist(pa.tp2, pa.entry)}%${pa.tp2ProbabilityPct != null ? `·${pa.tp2ProbabilityPct}%` : ''}`, '#4ade80');
           }
-          // ===== 画法二：汇流止盈区（渐变面 + 上下沿边线，中值线取消） =====
+          // ===== 汇流止盈区（平涂 + 点线边 + 右缘文字，与方案A同风格） =====
           if (pd.confluence) {
             const c = pd.confluence;
-            zoneFill(yOf(c.high), yOf(c.low), projX0, '245, 158, 11', 0.15);
+            zoneFill(yOf(c.high), yOf(c.low), projX0, '245, 158, 11', 0.10);
             const yh = yOf(c.high);
             const yl = yOf(c.low);
-            if (yh != null && !isDupPrice(c.high)) hline(yh, projX0, 'rgba(245, 158, 11, 0.55)', 1, [6, 4]);
-            if (yl != null && !isDupPrice(c.low)) hline(yl, projX0, 'rgba(245, 158, 11, 0.55)', 1, [6, 4]);
-            if (yh != null && yl != null && Math.abs(yh - yl) >= 17) {
-              chip((yh + yl) / 2, `汇流区 ${c.probabilityPct}%`, '#fbbf24', 'rgba(245, 158, 11, 0.5)', projX0);
-            }
+            if (yh != null && !isDupPrice(c.high)) hline(yh, projX0, 'rgba(251, 191, 36, 0.55)', 1, [2, 3]);
+            if (yl != null && !isDupPrice(c.low)) hline(yl, projX0, 'rgba(251, 191, 36, 0.55)', 1, [2, 3]);
+            if (yh != null && yl != null) tag((yh + yl) / 2, `汇流 ${c.probabilityPct}%`, '#fbbf24');
           }
           // ===== 汇流止盈区之后的候选位射线已按反馈隐藏 =====
           // （B方案射线 / 延伸档 / 8个方法候选目标位不再画线；
