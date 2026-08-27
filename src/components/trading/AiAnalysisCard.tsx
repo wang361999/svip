@@ -42,6 +42,50 @@ interface WindowRaceRow {
   unresolvedPct: number;
 }
 
+/**
+ * 圆形盈亏比仪表：环形进度 = 加权盈亏比 / 满刻度(3)，中心为数值。
+ * 颜色分级：≥2 绿（优）/ ≥1.2 琥珀（可）/ 其余红（差）。
+ * 用 currentColor 描边，避免依赖 stroke-* 工具类。
+ */
+function RingGauge({ value, max = 3, size = 46 }: { value: number; max?: number; size?: number }) {
+  const pct = Math.max(0, Math.min(1, value / max));
+  const r = (size - 7) / 2;
+  const c = 2 * Math.PI * r;
+  const tone =
+    value >= 2
+      ? { ring: 'text-green-400', label: 'text-green-400' }
+      : value >= 1.2
+        ? { ring: 'text-amber-400', label: 'text-amber-400' }
+        : { ring: 'text-red-400', label: 'text-red-400' };
+  return (
+    <div
+      className="relative shrink-0 leading-none"
+      style={{ width: size, height: size }}
+      title={`加权盈亏比 ${value}（满刻度 ${max}）`}
+    >
+      <svg width={size} height={size} className="-rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={r} stroke="currentColor" className="text-dark-700" strokeWidth={4} fill="none" />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          stroke="currentColor"
+          className={`${tone.ring} transition-[stroke-dashoffset] duration-500`}
+          strokeWidth={4}
+          fill="none"
+          strokeDasharray={c}
+          strokeDashoffset={c * (1 - pct)}
+          strokeLinecap="round"
+        />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className={`text-[11px] font-bold font-mono ${tone.label}`}>{value.toFixed(2)}</span>
+        <span className="text-[7px] text-dark-500 mt-[1px]">盈亏比</span>
+      </div>
+    </div>
+  );
+}
+
 interface KeyLevel {
   price: number;
   label: string;
@@ -183,20 +227,23 @@ export default function AiAnalysisCard() {
           isLong ? 'bg-green-500/5 border-green-500/20' : 'bg-red-500/5 border-red-500/20'
         }`}
       >
-        <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between mb-2 gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <span
-              className={`text-xs font-bold px-1.5 py-0.5 rounded ${
+              className={`text-xs font-bold px-1.5 py-0.5 rounded shrink-0 ${
                 isLong ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
               }`}
             >
               {plan.id}
             </span>
-            <span className="text-white text-sm font-semibold">{plan.name}</span>
+            <span className="text-white text-sm font-semibold truncate">{plan.name}</span>
           </div>
-          <span className={`text-xs ${isLong ? 'text-green-400' : 'text-red-400'}`}>
-            {isLong ? '做多' : '做空'}
-          </span>
+          <div className="flex items-center gap-2 shrink-0">
+            <RingGauge value={plan.rrBlended} />
+            <span className={`text-xs ${isLong ? 'text-green-400' : 'text-red-400'}`}>
+              {isLong ? '做多' : '做空'}
+            </span>
+          </div>
         </div>
         <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
           <div className="flex justify-between">
@@ -232,8 +279,8 @@ export default function AiAnalysisCard() {
           <span className="text-dark-400">
             风险 <span className="text-dark-300 font-mono">{plan.riskPct}%</span>
           </span>
-          <span className="text-dark-400">
-            加权盈亏比 <span className="text-amber-400 font-mono font-semibold">{plan.rrBlended}</span>
+          <span className="text-dark-500" title="环形仪表为 TP1/TP2 加权盈亏比，满刻度 3">
+            TP1 {plan.rrTp1} · TP2 {plan.rrTp2}
           </span>
         </div>
         {plan.windowRace && plan.windowRace.length > 0 && (
