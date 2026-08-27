@@ -31,7 +31,15 @@ interface Plan {
   tp2ProbabilityPct?: number;
   tp1FirstPct?: number;
   slFirstPct?: number;
+  windowRace?: WindowRaceRow[];
   confidence: 'high' | 'medium';
+}
+
+interface WindowRaceRow {
+  hours: number;
+  tp1FirstPct: number;
+  slFirstPct: number;
+  unresolvedPct: number;
 }
 
 interface KeyLevel {
@@ -227,26 +235,40 @@ export default function AiAnalysisCard() {
             加权盈亏比 <span className="text-amber-400 font-mono font-semibold">{plan.rrBlended}</span>
           </span>
         </div>
-        {plan.tp1FirstPct != null && plan.slFirstPct != null && (
+        {plan.windowRace && plan.windowRace.length > 0 && (
           <div className="mt-2 pt-2 border-t border-dark-700/50">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-dark-400">先到止盈</span>
-              <span className="text-green-400 font-mono font-semibold">{plan.tp1FirstPct}%</span>
+            <div className="flex items-center justify-between text-[10px] text-dark-500 mb-1.5">
+              <span className="text-dark-400">分持仓窗口 · 谁先触及</span>
+              <span>
+                <span className="text-green-400">先到止盈</span>
+                <span className="text-dark-600"> / </span>
+                <span className="text-red-400">先到止损</span>
+                <span className="text-dark-600"> / </span>
+                <span className="text-dark-400">未触及</span>
+              </span>
             </div>
-            <div className="mt-1 flex items-center justify-between text-xs">
-              <span className="text-dark-400">先到止损</span>
-              <span className="text-red-400 font-mono font-semibold">{plan.slFirstPct}%</span>
-            </div>
-            <div className="mt-1 h-1.5 rounded-full bg-dark-700 overflow-hidden flex">
-              <div className="bg-green-500/70" style={{ width: `${plan.tp1FirstPct}%` }} />
-              <div className="bg-red-500/70" style={{ width: `${plan.slFirstPct}%` }} />
-            </div>
+            {plan.windowRace.map((row) => (
+              <div key={row.hours} className="flex items-center gap-2 text-[11px] font-mono leading-5">
+                <span className="w-9 shrink-0 text-dark-300">{row.hours}h</span>
+                <div className="flex-1 h-1.5 rounded-full bg-dark-700/70 overflow-hidden flex">
+                  <div className="bg-green-500/70" style={{ width: `${row.tp1FirstPct}%` }} />
+                  <div className="bg-red-500/70" style={{ width: `${row.slFirstPct}%` }} />
+                </div>
+                <span className="w-[7.5rem] shrink-0 text-right tabular-nums">
+                  <span className="text-green-400">{row.tp1FirstPct}%</span>
+                  <span className="text-dark-600"> / </span>
+                  <span className="text-red-400">{row.slFirstPct}%</span>
+                  <span className="text-dark-600"> / </span>
+                  <span className="text-dark-400">{row.unresolvedPct}%</span>
+                </span>
+              </div>
+            ))}
           </div>
         )}
         {(plan.tp1ProbabilityPct != null || plan.tp2ProbabilityPct != null) && (
           <p className="mt-1.5 text-[10px] text-dark-500">
-            {plan.tp1FirstPct != null
-              ? '先到止盈/止损为实测竞速口径（逐根判定谁先触发，同根双触按先止损计），比触及概率更贴近挂单实绩；为条件概率，触发确认入场后 30 根 4h 内有效'
+            {plan.windowRace
+              ? '窗口竞速为实测校准（逐根判定谁先触发，同根双触按先止损保守计）：持仓越短先到止盈率越低、未触及占比越高，按自己的持仓周期查对应行；条件概率，触发确认入场后有效'
               : 'TP 百分比为条件概率：触发条件确认入场后 30 根 4h 内触及（历史回测校准值）；未触发前不成立'}
           </p>
         )}

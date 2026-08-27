@@ -668,40 +668,87 @@ function tpProbability(entry: number, tp: number, sigmaPerBar: number, bars: num
 }
 
 /**
- * A 方案"先到止损"校准表 —— ρ = TP1距离/止损距离（对数距离比） → 入场确认后
- * 30 根 4h 内止损先于 TP1 被触及的概率。
+ * A 方案"持仓窗口竞速"校准表 —— 入场确认后，各时间窗口内 TP1/止损 谁先被触及。
  *
  * 与 TP 触及概率的本质区别：触及口径包含"先扫损后又到 TP"的路径，
- * 对实际挂单交易者而言没有意义；本表统计的是逐根扫描谁先到（同根双触按先止损保守计）。
- * ρ 小 = TP 比止损近得多 → 先到止损率低；ρ 大 = TP 比止损远 → 先到止损率高。
+ * 对实际挂单交易者无意义；本表为 15m 精度逐根竞速（同根双触按先止损保守计），
+ * 并按持仓时长分窗口 —— 持仓几小时与持仓几天的真实胜率完全不同。
+ * ρ = TP1距离/止损距离（对数距离比）：ρ 小 = TP 比止损近 → 先到止盈率高。
  *
- * 数据来源：ETH/BTC/SOL 4h 走查回放，A 情境（回踩触及+止跌确认K线起算）n=1322。
- * 样本外验证（时间后30%，其中 ETH n=150）：ETH 实际先到止损 39.3% vs 表预测 40.4%（+1.1pp）。
- * 局限：分桶级样本量 61~515，单桶误差可达 ±15pp，数值当量级参考。
+ * 数据来源：ETH/BTC/SOL 4h 信号 × 15m 精度回放（2024-10~2026-08），A 情境
+ * （回踩触及+止跌确认K线起算）n=1399。TP1 表用单调不增 PAVA、SL 表单调不降。
+ * 样本外验证（时间后30%，ETH n=153，2026-02~07）：
+ *   先到止损列最可靠（120h 偏差 0.1pp）；先到止盈列偏差 -2~-8pp（近期行情偏快，
+ *   全量表已含近期数据可部分吸收）；6h/12h 短窗口对行情机制最敏感（±10pp 量级）。
  *
  * 注意：B 方案（突破回踩）不提供此概率 —— 其先到止损率随行情机制漂移剧烈
- * （全期 21% vs 2026 年以来 35%，旧样本拟合在近期样本外低估 16pp），无法稳定校准，
- * 展示会误导，宁缺毋滥。
+ * （全期 21% vs 2026 年以来 35%），无法稳定校准，宁缺毋滥。
  */
-const SL_FIRST_CALIB_PULLBACK: [number, number][] = [
-  [0.25, 0.197], // n=127
-  [0.5, 0.227], // n=405
-  [0.75, 0.256], // n=82
-  [1.25, 0.426], // n=61
-  [1.5, 0.518], // n=515
-];
+const WINDOW_RACE_HOURS = [6, 12, 24, 72, 120] as const;
+
+export interface WindowRaceRow {
+  /** 持仓窗口（小时） */
+  hours: number;
+  /** 窗口内 TP1 先于止损被触及的概率（0-100） */
+  tp1FirstPct: number;
+  /** 窗口内止损先于 TP1 被触及的概率（0-100） */
+  slFirstPct: number;
+  /** 窗口内两者都未触及（挂单仍浮沉）的概率（0-100） */
+  unresolvedPct: number;
+}
+
+/** 各窗口 TP1 先到率（ρ → 概率，单调不增 PAVA，0.25 步长桶；首桶为 ρ∈[0,0.25)） */
+const RACE_TP1: Record<number, [number, number][]> = {
+  6: [[0, 0.5], [0.25, 0.401], [0.75, 0.153], [1.5, 0.144], [1.75, 0.067]],
+  12: [[0, 0.66], [0.25, 0.504], [0.75, 0.247], [1, 0.225], [1.75, 0.138]],
+  24: [[0, 0.72], [0.25, 0.619], [0.75, 0.471], [1, 0.362], [1.5, 0.295], [1.75, 0.23]],
+  72: [[0, 0.92], [0.25, 0.73], [0.75, 0.576], [1, 0.538], [1.5, 0.442], [1.75, 0.383]],
+  120: [[0, 0.92], [0.25, 0.752], [0.75, 0.647], [1, 0.569], [1.5, 0.457], [1.75, 0.446]],
+};
+
+/** 各窗口止损先到率（ρ → 概率，单调不降 PAVA，0.25 步长桶） */
+const RACE_SL: Record<number, [number, number][]> = {
+  6: [[0.25, 0.025], [0.5, 0.042], [1.25, 0.081]],
+  12: [[0.25, 0.051], [0.5, 0.066], [1, 0.161], [1.25, 0.162], [1.5, 0.174]],
+  24: [[0.25, 0.085], [0.5, 0.122], [1, 0.194], [1.25, 0.279], [1.5, 0.302]],
+  72: [[0.25, 0.161], [0.5, 0.2], [0.75, 0.306], [1, 0.371], [1.25, 0.397], [1.5, 0.472]],
+  120: [[0.25, 0.178], [0.5, 0.221], [0.75, 0.329], [1, 0.403], [1.25, 0.412], [1.5, 0.516]],
+};
 
 /**
- * A 方案入场确认后 30 根 4h 内：止损先于 TP1 被触及的概率（0-1）
- * 先到止盈概率 ≈ 1 - 先到止损 - 都未触及；实测"都未触及"仅 1~3%，归一化时忽略并如实标注
+ * A 方案各持仓窗口的竞速概率分布（按预案的 ρ 查表）
+ * 未触及 = 1 - 先到TP1 - 先到止损（截断至 ≥0；各桶实测未决率与该恒等式一致，±6pp 内）
  */
-function slFirstProbability(entry: number, tp1: number, stop: number, sigmaPerBar: number, bars: number): number {
-  if (entry <= 0 || tp1 <= 0 || stop <= 0 || sigmaPerBar <= 0 || bars <= 0) return 0;
+function windowRaceOutcomes(entry: number, tp1: number, stop: number): WindowRaceRow[] {
+  if (entry <= 0 || tp1 <= 0 || stop <= 0) return [];
   const dTp = Math.abs(Math.log(tp1 / entry));
   const dSl = Math.abs(Math.log(stop / entry));
-  if (dSl <= 0) return 0;
-  const rho = dTp / dSl; // 比值，σ√t 已约掉
-  return lookupCalib(SL_FIRST_CALIB_PULLBACK, rho, 0.25); // 0.25 宽分桶拟合
+  if (dSl <= 0) return [];
+  const rho = dTp / dSl;
+  return WINDOW_RACE_HOURS.map((h) => {
+    const tp = lookupCalib(RACE_TP1[h], rho, 0.25);
+    const sl = lookupCalib(RACE_SL[h], rho, 0.25);
+    const unresolved = Math.max(0, 1 - tp - sl);
+    // 归一化到 100%（未决截断产生的微量误差并入未决列之外的两列按比例分摊）
+    const sum = tp + sl;
+    const k = sum > 0 ? (1 - unresolved) / sum : 0;
+    // 先取整前两列，未触及列 = 100 - 两者，保证三列显示合计恒为 100
+    let tpPct = Math.round(tp * k * 100);
+    let slPct = Math.round(sl * k * 100);
+    let unPct = 100 - tpPct - slPct;
+    if (unPct < 0) {
+      // 极端双进位：从较大列扣回，保持合计 100 且未触及不为负
+      if (tpPct >= slPct) tpPct += unPct;
+      else slPct += unPct;
+      unPct = 0;
+    }
+    return {
+      hours: h,
+      tp1FirstPct: tpPct,
+      slFirstPct: slPct,
+      unresolvedPct: unPct,
+    };
+  });
 }
 
 /** 取方向侧最近的一个位（dir=1 上方 / -1 下方，限制最大距离） */
@@ -786,12 +833,17 @@ export interface TradePlan {
   /** 自入场价起 N 根 4h 内触及 TP2 的估算概率（0-100） */
   tp2ProbabilityPct?: number;
   /**
-   * 入场确认后 30 根 4h 内：TP1 先于止损被触及的概率（0-100，实测"先到"口径）
-   * 仅 A 方案提供；B 方案因止损率随行情机制漂移无法稳定校准而不提供（见 SL_FIRST_CALIB 注释）
+   * 入场确认后 120h（=30根4h）内：TP1 先于止损被触及的概率（0-100，实测"先到"口径）
+   * 取自 windowRace 末行；仅 A 方案提供（B 方案无法稳定校准，见 RACE 表注释）
    */
   tp1FirstPct?: number;
-  /** 入场确认后 30 根 4h 内：止损先于 TP1 被触及的概率（0-100，实测"先到"口径），仅 A 方案 */
+  /** 入场确认后 120h 内：止损先于 TP1 被触及的概率（0-100，实测"先到"口径），仅 A 方案 */
   slFirstPct?: number;
+  /**
+   * 分持仓窗口的竞速概率分布（6/12/24/72/120h），仅 A 方案。
+   * 持仓多久看哪行：短窗口大量"未决"（价格还没走到任何一边），不是胜率低。
+   */
+  windowRace?: WindowRaceRow[];
   /** 触发概率主观标记：high=回调类（结构内），medium=突破类（需动能确认） */
   confidence: 'high' | 'medium';
 }
@@ -818,6 +870,7 @@ function buildPlan(
     tp2ProbabilityPct?: number;
     tp1FirstPct?: number;
     slFirstPct?: number;
+    windowRace?: WindowRaceRow[];
   },
 ): TradePlan {
   const risk = Math.abs(entry - stop);
@@ -842,6 +895,7 @@ function buildPlan(
     tp2ProbabilityPct: extras?.tp2ProbabilityPct,
     tp1FirstPct: extras?.tp1FirstPct,
     slFirstPct: extras?.slFirstPct,
+    windowRace: extras?.windowRace,
     confidence,
   };
 }
@@ -930,9 +984,17 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
   // 预案 TP 概率：按入场情境查对应校准表（A=回调确认 / B=突破回踩确认）
   const tpProbFrom = (entry: number, tp: number, ctx: 'pullback' | 'breakout') =>
     Math.round(tpProbability(entry, tp, sigmaPerBar, PROB_BARS, ctx) * 100);
-  // A 方案"先到"口径概率（TP1 与止损逐根竞速，仅 A 情境有校准表）
-  const slFirstFrom = (entry: number, tp1: number, stop: number) =>
-    Math.round(slFirstProbability(entry, tp1, stop, sigmaPerBar, PROB_BARS) * 100);
+  // A 方案"先到"口径概率（TP1 与止损逐根竞速，仅 A 情境有校准表）：
+  // 分持仓窗口分布 + 兼容字段（tp1FirstPct/slFirstPct 取 120h 行）
+  const raceExtras = (entry: number, tp1: number, stop: number) => {
+    const rows = windowRaceOutcomes(entry, tp1, stop);
+    const last = rows.length > 0 ? rows[rows.length - 1] : undefined;
+    return {
+      windowRace: rows.length > 0 ? rows : undefined,
+      tp1FirstPct: last?.tp1FirstPct,
+      slFirstPct: last?.slFirstPct,
+    };
+  };
 
   let profitTargets: ProfitTarget[] = [];
   let confluence: ConfluenceZone | null = null;
@@ -1033,8 +1095,7 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
           tp2Source: tp2SourceA,
           tp1ProbabilityPct: tpProbFrom(entryA, tp1A, 'pullback'),
           tp2ProbabilityPct: tpProbFrom(entryA, tp2A, 'pullback'),
-          tp1FirstPct: Math.max(0, 100 - slFirstFrom(entryA, tp1A, stopA) - 2), // 实测"30根内两者都未触及"约2%
-          slFirstPct: slFirstFrom(entryA, tp1A, stopA),
+          ...raceExtras(entryA, tp1A, stopA),
         }),
       );
       const entryB = leg.endPrice * 1.005; // 突破前高后回踩
@@ -1074,8 +1135,7 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
           tp2Source: tp2SourceA,
           tp1ProbabilityPct: tpProbFrom(entryA, tp1A, 'pullback'),
           tp2ProbabilityPct: tpProbFrom(entryA, tp2A, 'pullback'),
-          tp1FirstPct: Math.max(0, 100 - slFirstFrom(entryA, tp1A, stopA) - 2), // 实测"30根内两者都未触及"约2%
-          slFirstPct: slFirstFrom(entryA, tp1A, stopA),
+          ...raceExtras(entryA, tp1A, stopA),
         }),
       );
       const entryB = leg.endPrice * 0.995;
