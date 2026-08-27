@@ -751,6 +751,100 @@ function windowRaceOutcomes(entry: number, tp1: number, stop: number): WindowRac
   });
 }
 
+/**
+ * 方案 C（超短线）"持仓窗口竞速"校准表 —— 1h 推动腿回踩入场的快进快出统计。
+ *
+ * 与 A 方案同方法论：ρ = TP1距离/止损距离（对数距离比）分桶，
+ * 但腿基于 1h 周期（zigzag 阈值 2%，最小腿幅 2%），窗口为超短适用的
+ * 2h/4h/8h/12h/24h；确认口径 = 15m 触及入场价后收回（同 A）。
+ *
+ * 几何：入场=61.8%回撤，止损=78.6%回撤±0.3%缓冲（平均约0.9%），
+ * TP1=38.2%回撤（快止盈，RR≈0.9-1.0），TP2=23.6%回撤（RR≈1.4）。
+ * ρ 因此集中在 [0.75, 1.25)，仅两桶即覆盖绝大多数样本。
+ *
+ * 数据来源：ETH/BTC/SOL 1h 信号 × 15m 精度回放（2024-10~2026-08）n=2165。
+ * ETH 样本外（时间后30%，n=229）：24h 先到TP 55.9%/先到SL 40.2%，
+ * 较池化表低约 3~7pp（近期行情止损触发更快），使用时保守看待。
+ * 时间前后半稳定性：ETH 24h 先到TP 63→62、先到SL 37→35（±2pp，可校准）。
+ *
+ * 费率警告：止损距离平均仅 0.9%，taker 双边 0.1% 费率≈吃掉 11% 的风险单位；
+ * 本方案的边际优势依赖 maker 挂单执行（限价入场+限价止盈）。
+ */
+const WINDOW_SCALP_HOURS = [2, 4, 8, 12, 24] as const;
+
+const SCALP_RACE_TP1: Record<number, [number, number][]> = {
+  2: [[0.75, 0.433], [1, 0.279]],
+  4: [[0.75, 0.512], [1, 0.387]],
+  8: [[0.75, 0.585], [1, 0.47]],
+  12: [[0.75, 0.61], [1, 0.512]],
+  24: [[0.75, 0.632], [1, 0.539]],
+};
+
+const SCALP_RACE_SL: Record<number, [number, number][]> = {
+  2: [[0.75, 0.169], [1, 0.169]],
+  4: [[0.75, 0.255], [1, 0.255]],
+  8: [[0.75, 0.317], [1, 0.348]],
+  12: [[0.75, 0.334], [1, 0.38]],
+  24: [[0.75, 0.345], [1, 0.42]],
+};
+
+/** 方案 C 各持仓窗口的竞速概率分布（口径与 windowRaceOutcomes 相同，查超短表） */
+function scalpRaceOutcomes(entry: number, tp1: number, stop: number): WindowRaceRow[] {
+  if (entry <= 0 || tp1 <= 0 || stop <= 0) return [];
+  const dTp = Math.abs(Math.log(tp1 / entry));
+  const dSl = Math.abs(Math.log(stop / entry));
+  if (dSl <= 0) return [];
+  const rho = dTp / dSl;
+  return WINDOW_SCALP_HOURS.map((h) => {
+    const tp = lookupCalib(SCALP_RACE_TP1[h], rho, 0.25);
+    const sl = lookupCalib(SCALP_RACE_SL[h], rho, 0.25);
+    const unresolved = Math.max(0, 1 - tp - sl);
+    const sum = tp + sl;
+    const k = sum > 0 ? (1 - unresolved) / sum : 0;
+    let tpPct = Math.round(tp * k * 100);
+    let slPct = Math.round(sl * k * 100);
+    let unPct = 100 - tpPct - slPct;
+    if (unPct < 0) {
+      if (tpPct >= slPct) tpPct += unPct;
+      else slPct += unPct;
+      unPct = 0;
+    }
+    return { hours: h, tp1FirstPct: tpPct, slFirstPct: slPct, unresolvedPct: unPct };
+  });
+}
+
+/**
+ * 1h 推动腿识别（方案 C 专用，与 4h identifyLeg 同逻辑不同参数）：
+ * zigzag 阈值 2%，最近 90 根 1h（约 4 天），最小腿幅 2%。
+ */
+function identifyScalpLeg(k1h: KlineData[]): { side: 'long' | 'short'; base: number; extreme: number } | null {
+  const seg = k1h.slice(-90);
+  if (seg.length < 20) return null;
+  const { points, dir, pendingExtreme } = zigzag(seg, 0.02);
+  if (!dir || points.length === 0) return null;
+  const last = points[points.length - 1];
+  const prev = points.length >= 2 ? points[points.length - 2] : null;
+  let side: 'long' | 'short' | null = null;
+  let base = 0;
+  let extreme = 0;
+  if (dir === 'down') {
+    if (last.type === 'H' && prev && prev.type === 'L') {
+      side = 'long'; base = prev.price; extreme = Math.max(last.price, pendingExtreme);
+    } else if (last.type === 'L' && prev && prev.type === 'H') {
+      side = 'short'; base = prev.price; extreme = Math.min(last.price, pendingExtreme);
+    }
+  } else {
+    if (last.type === 'L' && prev && prev.type === 'H') {
+      side = 'short'; base = prev.price; extreme = Math.min(last.price, pendingExtreme);
+    } else if (last.type === 'H' && prev && prev.type === 'L') {
+      side = 'long'; base = prev.price; extreme = Math.max(last.price, pendingExtreme);
+    }
+  }
+  if (!side || !base || !extreme) return null;
+  if (Math.abs(extreme - base) / base < 0.02) return null;
+  return { side, base, extreme };
+}
+
 /** 取方向侧最近的一个位（dir=1 上方 / -1 下方，限制最大距离） */
 function nearestInDirection(
   levels: { price: number; label: string }[],
@@ -810,7 +904,7 @@ function clusterTargets(
 // ==================== 预案生成 ====================
 
 export interface TradePlan {
-  id: 'A' | 'B';
+  id: 'A' | 'B' | 'C';
   name: string;
   side: 'long' | 'short';
   /** 触发条件描述 */
@@ -855,7 +949,7 @@ function roundPrice(p: number): number {
 }
 
 function buildPlan(
-  id: 'A' | 'B',
+  id: 'A' | 'B' | 'C',
   name: string,
   side: 'long' | 'short',
   trigger: string,
@@ -1157,6 +1251,49 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
         }),
       );
       invalidation = { price: roundPrice(stopA), note: `4h 收盘升破 ${roundPrice(stopA)} 则该推动腿结构失效，做空预案作废` };
+    }
+  }
+
+  // ---------- 方案 C：超短线（1h 推动腿，独立于 4h 结构） ----------
+  if (k1h.length >= 100) {
+    const legC = identifyScalpLeg(k1h);
+    if (legC) {
+      const rangeC = Math.abs(legC.extreme - legC.base);
+      const fibC = (r: number) => (legC.side === 'long' ? legC.extreme - rangeC * r : legC.extreme + rangeC * r);
+      const entryC = fibC(0.618);
+      const stopC = legC.side === 'long' ? fibC(0.786) * 0.997 : fibC(0.786) * 1.003;
+      const tp1C = fibC(0.382); // 快止盈（38.2% 回撤，RR≈0.9-1.0）
+      const tp2C = fibC(0.236); // 波段档（23.6% 回撤，RR≈1.4）
+      const riskC = Math.abs(entryC - stopC);
+      const rr1C = Math.abs(tp1C - entryC) / riskC;
+      // 显示门槛：止损未破（破了 = 该腿 setup 已死）、TP1 盈亏比 ≥0.8（与回测口径一致）。
+      // 与 A/B 同语义：点位常显，"15m 触及后收回确认"是执行条件而非显示条件
+      // （回测校准即以触达+确认为条件，显示时机不影响概率含义）。
+      const stopIntact = legC.side === 'long' ? currentPrice > stopC : currentPrice < stopC;
+      const nearEnough = Math.abs(entryC - currentPrice) / currentPrice <= 0.03;
+      if (stopIntact && nearEnough && rr1C >= 0.8) {
+        const rowsC = scalpRaceOutcomes(entryC, tp1C, stopC);
+        const lastC = rowsC.length > 0 ? rowsC[rowsC.length - 1] : undefined;
+        plans.push(
+          buildPlan(
+            'C',
+            legC.side === 'long' ? '超短线做多（快进快出）' : '超短线做空（快进快出）',
+            legC.side,
+            `1h 腿 61.8% 回撤 ${roundPrice(entryC)} 挂单，15m 触及后收回确认；快止盈 ${roundPrice(tp1C)}，盈亏比<1 属正常（高胜率小目标），建议 maker 挂单执行`,
+            entryC,
+            stopC,
+            tp1C,
+            tp2C,
+            'medium',
+            {
+              tp2Source: '1h 腿 23.6% 回撤（波段档，可留部分仓位）',
+              tp1FirstPct: lastC?.tp1FirstPct,
+              slFirstPct: lastC?.slFirstPct,
+              windowRace: rowsC.length > 0 ? rowsC : undefined,
+            },
+          ),
+        );
+      }
     }
   }
 

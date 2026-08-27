@@ -26,6 +26,8 @@ export interface AnalysisNarrative {
   planAComment: string;
   /** 方案 B 点评 */
   planBComment: string;
+  /** 方案 C 点评（超短线，可能不存在） */
+  planCComment: string;
   /** 失效条件（数字必须与规则引擎一致） */
   invalidation: string;
   /** 风险提醒 */
@@ -123,8 +125,8 @@ function buildLlmInput(a: StructureAnalysis): Record<string, unknown> {
     加权盈亏比: p.rrBlended,
     触及概率TP1: p.tp1ProbabilityPct != null ? `${p.tp1ProbabilityPct}%（条件概率：触发条件确认入场后，自入场价30根4h内触及；按入场情境校准的历史回测值，非理论推导）` : null,
     触及概率TP2: p.tp2ProbabilityPct != null ? `${p.tp2ProbabilityPct}%（条件概率：触发条件确认入场后，自入场价30根4h内触及；按入场情境校准的历史回测值，非理论推导）` : null,
-    先到止盈概率: p.tp1FirstPct != null ? `${p.tp1FirstPct}%（实测竞速口径：入场确认后30根4h内，TP1先于止损被触及；同根双触按先止损保守计，最贴近挂单实绩）` : null,
-    先到止损概率: p.slFirstPct != null ? `${p.slFirstPct}%（实测竞速口径，含义同上；A方案专属，B方案因止损率随行情机制漂移无法稳定校准故不提供）` : null,
+    先到止盈概率: p.tp1FirstPct != null ? `${p.tp1FirstPct}%（实测竞速口径：${p.id === 'C' ? '1h腿入场确认后2~24h窗口' : '入场确认后30根4h内'}，TP1先于止损被触及；同根双触按先止损保守计，最贴近挂单实绩）` : null,
+    先到止损概率: p.slFirstPct != null ? `${p.slFirstPct}%（实测竞速口径，含义同上；A/C方案提供，B方案因止损率随行情机制漂移无法稳定校准故不提供）` : null,
   });
 
   const trendBrief = (tf: '4h' | '1h' | '15m') => {
@@ -200,6 +202,7 @@ const SYSTEM_PROMPT = `你是"结构共振交易法"的资深交易分析师，�
 5. 若存在"汇流止盈区"，解读中须点出它由哪些方法叠加、为什么可信度更高；仅当预案的"目标2依据"含"汇流"时才把 TP2 与汇流区价格绑定，否则汇流区应描述为现价附近的第一目标带（减仓参考），不要与 TP2 混淆
 6. 术语规范：使用"推动腿"（Impulse Leg）指代最近一段单方向显著推动行情，首次出现须自然带出定义（如"最近一段自摆动低点 X 推升至摆动高点 Y 的上行推动（推动腿）"），不使用"腿"单字；回撤比例指现价沿该推动自端点向起点折返的深度
 7. 概率口径：方案A若提供"分窗口概率分布"，点评时按持仓周期引用对应窗口（短持仓引 6h/12h 行、日内引 24h、波段引 72h/120h），并指出持仓越短先到止盈率越低、未触及占比越高；明确这是条件概率、以止损纪律执行为前提。不要把"触及概率"说成胜率——触及口径包含先扫损后又到目标的路径，数值必然高于先到口径；B方案无先到概率，不要编造
+8. 方案C为超短线（1h 腿回踩，快止盈 RR 可能 <1 属正常设计），点评须点明：止损距离约 1% 量级、必须 maker 挂单执行否则费率吃掉优势、ETH 近期样本外先到止盈比表值低 3~7pp 需保守看待；不要把 C 与 A/B 的持仓周期混为一谈
 
 输出 JSON 结构：
 {
@@ -207,6 +210,7 @@ const SYSTEM_PROMPT = `你是"结构共振交易法"的资深交易分析师，�
   "paragraphs": ["结构解读段落，2-4段，每段60-120字：为什么是这个方向、当前处于什么位置、为什么现在不能直接追"],
   "planAComment": "对方案A的一句话点评，说明它为什么是首选",
   "planBComment": "对方案B的一句话点评，说明它适合什么情况",
+  "planCComment": "对方案C（超短线）的一句话点评：止损约1%量级、须maker挂单执行、ETH近期样本外先到止盈偏低需保守；若无C方案输出空字符串",
   "invalidation": "失效条件一句话，必须包含失效价格数字",
   "reminder": "风险提醒一句话，结合当前波动特点"
 }`;
@@ -240,6 +244,7 @@ export async function generateNarrative(analysis: StructureAnalysis): Promise<An
         : [],
       planAComment: String(parsed.planAComment || ''),
       planBComment: String(parsed.planBComment || ''),
+      planCComment: String(parsed.planCComment || ''),
       invalidation: String(parsed.invalidation || template.invalidation),
       reminder: String(parsed.reminder || template.reminder),
       source: 'ai',
@@ -305,6 +310,7 @@ export function buildTemplateNarrative(a: StructureAnalysis): AnalysisNarrative 
 
   const planA = a.plans.find((x) => x.id === 'A');
   const planB = a.plans.find((x) => x.id === 'B');
+  const planC = a.plans.find((x) => x.id === 'C');
 
   return {
     headline: a.plans.length === 0 ? '结构压缩，观望等方向' : `${a.biasText}，等回踩或突破再进`,
@@ -320,6 +326,9 @@ export function buildTemplateNarrative(a: StructureAnalysis): AnalysisNarrative 
     planBComment: planB
       ? `备选突破单：触发位 ${round2(planB.entry)}，止损 ${planB.stop}，TP2 盈亏比 ${planB.rrTp2}，需放量确认。`
       : '结构不明，暂无突破预案。',
+    planCComment: planC
+      ? `超短线（1h 腿）：入场 ${planC.entry}（挂单），止损 ${planC.stop}（风险 ${planC.riskPct}%），快止盈 ${planC.tp1}。止损仅 ${planC.riskPct}% 量级，必须 maker 挂单执行，taker 费率会吃掉优势；ETH 近期样本外先到止盈比表值低 3~7pp，保守看待。`
+      : '',
     invalidation: a.invalidation ? a.invalidation.note : '暂无明确失效位（结构压缩期）。',
     reminder: '数据仅供参考，不构成投资建议。条件单进场，止损必带，破位不扛。',
     source: 'template',

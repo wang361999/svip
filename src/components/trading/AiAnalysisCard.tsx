@@ -13,7 +13,7 @@ import useSymbolStore from '@/store/symbolStore';
  */
 
 interface Plan {
-  id: 'A' | 'B';
+  id: 'A' | 'B' | 'C';
   name: string;
   side: 'long' | 'short';
   trigger: string;
@@ -69,6 +69,7 @@ interface Narrative {
   paragraphs: string[];
   planAComment: string;
   planBComment: string;
+  planCComment?: string;
   invalidation: string;
   reminder: string;
   source: 'ai' | 'template';
@@ -265,11 +266,13 @@ export default function AiAnalysisCard() {
             ))}
           </div>
         )}
-        {(plan.tp1ProbabilityPct != null || plan.tp2ProbabilityPct != null) && (
+        {(plan.windowRace || plan.tp1ProbabilityPct != null || plan.tp2ProbabilityPct != null) && (
           <p className="mt-1.5 text-[10px] text-dark-500">
-            {plan.windowRace
-              ? '窗口竞速为实测校准（逐根判定谁先触发，同根双触按先止损保守计）：持仓越短先到止盈率越低、未触及占比越高，按自己的持仓周期查对应行；条件概率，触发确认入场后有效'
-              : 'TP 百分比为条件概率：触发条件确认入场后 30 根 4h 内触及（历史回测校准值）；未触发前不成立'}
+            {plan.id === 'C'
+              ? '超短线窗口 2~24h 实测校准（1h 腿回踩，15m 触及收回确认后起算）：止损距约 1%，必须 maker 挂单执行，taker 费率约吃掉 11% 风险单位；ETH 近期样本外先到止盈比表值低 3~7pp，保守看待'
+              : plan.windowRace
+                ? '窗口竞速为实测校准（逐根判定谁先触发，同根双触按先止损保守计）：持仓越短先到止盈率越低、未触及占比越高，按自己的持仓周期查对应行；条件概率，触发确认入场后有效'
+                : 'TP 百分比为条件概率：触发条件确认入场后 30 根 4h 内触及（历史回测校准值）；未触发前不成立'}
           </p>
         )}
         {plan.id === 'B' && (
@@ -374,15 +377,25 @@ export default function AiAnalysisCard() {
                 </div>
               </div>
 
-              {/* 双预案 */}
+              {/* 多预案（按 id 定位：A 回调 / B 突破 / C 超短线） */}
               {data.plans.length > 0 && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {renderPlan(
-                    data.plans[0],
-                    data.narrative?.planAComment || data.plans[0].trigger,
-                  )}
-                  {data.plans[1] &&
-                    renderPlan(data.plans[1], data.narrative?.planBComment || data.plans[1].trigger)}
+                  {data.plans.find((p) => p.id === 'A') &&
+                    renderPlan(
+                      data.plans.find((p) => p.id === 'A')!,
+                      data.narrative?.planAComment || data.plans.find((p) => p.id === 'A')!.trigger,
+                    )}
+                  {data.plans.find((p) => p.id === 'B') &&
+                    renderPlan(
+                      data.plans.find((p) => p.id === 'B')!,
+                      data.narrative?.planBComment || data.plans.find((p) => p.id === 'B')!.trigger,
+                    )}
+                  {data.plans.find((p) => p.id === 'C') &&
+                    renderPlan(
+                      data.plans.find((p) => p.id === 'C')!,
+                      data.narrative?.planCComment ||
+                        data.plans.find((p) => p.id === 'C')!.trigger,
+                    )}
                 </div>
               )}
 
