@@ -7,9 +7,9 @@ import useSymbolStore from '@/store/symbolStore';
 /**
  * AI 结构分析卡片
  *
- * 数字层：规则引擎（structure-analysis.ts）计算，永远准确
- * 文案层：DeepSeek 生成（失败自动降级模板），只组织语言不算数
- * 更新策略：每 4h 收盘自动更新 + 手动刷新按钮
+ * 数字层：规则引擎（structure-analysis.ts）计算，永远准确，30s 实时轮询
+ * 文案层：结构解读（DeepSeek，失败自动降级模板）仅手动触发，不随轮询刷新
+ * 更新策略：数字每 30s 自动更新 + 手动刷新按钮；结构解读点「生成解读」按需生成
  */
 
 interface Plan {
@@ -133,14 +133,17 @@ interface AnalysisData {
     historyWinRatePct: number;
     evidenceText: string;
   };
-  narrative: Narrative;
-  narrativeSource: 'ai' | 'template';
+  narrative?: Narrative | null;
+  narrativeAt?: number | null;
+  narrativeSource?: 'ai' | 'template' | null;
   model: string;
   cached: boolean;
 }
 
 const COLLAPSE_KEY = 'ai-analysis-collapsed';
-const AUTO_REFRESH_MS = 5 * 60 * 1000; // 静默拉缓存（服务端 4h 缓存兜底，命中时开销极小）
+// 实时档：30s 轮询数字层（服务端 60s 缓存兜底，命中时开销极小）；
+// 结构解读（LLM 文案）不随轮询刷新，仅手动触发生成
+const AUTO_REFRESH_MS = 30 * 1000;
 
 function loadCollapsed(): boolean {
   if (typeof window === 'undefined') return false;
@@ -169,11 +172,13 @@ export default function AiAnalysisCard() {
   const [data, setData] = useState<AnalysisData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [genLoading, setGenLoading] = useState(false);
   const [error, setError] = useState('');
   const [collapsed, setCollapsed] = useState(loadCollapsed);
   const [showLevels, setShowLevels] = useState(false);
   const [showProfit, setShowProfit] = useState(false);
 
+  // 数字层实时拉取；返回的 narrative 为 null 时保留已有解读（解读不随轮询刷新）
   const load = useCallback(
     async (force = false) => {
       if (!symbol) return;
@@ -183,7 +188,7 @@ export default function AiAnalysisCard() {
           `/api/structure-analysis?symbol=${symbol}${force ? '&refresh=1' : ''}`,
         );
         if (d && d.plans) {
-          setData(d);
+          setData((prev) => (d.narrative ? d : { ...d, narrative: prev?.narrative ?? null, narrativeAt: prev?.narrativeAt ?? null }));
           setError('');
         } else if (d && (d as any).error) {
           setError((d as any).message || '数据源暂不可用');
@@ -197,6 +202,25 @@ export default function AiAnalysisCard() {
     },
     [symbol],
   );
+
+  // 结构解读（LLM 文案层）：仅手动触发，调 narrative=1 生成
+  const genNarrative = useCallback(async () => {
+    if (!symbol || genLoading) return;
+    setGenLoading(true);
+    try {
+      const d = await apiGet<AnalysisData>(
+        `/api/structure-analysis?symbol=${symbol}&narrative=1`,
+      );
+      if (d && d.plans && d.narrative) {
+        setData((prev) => ({ ...(prev ?? d), ...d }));
+        setError('');
+      }
+    } catch (err: any) {
+      setError(err?.message || '解读生成失败');
+    } finally {
+      setGenLoading(false);
+    }
+  }, [symbol, genLoading]);
 
   useEffect(() => {
     setLoading(true);
@@ -318,7 +342,11 @@ export default function AiAnalysisCard() {
           )}
           {data && !loading && (
             <span className="text-dark-500 text-[10px] px-1.5 py-0.5 rounded bg-dark-800/80 border border-dark-700/50">
-              {data.narrativeSource === 'ai' ? 'AI 解读' : '模板解读'}
+              {data.narrative
+                ? data.narrativeSource === 'ai'
+                  ? 'AI 解读'
+                  : '模板解读'
+                : '实时数据'}
             </span>
           )}
         </div>
@@ -370,7 +398,7 @@ export default function AiAnalysisCard() {
       {!collapsed && (
         <div className="mt-3 space-y-3">
           {loading && (
-            <div className="py-8 text-center text-dark-500 text-sm">正在计算三周期结构 + AI 解读...</div>
+            <div className="py-8 text-center text-dark-500 text-sm">正在计算三周期结构...</div>
           )}
 
           {!loading && error && !data && (
@@ -436,7 +464,14 @@ export default function AiAnalysisCard() {
               <div className={`rounded-lg border p-3.5 ${bias.badge.replace('text-', 'border-').replace(/bg-\S+/, (m) => m.replace('/15', '/10'))}`}>
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className={`font-semibold ${bias.text} leading-snug`}>{data.narrative?.headline}</p>
+                    <p className={`font-semibold ${bias.text} leading-snug`}>
+                      {data.narrative?.headline ||
+                        (data.directionSignal?.active
+                          ? data.directionSignal.dir === 'long'
+                            ? '信号触发 · 做多预案生效'
+                            : '信号触发 · 做空预案生效'
+                          : '无信号 · 结构观望')}
+                    </p>
                     <p className="text-dark-400 text-xs mt-1.5">
                       现价 <span className="text-dark-200 font-mono">{formatPrice(data.currentPrice)}</span> · 共振 {data.resonanceText}
                     </p>
@@ -462,26 +497,68 @@ export default function AiAnalysisCard() {
                 </div>
               )}
 
-              {/* AI 解读段落 */}
+              {/* 结构解读（LLM 文案层 · 手动触发） */}
               <div className="rounded-lg bg-dark-800/40 border border-dark-700/40 p-3.5">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-dark-300 text-xs font-semibold">结构解读</span>
-                  <span className="text-dark-600 text-[10px]">数字由规则引擎计算</span>
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-dark-300 text-xs font-semibold shrink-0">结构解读</span>
+                    <span className="text-dark-600 text-[10px] truncate">
+                      {data.narrative
+                        ? `快照 ${new Date(data.narrativeAt || data.generatedAt).toLocaleTimeString('zh-CN', { hour12: false })} · 数字实时`
+                        : '数字由规则引擎实时计算'}
+                    </span>
+                  </div>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      genNarrative();
+                    }}
+                    disabled={genLoading}
+                    className={`shrink-0 flex items-center gap-1 text-[11px] px-2 py-1 rounded border transition-colors disabled:opacity-50 ${
+                      data.narrative
+                        ? 'border-dark-600/60 text-dark-400 hover:text-dark-200 hover:border-dark-500'
+                        : 'border-amber-500/40 text-amber-400 hover:bg-amber-500/10'
+                    }`}
+                    title={data.narrative ? '按最新结构重新生成解读' : '生成 AI 结构解读'}
+                  >
+                    <svg
+                      className={`w-3 h-3 ${genLoading ? 'animate-spin' : ''}`}
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d={genLoading ? 'M12 3a9 9 0 109 9' : 'M13 10V3L4 14h7v7l9-11h-7'}
+                      />
+                    </svg>
+                    {genLoading ? '生成中' : data.narrative ? '重新生成' : '生成解读'}
+                  </button>
                 </div>
-                <div className="space-y-2">
-                  {data.narrative?.paragraphs.map((p, i) => (
-                    <p key={i} className="text-dark-300 text-xs leading-relaxed">
-                      {p}
-                    </p>
-                  ))}
-                </div>
+                {data.narrative ? (
+                  <div className="space-y-2">
+                    {data.narrative.paragraphs.map((p, i) => (
+                      <p key={i} className="text-dark-300 text-xs leading-relaxed">
+                        {p}
+                      </p>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-dark-500 text-xs leading-relaxed">
+                    上方数字与预案为规则引擎实时计算结果；点击「生成解读」调用 AI 生成结构解读文案（按需触发，不自动消耗）。
+                  </p>
+                )}
               </div>
 
               {/* 失效条件 */}
               {data.invalidation && (
                 <div className="rounded-lg bg-red-500/5 border border-red-500/20 px-3.5 py-2.5 flex items-start gap-2">
                   <span className="text-red-400 text-xs font-bold shrink-0 mt-0.5">失效</span>
-                  <p className="text-red-300/90 text-xs leading-relaxed">{data.narrative?.invalidation}</p>
+                  <p className="text-red-300/90 text-xs leading-relaxed">
+                    {data.narrative?.invalidation || data.invalidation.note}
+                  </p>
                 </div>
               )}
 
