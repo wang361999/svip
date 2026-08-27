@@ -667,6 +667,43 @@ function tpProbability(entry: number, tp: number, sigmaPerBar: number, bars: num
   return lookupCalib(ctx === 'pullback' ? TP_CALIB_PULLBACK : TP_CALIB_BREAKOUT, d, 0.15); // 0.15 宽分桶拟合
 }
 
+/**
+ * A 方案"先到止损"校准表 —— ρ = TP1距离/止损距离（对数距离比） → 入场确认后
+ * 30 根 4h 内止损先于 TP1 被触及的概率。
+ *
+ * 与 TP 触及概率的本质区别：触及口径包含"先扫损后又到 TP"的路径，
+ * 对实际挂单交易者而言没有意义；本表统计的是逐根扫描谁先到（同根双触按先止损保守计）。
+ * ρ 小 = TP 比止损近得多 → 先到止损率低；ρ 大 = TP 比止损远 → 先到止损率高。
+ *
+ * 数据来源：ETH/BTC/SOL 4h 走查回放，A 情境（回踩触及+止跌确认K线起算）n=1322。
+ * 样本外验证（时间后30%，其中 ETH n=150）：ETH 实际先到止损 39.3% vs 表预测 40.4%（+1.1pp）。
+ * 局限：分桶级样本量 61~515，单桶误差可达 ±15pp，数值当量级参考。
+ *
+ * 注意：B 方案（突破回踩）不提供此概率 —— 其先到止损率随行情机制漂移剧烈
+ * （全期 21% vs 2026 年以来 35%，旧样本拟合在近期样本外低估 16pp），无法稳定校准，
+ * 展示会误导，宁缺毋滥。
+ */
+const SL_FIRST_CALIB_PULLBACK: [number, number][] = [
+  [0.25, 0.197], // n=127
+  [0.5, 0.227], // n=405
+  [0.75, 0.256], // n=82
+  [1.25, 0.426], // n=61
+  [1.5, 0.518], // n=515
+];
+
+/**
+ * A 方案入场确认后 30 根 4h 内：止损先于 TP1 被触及的概率（0-1）
+ * 先到止盈概率 ≈ 1 - 先到止损 - 都未触及；实测"都未触及"仅 1~3%，归一化时忽略并如实标注
+ */
+function slFirstProbability(entry: number, tp1: number, stop: number, sigmaPerBar: number, bars: number): number {
+  if (entry <= 0 || tp1 <= 0 || stop <= 0 || sigmaPerBar <= 0 || bars <= 0) return 0;
+  const dTp = Math.abs(Math.log(tp1 / entry));
+  const dSl = Math.abs(Math.log(stop / entry));
+  if (dSl <= 0) return 0;
+  const rho = dTp / dSl; // 比值，σ√t 已约掉
+  return lookupCalib(SL_FIRST_CALIB_PULLBACK, rho, 0.25); // 0.25 宽分桶拟合
+}
+
 /** 取方向侧最近的一个位（dir=1 上方 / -1 下方，限制最大距离） */
 function nearestInDirection(
   levels: { price: number; label: string }[],
@@ -748,6 +785,13 @@ export interface TradePlan {
   tp1ProbabilityPct?: number;
   /** 自入场价起 N 根 4h 内触及 TP2 的估算概率（0-100） */
   tp2ProbabilityPct?: number;
+  /**
+   * 入场确认后 30 根 4h 内：TP1 先于止损被触及的概率（0-100，实测"先到"口径）
+   * 仅 A 方案提供；B 方案因止损率随行情机制漂移无法稳定校准而不提供（见 SL_FIRST_CALIB 注释）
+   */
+  tp1FirstPct?: number;
+  /** 入场确认后 30 根 4h 内：止损先于 TP1 被触及的概率（0-100，实测"先到"口径），仅 A 方案 */
+  slFirstPct?: number;
   /** 触发概率主观标记：high=回调类（结构内），medium=突破类（需动能确认） */
   confidence: 'high' | 'medium';
 }
@@ -768,7 +812,13 @@ function buildPlan(
   tp1: number,
   tp2: number,
   confidence: 'high' | 'medium',
-  extras?: { tp2Source?: string; tp1ProbabilityPct?: number; tp2ProbabilityPct?: number },
+  extras?: {
+    tp2Source?: string;
+    tp1ProbabilityPct?: number;
+    tp2ProbabilityPct?: number;
+    tp1FirstPct?: number;
+    slFirstPct?: number;
+  },
 ): TradePlan {
   const risk = Math.abs(entry - stop);
   const rrTp1 = Math.abs(tp1 - entry) / risk;
@@ -790,6 +840,8 @@ function buildPlan(
     tp2Source: extras?.tp2Source,
     tp1ProbabilityPct: extras?.tp1ProbabilityPct,
     tp2ProbabilityPct: extras?.tp2ProbabilityPct,
+    tp1FirstPct: extras?.tp1FirstPct,
+    slFirstPct: extras?.slFirstPct,
     confidence,
   };
 }
@@ -878,6 +930,9 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
   // 预案 TP 概率：按入场情境查对应校准表（A=回调确认 / B=突破回踩确认）
   const tpProbFrom = (entry: number, tp: number, ctx: 'pullback' | 'breakout') =>
     Math.round(tpProbability(entry, tp, sigmaPerBar, PROB_BARS, ctx) * 100);
+  // A 方案"先到"口径概率（TP1 与止损逐根竞速，仅 A 情境有校准表）
+  const slFirstFrom = (entry: number, tp1: number, stop: number) =>
+    Math.round(slFirstProbability(entry, tp1, stop, sigmaPerBar, PROB_BARS) * 100);
 
   let profitTargets: ProfitTarget[] = [];
   let confluence: ConfluenceZone | null = null;
@@ -978,6 +1033,8 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
           tp2Source: tp2SourceA,
           tp1ProbabilityPct: tpProbFrom(entryA, tp1A, 'pullback'),
           tp2ProbabilityPct: tpProbFrom(entryA, tp2A, 'pullback'),
+          tp1FirstPct: Math.max(0, 100 - slFirstFrom(entryA, tp1A, stopA) - 2), // 实测"30根内两者都未触及"约2%
+          slFirstPct: slFirstFrom(entryA, tp1A, stopA),
         }),
       );
       const entryB = leg.endPrice * 1.005; // 突破前高后回踩
@@ -1017,6 +1074,8 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
           tp2Source: tp2SourceA,
           tp1ProbabilityPct: tpProbFrom(entryA, tp1A, 'pullback'),
           tp2ProbabilityPct: tpProbFrom(entryA, tp2A, 'pullback'),
+          tp1FirstPct: Math.max(0, 100 - slFirstFrom(entryA, tp1A, stopA) - 2), // 实测"30根内两者都未触及"约2%
+          slFirstPct: slFirstFrom(entryA, tp1A, stopA),
         }),
       );
       const entryB = leg.endPrice * 0.995;

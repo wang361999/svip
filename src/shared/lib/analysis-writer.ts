@@ -123,6 +123,8 @@ function buildLlmInput(a: StructureAnalysis): Record<string, unknown> {
     加权盈亏比: p.rrBlended,
     触及概率TP1: p.tp1ProbabilityPct != null ? `${p.tp1ProbabilityPct}%（条件概率：触发条件确认入场后，自入场价30根4h内触及；按入场情境校准的历史回测值，非理论推导）` : null,
     触及概率TP2: p.tp2ProbabilityPct != null ? `${p.tp2ProbabilityPct}%（条件概率：触发条件确认入场后，自入场价30根4h内触及；按入场情境校准的历史回测值，非理论推导）` : null,
+    先到止盈概率: p.tp1FirstPct != null ? `${p.tp1FirstPct}%（实测竞速口径：入场确认后30根4h内，TP1先于止损被触及；同根双触按先止损保守计，最贴近挂单实绩）` : null,
+    先到止损概率: p.slFirstPct != null ? `${p.slFirstPct}%（实测竞速口径，含义同上；A方案专属，B方案因止损率随行情机制漂移无法稳定校准故不提供）` : null,
   });
 
   const trendBrief = (tf: '4h' | '1h' | '15m') => {
@@ -197,6 +199,7 @@ const SYSTEM_PROMPT = `你是"结构共振交易法"的资深交易分析师，�
 4. 严格输出 JSON，不要 markdown 代码块，不要多余文字
 5. 若存在"汇流止盈区"，解读中须点出它由哪些方法叠加、为什么可信度更高；仅当预案的"目标2依据"含"汇流"时才把 TP2 与汇流区价格绑定，否则汇流区应描述为现价附近的第一目标带（减仓参考），不要与 TP2 混淆
 6. 术语规范：使用"推动腿"（Impulse Leg）指代最近一段单方向显著推动行情，首次出现须自然带出定义（如"最近一段自摆动低点 X 推升至摆动高点 Y 的上行推动（推动腿）"），不使用"腿"单字；回撤比例指现价沿该推动自端点向起点折返的深度
+7. 概率口径：方案A若提供"先到止盈/先到止损概率"，点评时优先引用这两个数（竞速口径最贴近挂单实绩），并明确这是条件概率、以止损纪律执行为前提；不要把"触及概率"说成胜率——触及口径包含先扫损后又到目标的路径，数值必然高于先到口径；B方案无先到概率，不要编造
 
 输出 JSON 结构：
 {
@@ -308,7 +311,11 @@ export function buildTemplateNarrative(a: StructureAnalysis): AnalysisNarrative 
     biasText: a.biasText,
     paragraphs,
     planAComment: planA
-      ? `首选回调单：入场 ${planA.entry}，止损 ${planA.stop}（风险 ${planA.riskPct}%），TP2 盈亏比 ${planA.rrTp2}。`
+      ? `首选回调单：入场 ${planA.entry}，止损 ${planA.stop}（风险 ${planA.riskPct}%），TP2 盈亏比 ${planA.rrTp2}${
+          planA.tp1FirstPct != null && planA.slFirstPct != null
+            ? `。历史回测同类入场先到 TP1 概率约 ${planA.tp1FirstPct}%、先到止损约 ${planA.slFirstPct}%（条件概率，触发确认入场后 30 根 4h 内；以止损纪律执行为前提）`
+            : ''
+        }。`
       : '结构不明，暂无回调预案。',
     planBComment: planB
       ? `备选突破单：触发位 ${round2(planB.entry)}，止损 ${planB.stop}，TP2 盈亏比 ${planB.rrTp2}，需放量确认。`

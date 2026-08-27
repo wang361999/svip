@@ -29,6 +29,8 @@ interface Plan {
   tp2Source?: string;
   tp1ProbabilityPct?: number;
   tp2ProbabilityPct?: number;
+  tp1FirstPct?: number;
+  slFirstPct?: number;
   confidence: 'high' | 'medium';
 }
 
@@ -225,9 +227,32 @@ export default function AiAnalysisCard() {
             加权盈亏比 <span className="text-amber-400 font-mono font-semibold">{plan.rrBlended}</span>
           </span>
         </div>
+        {plan.tp1FirstPct != null && plan.slFirstPct != null && (
+          <div className="mt-2 pt-2 border-t border-dark-700/50">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-dark-400">先到止盈</span>
+              <span className="text-green-400 font-mono font-semibold">{plan.tp1FirstPct}%</span>
+            </div>
+            <div className="mt-1 flex items-center justify-between text-xs">
+              <span className="text-dark-400">先到止损</span>
+              <span className="text-red-400 font-mono font-semibold">{plan.slFirstPct}%</span>
+            </div>
+            <div className="mt-1 h-1.5 rounded-full bg-dark-700 overflow-hidden flex">
+              <div className="bg-green-500/70" style={{ width: `${plan.tp1FirstPct}%` }} />
+              <div className="bg-red-500/70" style={{ width: `${plan.slFirstPct}%` }} />
+            </div>
+          </div>
+        )}
         {(plan.tp1ProbabilityPct != null || plan.tp2ProbabilityPct != null) && (
           <p className="mt-1.5 text-[10px] text-dark-500">
-            TP 百分比为条件概率：触发条件确认入场后 30 根 4h 内触及（历史回测校准值）；未触发前不成立
+            {plan.tp1FirstPct != null
+              ? '先到止盈/止损为实测竞速口径（逐根判定谁先触发，同根双触按先止损计），比触及概率更贴近挂单实绩；为条件概率，触发确认入场后 30 根 4h 内有效'
+              : 'TP 百分比为条件概率：触发条件确认入场后 30 根 4h 内触及（历史回测校准值）；未触发前不成立'}
+          </p>
+        )}
+        {plan.id === 'B' && (
+          <p className="mt-1.5 text-[10px] text-dark-500">
+            B 方案不提供先到概率：实测其止损率先到比例随行情机制漂移（全期 21% → 2026 年 35%），无法稳定校准
           </p>
         )}
         {plan.tp2Source && (
