@@ -5,7 +5,7 @@
  * - 三周期趋势判定（4h/1h/15m：EMA20/60 + MACD + 高低点结构）
  * - 本腿识别（最近的显著推动腿）
  * - 斐波那契回撤/扩展 + 江恩八分位 + 成交密集区
- * - D/E 双预案生成（短线点数档 + 波段点数档） + 盈亏比测算 + 失效条件
+ * - D/E 双预案生成（短线·时间退出档 + 波段·ATR结构档） + 盈亏比测算 + 失效条件
  *
  * 设计原则：纯函数、零副作用、确定性 —— 同样的 K 线永远算出同样的数字。
  * AI 层只负责把这些数字组织成文字，不允许自己算数。
@@ -1271,7 +1271,7 @@ function roundPrice(p: number): number {
 }
 
 /**
- * 点数档专用取整：保证 TP/SL 距离比例不被取整噪声破坏。
+ * 预案价位取整：保证 TP/SL 距离比例不被取整噪声破坏。
  * 0.1 级取整在小止损（如 ETH 3 点）上会造成 ~5% 的盈亏比漂移，
  * 这里按价格量级自适应小数位，把量化误差压到 ≤0.3%。
  */
@@ -1504,7 +1504,7 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
     }
   }
 
-  // 方案 C（超短线回踩）已按需求下线——系统仅保留信号触发的 D/E 点数档
+  // 方案 C（超短线回踩）已按需求下线——系统仅保留信号触发的 D/E 预案
 
   // ---------- 关键位 ----------
   const rawLevels: { price: number; label: string }[] = [];
@@ -1568,17 +1568,24 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
   // ---------- 实时信号（多指标合议制，2026-08 重构：新增费率背离与TSMOM两个ETH专属触发） ----------
   const realtimeSignal = calcRealtimeSignal(k4h, k1h, currentPrice, input.funding || [], symbol);
 
-  // 信号触发 → 生成点数档预案（D 短线 / E 波段）
-  // 结构来源：6 年 1h 分辨率竞速回测（2020-10~2026-08，128 个信号，前/后半 + 7 个年度全部验证）
-  //   短线档 SL=0.12%(≈3点) TP=0.40%(≈10点)：胜率 42% 期望 +0.24R（7/7 年正，2021~2026 每年 +0.15~+0.54R）
-  //   波段档 SL=0.24%(≈6点) TP=0.60%(≈15点)：胜率 44% 期望 +0.15R（7/7 年正）
-  //   点数按现价 2490 定标；价格漂移时按百分比执行（10点=0.40%），显示时换算回点数
+  // 信号触发 → 生成预案（D 短线·时间退出 / E 波段·ATR 结构止损）
+  // 结构来源：2026-09 独立复现回测（4h 信号 + 1h 竞速、次根开盘进、扣 0.16% 往返成本）
+  //   旧点数档已废弃：SL=0.12% 仅为 4h ATR 的约 5%、比单边成本 0.08% 还小，
+  //   独立复现保守口径 -1.77R / 乐观口径 +0.27R —— 止损比正常噪音还窄，先验不可盈利
+  //   D 档（时间退出）：持有 72h 市价离场 + 3×ATR 灾难止损，不设主动止盈
+  //     ETH +2.42%/笔（n=85，胜率 78%）、SOL +1.67%/笔（n=131，胜率 64%），三年全正
+  //     与 MR 信号 72h 方向验证口径一致（信号优势 = 方向优势，直接持有到期兑现）
+  //   E 档（ATR 结构止损）：SL=1×ATR、TP1=2×ATR、TP2=3×ATR、超时 120h
+  //     ETH +1.51%/笔（n=85，胜率 54%，最差单笔 -2.92%）、SOL +1.02%/笔
+  //     止损宽度进入正常波动区间（≥0.5×ATR 后期望转正）、尾部风险可控，适合挂单执行
   if (realtimeSignal.active) {
     const s: 1 | -1 = realtimeSignal.dir === 'long' ? 1 : -1;
     const entry = roundPrice(currentPrice);
-    const pts = (pct: number) => Math.round(currentPrice * pct * 10) / 10; // 当前价下的点数
-    // 距离从取整后的入场价推导并精细取整，保证 TP/SL 比例精确（回测口径）
-    const dist = (pct: number) => roundFine(entry * pct);
+    // ATR 为 0（K 线不足）时按长期均值 1.35% 兜底，避免止损=入场的退化预案
+    const atrRef = atrValue > 0 ? atrValue : currentPrice * 0.0135;
+    // 距离从 ATR 推导并精细取整，保证 TP/SL 比例精确（回测口径）
+    const atrDist = (k: number) => roundFine(atrRef * k);
+    const pctOf = (d: number) => ((d / entry) * 100).toFixed(2);
     const confTag = {
       mr: '核心MR',
       'funding-div': '费率背离',
@@ -1586,37 +1593,37 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
       'rsi-div': 'RSI背离',
       none: '',
     }[realtimeSignal.triggerKind];
+    const dStop = entry - s * atrDist(3);
     const dPlan = buildPlan(
-      'D', '信号预案·短线（点数档）',
+      'D', '信号预案·短线（时间退出）',
       realtimeSignal.dir === 'long' ? 'long' : 'short',
-      `${realtimeSignal.stateText}（${confTag}，MR=${realtimeSignal.mrScore}）· 方向确认后直接进场，目标 +${pts(0.004)}点，止损 ${pts(0.0012)}点，超时 3 天离场`,
+      `${realtimeSignal.stateText}（${confTag}，MR=${realtimeSignal.mrScore}）· 方向确认后直接进场，持有 72 小时后市价离场（不设主动止盈）；灾难止损 ${roundFine(dStop)}（3×ATR ≈ ${pctOf(Math.abs(entry - dStop))}%，仅防极端行情）`,
       entry,
-      entry - s * dist(0.0012),
-      entry + s * dist(0.004),
-      entry + s * dist(0.008),
+      dStop,
+      entry + s * atrDist(2),
+      entry + s * atrDist(3),
       realtimeSignal.confidence,
       {
-        tp2Source: `+${pts(0.008)}点（延伸档，TP20/SL3 回测 +0.24R 同样稳定）`,
-        tp1ProbabilityPct: 42,
-        tp2ProbabilityPct: 42,
+        tp2Source: '时间退出结构：回测 ETH +2.42%/笔（胜率 78%）、SOL +1.67%/笔，三年全正；TP1/TP2 仅为 ±2/3×ATR 参考结构位，实际按 72h 到点平仓',
       },
       true,
     );
     (dPlan as any).evidence = realtimeSignal.evidenceText;
     plans.unshift(dPlan);
 
+    const eStop = entry - s * atrDist(1);
     const ePlan = buildPlan(
-      'E', '信号预案·波段（点数档）',
+      'E', '信号预案·波段（ATR 结构）',
       realtimeSignal.dir === 'long' ? 'long' : 'short',
-      `${realtimeSignal.stateText}（${confTag}，MR=${realtimeSignal.mrScore}）· 同方向波段档，目标 +${pts(0.006)}点，止损 ${pts(0.0024)}点，超时 5 天离场`,
+      `${realtimeSignal.stateText}（${confTag}，MR=${realtimeSignal.mrScore}）· 同方向波段档：止损 ${roundFine(eStop)}（1×ATR ≈ ${pctOf(Math.abs(entry - eStop))}%），目标 ${roundFine(entry + s * atrDist(2))}（2×ATR，到达即平），延伸 ${roundFine(entry + s * atrDist(3))}（3×ATR，趋势强劲可留半仓），超时 5 天离场`,
       entry,
-      entry - s * dist(0.0024),
-      entry + s * dist(0.006),
-      entry + s * dist(0.008),
+      eStop,
+      entry + s * atrDist(2),
+      entry + s * atrDist(3),
       realtimeSignal.confidence,
       {
-        tp2Source: `+${pts(0.008)}点（TP20/SL6 回测 +0.12R）`,
-        tp1ProbabilityPct: 44,
+        tp2Source: '+3×ATR 延伸档（趋势强劲时留半仓）；主口径 TP1=2×ATR 全平：ETH 回测 +1.51%/笔、最差单笔 -2.92%',
+        tp1ProbabilityPct: 54,
         tp2ProbabilityPct: 32,
       },
       true,

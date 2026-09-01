@@ -560,7 +560,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     const drawnPrices: number[] = [];
     const refPrice = pd?.currentPrice || (klines.length ? klines[klines.length - 1].close : 1);
     if (pd && showProfit) {
-      // 仅 D 方案（短线点数档）铺色带；信号未触发时无色带
+      // 仅 D 方案（短线时间退出档）铺色带；信号未触发时无色带
       const pa = pd.plans.find((p) => p.id === 'D');
       if (pa) drawnPrices.push(pa.entry, pa.stop, pa.tp1, pa.tp2);
     }
@@ -646,7 +646,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           const step = Math.max(1, Math.abs(xLast - xPrev));
           // 色带从最新K线向左铺 8 根（原18根过宽，压缩后不遮历史走势，仍够读色块边界）
           const projX0 = Math.max(0, xLast - step * 8);
-          // 色带仅跟随 D 方案（短线点数档）；信号未触发时无色带（下方画测算全景替代）
+          // 色带仅跟随 D 方案（短线时间退出档）；信号未触发时无色带（下方画测算全景替代）
           const pa = pd.plans.find((p) => p.id === 'D');
           if (pa) {
             // ===== 纯色带画法（按反馈：无线无字，颜色即语义；透明度加深保证醒目） =====

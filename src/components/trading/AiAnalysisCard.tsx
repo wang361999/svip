@@ -268,6 +268,8 @@ export default function AiAnalysisCard() {
 
   const renderPlan = (plan: Plan, comment: string) => {
     const isLong = plan.side === 'long';
+    // 时间退出档（方案D）：按 72h 到点平仓，无主动止盈；盈亏比仪表不适用，TP 仅为参考位
+    const isTimeExit = plan.name.includes('时间退出');
     return (
       <div
         key={plan.id}
@@ -287,7 +289,16 @@ export default function AiAnalysisCard() {
             <span className="text-white text-sm font-semibold truncate">{plan.name}</span>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <RingGauge value={plan.rrBlended} />
+            {isTimeExit ? (
+              <span
+                className="text-[10px] font-semibold px-1.5 py-1 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30 font-mono"
+                title="时间退出结构：持有 72 小时后市价离场，不设主动止盈；止损为 3×ATR 灾难位"
+              >
+                72h 平仓
+              </span>
+            ) : (
+              <RingGauge value={plan.rrBlended} />
+            )}
             <span className={`text-xs ${isLong ? 'text-green-400' : 'text-red-400'}`}>
               {isLong ? '做多' : '做空'}
             </span>
@@ -303,33 +314,49 @@ export default function AiAnalysisCard() {
             <span className="text-red-400 font-mono">{formatPrice(plan.stop)}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-dark-400">TP1</span>
+            <span className="text-dark-400">{isTimeExit ? '参考位1' : 'TP1'}</span>
             <span className="text-green-400 font-mono">
               {formatPrice(plan.tp1)}{' '}
-              <span className="text-dark-500">
-                ({plan.rrTp1}
-                {plan.tp1ProbabilityPct != null ? ` · ${plan.tp1ProbabilityPct}%` : ''})
-              </span>
+              {isTimeExit ? null : (
+                <span className="text-dark-500">
+                  ({plan.rrTp1}
+                  {plan.tp1ProbabilityPct != null ? ` · ${plan.tp1ProbabilityPct}%` : ''})
+                </span>
+              )}
             </span>
           </div>
           <div className="flex justify-between">
-            <span className="text-dark-400">TP2</span>
+            <span className="text-dark-400">{isTimeExit ? '参考位2' : 'TP2'}</span>
             <span className="text-green-400 font-mono">
               {formatPrice(plan.tp2)}{' '}
-              <span className="text-dark-500">
-                ({plan.rrTp2}
-                {plan.tp2ProbabilityPct != null ? ` · ${plan.tp2ProbabilityPct}%` : ''})
-              </span>
+              {isTimeExit ? null : (
+                <span className="text-dark-500">
+                  ({plan.rrTp2}
+                  {plan.tp2ProbabilityPct != null ? ` · ${plan.tp2ProbabilityPct}%` : ''})
+                </span>
+              )}
             </span>
           </div>
         </div>
         <div className="mt-2 pt-2 border-t border-dark-700/50 flex items-center justify-between text-xs">
           <span className="text-dark-400">
-            风险 <span className="text-dark-300 font-mono">{plan.riskPct}%</span>
+            {isTimeExit ? (
+              <>
+                灾难止损 <span className="text-dark-300 font-mono">{plan.riskPct}%</span>
+              </>
+            ) : (
+              <>
+                风险 <span className="text-dark-300 font-mono">{plan.riskPct}%</span>
+              </>
+            )}
           </span>
-          <span className="text-dark-500" title="环形仪表为 TP1/TP2 加权盈亏比，满刻度 3">
-            TP1 {plan.rrTp1} · TP2 {plan.rrTp2}
-          </span>
+          {isTimeExit ? (
+            <span className="text-dark-500">参考位 = ±2/3×ATR，实际按 72h 到点平仓</span>
+          ) : (
+            <span className="text-dark-500" title="环形仪表为 TP1/TP2 加权盈亏比，满刻度 3">
+              TP1 {plan.rrTp1} · TP2 {plan.rrTp2}
+            </span>
+          )}
         </div>
         {plan.tp1ProbabilityPct != null || plan.tp2ProbabilityPct != null ? (
           <p className="mt-1.5 text-[10px] text-dark-500">

@@ -22,9 +22,9 @@ export interface AnalysisNarrative {
   biasText: string;
   /** 解读段落（2-4 段） */
   paragraphs: string[];
-  /** 方案D点评（短线点数档信号预案，可能不存在） */
+  /** 方案D点评（短线·时间退出档信号预案，可能不存在） */
   planDComment: string;
-  /** 方案E点评（波段点数档信号预案，可能不存在） */
+  /** 方案E点评（波段·ATR结构档信号预案，可能不存在） */
   planEComment: string;
   /** 失效条件（数字必须与规则引擎一致） */
   invalidation: string;
@@ -219,8 +219,8 @@ const SYSTEM_PROMPT = `你是"结构共振交易法"的资深交易分析师，�
 {
   "headline": "一句话结论，20字内。方向信号未触发时必须以'无信号'开头（如'无信号·多头结构等回调'），禁止任何方向倾向词；触发时包含信号方向",
   "paragraphs": ["结构解读段落，2-4段，每段60-120字：结构现状、当前位置、为什么现在不能进场（未触发时）或执行纪律（触发时）"],
-  "planDComment": "对方案D（短线点数档）的一句话点评：方向信号触发、目标约10点盈亏比3.33、6年回测胜率42%期望+0.24R七年度全正、超时3天离场；若无D方案输出空字符串",
-  "planEComment": "对方案E（波段点数档）的一句话点评：同方向目标约15点盈亏比2.5、胜率44%期望+0.15R七年度全正、超时5天离场、适合挂单执行；若无E方案输出空字符串",
+  "planDComment": "对方案D（短线·时间退出档）的一句话点评：方向信号触发、持有72小时后市价离场、3×ATR灾难止损、ETH回测+2.42%/笔胜率78%（SOL +1.67%/笔）三年全正；若无D方案输出空字符串",
+  "planEComment": "对方案E（波段·ATR结构档）的一句话点评：同方向止损1×ATR目标2×ATR延伸3×ATR、ETH回测+1.51%/笔胜率54%最差单笔-2.92%、超时5天离场、适合挂单执行；若无E方案输出空字符串",
   "invalidation": "失效条件一句话，必须包含失效价格数字",
   "reminder": "风险提醒一句话，结合当前波动特点"
 }`;
@@ -304,7 +304,7 @@ export function buildTemplateNarrative(a: StructureAnalysis): AnalysisNarrative 
     );
     paragraphs.push(
       a.plans.length > 0 && a.plans[0]
-        ? `当前方向信号未触发：实证方向信号（MR 极端 + EMA200 同向）尚未到极端位，此刻任何方向的点数目标都缺乏统计优势。等信号触发后按 D/E 点数档执行，不触发就空仓等待。`
+        ? `当前方向信号未触发：实证方向信号（MR 极端 + EMA200 同向）尚未到极端位，此刻任何方向的进出场结构都缺乏统计优势。等信号触发后按 D/E 预案执行，不触发就空仓等待。`
         : trendLine,
     );
     if (a.confluence) {
@@ -341,12 +341,12 @@ export function buildTemplateNarrative(a: StructureAnalysis): AnalysisNarrative 
       : '中性',
     paragraphs,
     planDComment: planD
-      ? `短线点数档（方案D）：${planD.side === 'long' ? '做多' : '做空'}，入场 ${planD.entry}，目标 ${planD.tp1}（+${Math.abs(planD.tp1 - planD.entry).toFixed(1)}点），止损 ${planD.stop}（${Math.abs(planD.entry - planD.stop).toFixed(1)}点，盈亏比 3.33）。6 年 128 个信号回测：胜率 42%、期望 +0.24R，2021~2026 七个年度全部为正。超时 3 天未达目标按市价离场。`
+      ? `短线时间退出档（方案D）：${planD.side === 'long' ? '做多' : '做空'}，入场 ${planD.entry}，持有 72 小时后市价离场（不设主动止盈），灾难止损 ${planD.stop}（3×ATR，仅防极端行情）。独立回测：ETH +2.42%/笔（n=85，胜率 78%）、SOL +1.67%/笔（n=131，胜率 64%），2024~2026 三个年度全部为正。`
       : '',
     planEComment: (() => {
       const p = a.plans.find((x) => x.id === 'E');
       return p
-        ? `波段点数档（方案E）：同方向 ${p.side === 'long' ? '做多' : '做空'}，入场 ${p.entry}，目标 ${p.tp1}（+${Math.abs(p.tp1 - p.entry).toFixed(1)}点），止损 ${p.stop}（${Math.abs(p.entry - p.stop).toFixed(1)}点，盈亏比 2.5）。回测胜率 44%、期望 +0.15R，七个年度全部为正。适合不盯盘时挂单执行，超时 5 天离场。`
+        ? `波段ATR结构档（方案E）：同方向 ${p.side === 'long' ? '做多' : '做空'}，入场 ${p.entry}，止损 ${p.stop}（1×ATR，${p.riskPct}%），目标 ${p.tp1}（2×ATR，到达即平），延伸 ${p.tp2}（3×ATR，趋势强劲可留半仓）。独立回测：ETH +1.51%/笔（n=85，胜率 54%，最差单笔 -2.92%）、SOL +1.02%/笔。适合不盯盘时挂单执行，超时 5 天离场。`
         : '';
     })(),
     invalidation: a.invalidation ? a.invalidation.note : '暂无明确失效位（结构压缩期）。',
