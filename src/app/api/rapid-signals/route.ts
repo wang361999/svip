@@ -10,7 +10,7 @@
 import { createHandler } from '@/shared/api/handler';
 import { apiSuccess, apiError } from '@/shared/api/response';
 import { requireUser } from '@/shared/api/auth-guard';
-import { analyzeRapid, KlineData } from '@/shared/lib/rapid-strategy';
+import { analyzeRapid, KlineData, type RapidAnalysis } from '@/shared/lib/rapid-strategy';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
@@ -54,7 +54,7 @@ async function fetchKlines15m(symbol: string, limit: number = 200): Promise<Klin
 // ==================== 缓存（15 秒） ====================
 
 const CACHE_TTL_MS = 15 * 1000;
-const cache = new Map<string, { data: unknown; expiresAt: number }>();
+const cache = new Map<string, { data: RapidAnalysis; expiresAt: number }>();
 
 // ==================== 主逻辑 ====================
 
