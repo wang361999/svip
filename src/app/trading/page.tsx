@@ -7,8 +7,8 @@ import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
 import PriceTicker from '@/components/trading/PriceTicker';
 import MultiTrendCard from '@/components/trading/MultiTrendCard';
-import AiAnalysisCard from '@/components/trading/AiAnalysisCard';
 import RapidSignalCard from '@/components/trading/RapidSignalCard';
+import IndicatorPanel from '@/components/trading/IndicatorPanel';
 import useAuthStore from '@/store/authStore';
 import { apiGet } from '@/shared/api/client';
 
@@ -131,8 +131,8 @@ export default function TradingPage() {
           {/* 快速多空信号（4 路独立信号源，15m 周期，15 秒自动刷新） */}
           {!isFullscreen && <RapidSignalCard />}
 
-          {/* AI 结构分析卡片（规则引擎算数 + DeepSeek 写解读） */}
-          {!isFullscreen && <AiAnalysisCard />}
+          {/* 技术指标面板（EMA+布林带主图 / RSI副图 / MACD副图） */}
+          {!isFullscreen && <IndicatorPanel />}
 
           {/* 多周期趋势卡片（15m/1h/4h/1d 趋势一览，点击标题栏折叠） */}
           {!isFullscreen && <MultiTrendCard />}
