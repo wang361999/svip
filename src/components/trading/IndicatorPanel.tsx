@@ -390,30 +390,34 @@ export default function IndicatorPanel() {
 
   // ========== 生命周期 ==========
 
+  // 初始化图表（仅客户端，挂载后执行一次）
   useEffect(() => {
     initCharts();
-  }, [initCharts]);
-
-  useEffect(() => {
-    initialized.current = false;
-  }, []);
-
-  useEffect(() => {
     loadData();
-    const timer = setInterval(loadData, 60 * 1000); // 60 秒刷新
-    return () => clearInterval(timer);
-  }, [loadData]);
+    const timer = setInterval(loadData, 60 * 1000);
 
-  // resize
-  useEffect(() => {
-    const handler = () => {
-      mainChart.current?.applyOptions({ width: mainRef.current?.clientWidth || 0 });
-      rsiChart.current?.applyOptions({ width: rsiRef.current?.clientWidth || 0 });
-      macdChart.current?.applyOptions({ width: macdRef.current?.clientWidth || 0 });
+    // resize 处理
+    const handleResize = () => {
+      if (!mainRef.current || !rsiRef.current || !macdRef.current) return;
+      mainChart.current?.applyOptions({ width: mainRef.current.clientWidth });
+      rsiChart.current?.applyOptions({ width: rsiRef.current.clientWidth });
+      macdChart.current?.applyOptions({ width: macdRef.current.clientWidth });
     };
-    window.addEventListener('resize', handler);
-    return () => window.removeEventListener('resize', handler);
-  }, []);
+    window.addEventListener('resize', handleResize);
+
+    // 清理：卸载时销毁图表实例，防止内存泄漏
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('resize', handleResize);
+      mainChart.current?.remove();
+      rsiChart.current?.remove();
+      macdChart.current?.remove();
+      mainChart.current = null;
+      rsiChart.current = null;
+      macdChart.current = null;
+      initialized.current = false;
+    };
+  }, [initCharts, loadData]);
 
   const intervals = [
     { key: '15m', label: '15m' },
