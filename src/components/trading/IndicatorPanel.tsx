@@ -451,71 +451,69 @@ export default function IndicatorPanel() {
         </div>
       </div>
 
-      {/* 图表区 */}
-      <div className="px-2 py-2">
+      {/* 图表区（始终渲染容器，保证 ref 在 useEffect 执行时已存在） */}
+      <div className="px-2 py-2 relative">
+        {/* 加载/错误覆盖层 */}
         {loading && (
-          <div className="h-[360px] flex items-center justify-center text-dark-500 text-sm">
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-dark-900/80 text-dark-500 text-sm backdrop-blur-sm">
             加载指标数据...
           </div>
         )}
-
         {error && (
-          <div className="h-[360px] flex items-center justify-center text-red-400 text-sm">
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-dark-900/80 text-red-400 text-sm backdrop-blur-sm">
             {error}
           </div>
         )}
 
-        {!loading && !error && (
-          <div className="space-y-1">
-            {/* 主图：K线 + EMA + 布林带 */}
-            <div>
-              <div className="flex items-center justify-between px-2 mb-1">
-                <div className="flex gap-3 text-[10px]">
-                  <span className="flex items-center gap-1">
-                    <span className="w-2 h-0.5" style={{ background: EMA9_COLOR }} />
-                    <span className="text-dark-400">EMA9</span>
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <span className="w-2 h-0.5" style={{ background: EMA21_COLOR }} />
-                    <span className="text-dark-400">EMA21</span>
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <span className="w-2 h-0.5" style={{ background: BB_COLOR }} />
-                    <span className="text-dark-400">BOLL(20,2)</span>
-                  </span>
-                </div>
+        <div className="space-y-1">
+          {/* 主图：K线 + EMA + 布林带 */}
+          <div>
+            <div className="flex items-center justify-between px-2 mb-1">
+              <div className="flex gap-3 text-[10px]">
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-0.5" style={{ background: EMA9_COLOR }} />
+                  <span className="text-dark-400">EMA9</span>
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-0.5" style={{ background: EMA21_COLOR }} />
+                  <span className="text-dark-400">EMA21</span>
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-0.5" style={{ background: BB_COLOR }} />
+                  <span className="text-dark-400">BOLL(20,2)</span>
+                </span>
               </div>
-              <div ref={mainRef} className="w-full" style={{ height: 180 }} />
             </div>
-
-            {/* RSI 副图 */}
-            <div>
-              <div className="flex items-center justify-between px-2 mb-1">
-                <span className="text-[10px] text-dark-400">RSI(14)</span>
-                <span className="text-[10px] text-dark-500">30 / 70</span>
-              </div>
-              <div ref={rsiRef} className="w-full" style={{ height: 90 }} />
-            </div>
-
-            {/* MACD 副图 */}
-            <div>
-              <div className="flex items-center justify-between px-2 mb-1">
-                <div className="flex gap-3 text-[10px]">
-                  <span className="flex items-center gap-1">
-                    <span className="w-2 h-0.5" style={{ background: MACD_DIF }} />
-                    <span className="text-dark-400">DIF</span>
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <span className="w-2 h-0.5" style={{ background: MACD_DEA }} />
-                    <span className="text-dark-400">DEA</span>
-                  </span>
-                  <span className="text-dark-400">MACD柱</span>
-                </div>
-              </div>
-              <div ref={macdRef} className="w-full" style={{ height: 90 }} />
-            </div>
+            <div ref={mainRef} className="w-full" style={{ height: 180 }} />
           </div>
-        )}
+
+          {/* RSI 副图 */}
+          <div>
+            <div className="flex items-center justify-between px-2 mb-1">
+              <span className="text-[10px] text-dark-400">RSI(14)</span>
+              <span className="text-[10px] text-dark-500">30 / 70</span>
+            </div>
+            <div ref={rsiRef} className="w-full" style={{ height: 90 }} />
+          </div>
+
+          {/* MACD 副图 */}
+          <div>
+            <div className="flex items-center justify-between px-2 mb-1">
+              <div className="flex gap-3 text-[10px]">
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-0.5" style={{ background: MACD_DIF }} />
+                  <span className="text-dark-400">DIF</span>
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-0.5" style={{ background: MACD_DEA }} />
+                  <span className="text-dark-400">DEA</span>
+                </span>
+                <span className="text-dark-400">MACD柱</span>
+              </div>
+            </div>
+            <div ref={macdRef} className="w-full" style={{ height: 90 }} />
+          </div>
+        </div>
       </div>
 
       {/* 底部说明 */}
