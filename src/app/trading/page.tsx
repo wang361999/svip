@@ -8,6 +8,7 @@ import Footer from '@/components/layout/Footer';
 import PriceTicker from '@/components/trading/PriceTicker';
 import MultiTrendCard from '@/components/trading/MultiTrendCard';
 import AiAnalysisCard from '@/components/trading/AiAnalysisCard';
+import RapidSignalCard from '@/components/trading/RapidSignalCard';
 import useAuthStore from '@/store/authStore';
 import { apiGet } from '@/shared/api/client';
 
@@ -126,6 +127,9 @@ export default function TradingPage() {
 
           {/* K线图（含 MACD 副图 + 布林带 + EMA） */}
           <KlineChart isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen} />
+
+          {/* 快速多空信号（4 路独立信号源，15m 周期，15 秒自动刷新） */}
+          {!isFullscreen && <RapidSignalCard />}
 
           {/* AI 结构分析卡片（规则引擎算数 + DeepSeek 写解读） */}
           {!isFullscreen && <AiAnalysisCard />}
