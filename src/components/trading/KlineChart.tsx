@@ -91,59 +91,7 @@ function saveIndicatorPrefs(next: typeof DEFAULT_INDICATORS) {
   } catch {}
 }
 
-// ========== 利润测算画线（结构分析数据，与 AI 分析卡片同源） ==========
-const PROFIT_PREF_KEY = 'kline-profit-pref';
 
-function loadProfitPref(): boolean {
-  if (typeof window === 'undefined') return true;
-  try {
-    return window.localStorage.getItem(PROFIT_PREF_KEY) !== '0';
-  } catch {
-    return true;
-  }
-}
-
-// ========== 微观结构位画线开关（流动性池 + FVG 缺口，独立于止盈徽章） ==========
-const MICRO_PREF_KEY = 'kline-micro-pref';
-
-function loadMicroPref(): boolean {
-  if (typeof window === 'undefined') return true;
-  try {
-    return window.localStorage.getItem(MICRO_PREF_KEY) !== '0';
-  } catch {
-    return true;
-  }
-}
-
-interface ProfitPlanLine {
-  id: string;
-  entry: number;
-  stop: number;
-  tp1: number;
-  tp2: number;
-  rrTp1: number;
-  rrTp2: number;
-  tp1ProbabilityPct?: number;
-  tp2ProbabilityPct?: number;
-}
-
-/** 结构分析接口中与画线相关的字段 */
-interface ProfitLineData {
-  symbol: string;
-  currentPrice: number;
-  plans: ProfitPlanLine[];
-  profitTargets: { label: string; price: number; probabilityPct: number }[];
-  confluence: { low: number; high: number; mid: number; methods: string[]; probabilityPct: number } | null;
-  extendedTarget: { label: string; price: number; probabilityPct: number } | null;
-  invalidation: { price: number; note: string } | null;
-  liquidityPools?: { price: number; side: 'high' | 'low'; distancePct: number; formedAt?: number; firstAt?: number }[];
-  fairValueGaps?: { low: number; high: number; ce: number; dir: 'bull' | 'bear'; distancePct: number; formedAt?: number }[];
-  dailyPlan?: {
-    bias: 'long' | 'short';
-    entryZone: { low: number; high: number; mid: number; methods: string[] } | null;
-    stopHint: number | null;
-  } | null;
-}
 
 export default function KlineChart({ isFullscreen = false, onToggleFullscreen }: KlineChartProps) {
   const mainChartRef = useRef<HTMLDivElement>(null);
@@ -174,9 +122,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const [showAutoAB9, setShowAutoAB9] = useState(true);
   // 斐波那契回调线
   const [showFibonacci, setShowFibonacci] = useState(false);
-  // 利润测算画线（结构分析：预案/汇流止盈区/目标位）
-  const [showProfit, setShowProfit] = useState(loadProfitPref);
-  const [showMicro, setShowMicro] = useState(loadMicroPref);
   // 左上角 OHLC 图例：随十字线联动（悬停读历史K线，离开回落到最新一根，tick 实时刷新）
   interface LegendInfo { o: number; h: number; l: number; c: number; pct: number }
   const [legend, setLegend] = useState<LegendInfo | null>(null);
@@ -187,13 +132,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const autoPriceLinesRef = useRef<any[]>([]);
   // 斐波那契线 ref（原生价格线）
   const fibPriceLinesRef = useRef<any[]>([]);
-  // 利润测算线 ref + 数据缓存（结构分析接口，服务端 4h 级缓存）
-  const profitLinesRef = useRef<any[]>([]);
-  const profitDataRef = useRef<ProfitLineData | null>(null);
-  const profitFetchStateRef = useRef<{ symbol: string; at: number } | null>(null);
-  // 测算透明框画布（叠加在K线上层，pointer-events: none 不挡交互）
-  const zoneCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const drawZonesRef = useRef<() => void>(() => {});
 
   // 指标显示开关：前台徽章直接管控（localStorage 持久化，后台不再干预）
   const [indicators, setIndicators] = useState(loadIndicatorPrefs);
@@ -417,10 +355,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       try { series.removePriceLine(pl); } catch {}
     }
     fibPriceLinesRef.current = [];
-    for (const pl of profitLinesRef.current) {
-      try { series.removePriceLine(pl); } catch {}
-    }
-    profitLinesRef.current = [];
 
     // —— AB9线（原生满宽价格线，价格轴可读数；应反馈恢复原画法） ——
     if (showAutoAB9 && isMember) {
@@ -476,259 +410,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         }
       }
     }
-
-    // —— 利润测算（预案/汇流/微构 全部由画布层 drawZones 融合呈现） ——
-    // 原生价格线已按反馈移除：与透明测算框叠加曾致同一价位双线双标签。
-
-    // 透明测算框（风险/盈利/汇流/FVG 区域化呈现，叠加画布绘制）
-    drawZonesRef.current();
-  }, [showAutoAB9, showFibonacci, showProfit, showMicro, isMember, symbol]);
-
-  // === 测算与结构画线（画布层：纯色带为主） ===
-  // 画法原则（按用户反馈收敛）：
-  //   AB9/FIB → 原生满宽价格线（价格轴精确读数，经典画法）
-  //   方案（止损/入场/TP1/TP2）→ 纯平涂色带：红=风险、浅绿=TP1段、深绿=TP2段，
-  //     无线无字，色块边界即价位（精确数字在 AI 分析卡片）
-  //   汇流区 → 平涂琥珀色带（与盈利区重叠过半时不画）
-  //   信号未触发时 → 测算观察模式：8方法目标位虚线+标签、延伸档琥珀虚线
-  //   流动性池 → 等高/等低两点连线 + 端点圆（EQH/EQL 经典标法）
-  //   FVG → 渐变面（微构开关独立控制）
-  const drawZones = useCallback(() => {
-    const canvas = zoneCanvasRef.current;
-    const chart = mainChart.current;
-    const series = candleSeries.current;
-    if (!canvas || !chart || !series) return;
-    const parent = canvas.parentElement;
-    const ctx = canvas.getContext('2d');
-    if (!parent || !ctx) return;
-
-    // 画布尺寸与容器同步（含 devicePixelRatio，高分屏不糊）
-    const w = parent.clientWidth;
-    const h = parent.clientHeight;
-    if (w <= 0 || h <= 0) return;
-    const dpr = window.devicePixelRatio || 1;
-    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
-      canvas.width = Math.round(w * dpr);
-      canvas.height = Math.round(h * dpr);
-    }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
-
-    const pdata = profitDataRef.current;
-    const pd = isMember && pdata && pdata.symbol === symbol ? pdata : null;
-    if (!isMember) return;
-    if (!pd || (!showProfit && !showMicro)) return;
-
-    // 可绘制区域 = 容器剔除右侧价格轴 + 底部时间轴
-    let paneW = w;
-    let paneH = h;
-    try {
-      paneW = w - chart.priceScale('right').width();
-      paneH = h - chart.timeScale().height();
-    } catch {}
-    if (paneW <= 10 || paneH <= 10) return;
-
-    const ts = chart.timeScale();
-    const yOf = (p: number): number | null => {
-      try {
-        const c = series.priceToCoordinate(p);
-        return c == null ? null : (c as number);
-      } catch { return null; }
-    };
-    const xOf = (t: number): number | null => {
-      try {
-        const c = ts.timeToCoordinate(t as Time);
-        return c == null ? null : (c as number);
-      } catch { return null; }
-    };
-
-    const klines = allKlinesRef.current;
-    const xEnd = paneW - 2;
-    // 可视区左缘时间：锚点在其左侧时射线从 0 开始
-    let visFrom: number | null = null;
-    try {
-      const vr = ts.getVisibleRange();
-      if (vr) visFrom = vr.from as unknown as number;
-    } catch {}
-    const anchorX = (t: number | null | undefined): number | null => {
-      if (t == null) return null;
-      if (visFrom != null && t < visFrom) return 0;
-      return xOf(t);
-    };
-
-    // 价位去重：D 方案四条原生线已画，画布层同价（<0.2%现价）不再重复画
-    const drawnPrices: number[] = [];
-    const refPrice = pd?.currentPrice || (klines.length ? klines[klines.length - 1].close : 1);
-    if (pd && showProfit) {
-      // 仅 D 方案（短线时间退出档）铺色带；信号未触发时无色带
-      const pa = pd.plans.find((p) => p.id === 'D');
-      if (pa) drawnPrices.push(pa.entry, pa.stop, pa.tp1, pa.tp2);
-    }
-    const isDupPrice = (p: number) => drawnPrices.some((x) => Math.abs(x - p) / refPrice < 0.002);
-
-    // 统一标签槽位：射线标签占位（阈值 13px ≈ 标签框高，保证互不压字）
-    const occupiedY: number[] = [];
-    // 射线起点小标签（深底彩字）；与已占槽位冲突时上/下让位 13px，仍冲突则丢弃
-    const rayLabel = (x: number, y: number, text: string, color: string) => {
-      let yy = y;
-      if (occupiedY.some((sy) => Math.abs(sy - yy) < 13)) {
-        yy = y - 13;
-        if (occupiedY.some((sy) => Math.abs(sy - yy) < 13)) {
-          yy = y + 13;
-          if (occupiedY.some((sy) => Math.abs(sy - yy) < 13)) return;
-        }
-      }
-      occupiedY.push(yy);
-      ctx.font = '10px -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif';
-      const tw = ctx.measureText(text).width;
-      const bx = Math.min(Math.max(x, 2), paneW - tw - 8);
-      ctx.fillStyle = 'rgba(10, 14, 23, 0.75)';
-      ctx.fillRect(bx, yy - 7, tw + 6, 14);
-      ctx.fillStyle = color;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(text, bx + 3, yy + 0.5);
-    };
-    // 锚点圆标记（A/B 波段端点、等高/等低端点）
-    const dot = (x: number, y: number, color: string, r = 3, text?: string) => {
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fillStyle = color;
-      ctx.fill();
-      if (text) {
-        ctx.font = '600 10px -apple-system, "PingFang SC", sans-serif';
-        ctx.fillStyle = color;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(text, x + r + 3, y);
-      }
-    };
-
-    // ===== 第一层：利润测算 / 微构（纯色带呈现，无线无字） =====
-    if (pd && (showProfit || showMicro)) {
-
-    // 色带填充：a1 省略 = 平涂（TradingView 头寸工具风格）；传 a1 = 左实右虚渐变（微构沿用）
-    const zoneFill = (
-      y1: number | null, y2: number | null, x0: number,
-      rgb: string, a0: number, a1?: number,
-    ): { top: number; mid: number; h: number } | null => {
-      if (y1 == null || y2 == null || !Number.isFinite(y1) || !Number.isFinite(y2)) return null;
-      const top = Math.max(0, Math.min(y1, y2));
-      const bot = Math.min(paneH, Math.max(y1, y2));
-      if (bot - top < 1.5 || xEnd - x0 < 8) return null;
-      if (a1 == null) {
-        ctx.fillStyle = `rgba(${rgb}, ${a0})`;
-      } else {
-        const g = ctx.createLinearGradient(x0, 0, xEnd, 0);
-        g.addColorStop(0, `rgba(${rgb}, ${a0})`);
-        g.addColorStop(1, `rgba(${rgb}, ${a1})`);
-        ctx.fillStyle = g;
-      }
-      ctx.fillRect(x0, top, xEnd - x0, bot - top);
-      return { top, mid: (top + bot) / 2, h: bot - top };
-    };
-
-    if (showProfit) {
-      // 投影区仅当最后一根K线在可视区附近才画（回看历史时不投影，避免色块盖旧K线误导）
-      let planVisible = false;
-      try {
-        const lr = ts.getVisibleLogicalRange();
-        if (lr && klines.length) {
-          const lastIdx = klines.length - 1;
-          planVisible = lr.to >= lastIdx - 1 && lr.from <= lastIdx + 8;
-        }
-      } catch {}
-      if (planVisible && klines.length > 2) {
-        // 锚点：最后一根K线往左约 18 根（覆盖近期K线 + 右侧未来空间）
-        const xLast = xOf(klines[klines.length - 1].time);
-        const xPrev = xOf(klines[klines.length - 2].time);
-        if (xLast != null && xPrev != null) {
-          const step = Math.max(1, Math.abs(xLast - xPrev));
-          // 色带从最新K线向左铺 8 根（原18根过宽，压缩后不遮历史走势，仍够读色块边界）
-          const projX0 = Math.max(0, xLast - step * 8);
-          // 色带仅跟随 D 方案（短线时间退出档）；信号未触发时无色带（下方画测算全景替代）
-          const pa = pd.plans.find((p) => p.id === 'D');
-          if (pa) {
-            // ===== 纯色带画法（按反馈：无线无字，颜色即语义；透明度加深保证醒目） =====
-            // 红 = 风险区（入场↔止损）；浅绿 = TP1 段；深绿 = TP2 段。
-            // 色块边界即价位，精确数字在 AI 分析卡片里读。
-            zoneFill(yOf(pa.entry), yOf(pa.stop), projX0, '239, 68, 68', 0.26);
-            zoneFill(yOf(pa.entry), yOf(pa.tp1), projX0, '34, 197, 94', 0.20);
-            zoneFill(yOf(pa.tp1), yOf(pa.tp2), projX0, '34, 197, 94', 0.34);
-          }
-          // ===== 汇流止盈区（纯平涂色带；与盈利区重叠过半时不画，避免黄绿混叠发脏） =====
-          if (pd.confluence) {
-            const c = pd.confluence;
-            const lo = Math.min(c.low, c.high), hi = Math.max(c.low, c.high);
-            let ov = 0;
-            if (pa) {
-              const zLo = Math.min(pa.entry, pa.tp1, pa.tp2), zHi = Math.max(pa.entry, pa.tp1, pa.tp2);
-              ov = Math.max(0, Math.min(hi, zHi) - Math.max(lo, zLo)) / Math.max(1e-9, hi - lo);
-            }
-            if (ov <= 0.5) zoneFill(yOf(c.high), yOf(c.low), projX0, '245, 158, 11', 0.26);
-          }
-          // ===== 今日进场区（蓝色透明框：多头=现价下方回调带，空头=上方反抽带；纯色块无文字） =====
-          const dp = pd.dailyPlan;
-          if (dp?.entryZone) {
-            zoneFill(yOf(dp.entryZone.high), yOf(dp.entryZone.low), projX0, '59, 130, 246', 0.16);
-          }
-          // ===== 信号未触发：测算观察模式（纯透明框，零文字零线条） =====
-          // 盈利投影绿框（现价→汇流区近缘）+ 汇流琥珀框（上方统一绘制）。
-          // 目标位/延伸/失效的具体数字在 AI 分析卡片里读，图上不写字。
-          // 信号触发时切换为 D 方案红绿色带 + 汇流区（方案即测算）。
-          if (!pa) {
-            const cc = pd.confluence;
-            if (cc) {
-              const zLo = Math.min(cc.low, cc.high);
-              const zHi = Math.max(cc.low, cc.high);
-              const near = zHi < pd.currentPrice ? zHi : zLo > pd.currentPrice ? zLo : null;
-              if (near != null) zoneFill(yOf(pd.currentPrice), yOf(near), projX0, '34, 197, 94', 0.10);
-            }
-          }
-        }
-      }
-    }
-
-    if (showMicro) {
-      // ===== FVG 缺口（仅渐变面；CE 50% 射线按反馈隐藏） =====
-      for (const f of pd.fairValueGaps || []) {
-        let x0: number | null;
-        if (f.formedAt == null) x0 = null;
-        else x0 = anchorX(f.formedAt);
-        if (x0 == null) continue;
-        zoneFill(yOf(f.high), yOf(f.low), Math.max(0, x0), '99, 102, 241', 0.13);
-      }
-      // ===== 流动性池（等高/等低两点连线 + 端点圆；右延伸线按反馈隐藏） =====
-      // 交易员标注 EQH/EQL 的经典画法：连线直观呈现"两个等高点"
-      for (const p of pd.liquidityPools || []) {
-        if (isDupPrice(p.price)) continue;
-        const y = yOf(p.price);
-        if (y == null || y < 0 || y > paneH) continue;
-        const x2 = p.formedAt != null ? anchorX(p.formedAt) : null;
-        const x1 = p.firstAt != null ? anchorX(p.firstAt) : null;
-        const color = 'rgba(6, 182, 212, 0.9)';
-        if (x1 != null && x2 != null && x2 - x1 > 3) {
-          // 两点连线（实线，比射线粗一点——这是池的本体）
-          ctx.save();
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 1.5;
-          ctx.setLineDash([]);
-          ctx.beginPath();
-          ctx.moveTo(x1, Math.round(y) + 0.5);
-          ctx.lineTo(x2, Math.round(y) + 0.5);
-          ctx.stroke();
-          ctx.restore();
-          // 端点小圆：两个等高/等低点
-          dot(x1, y, color, 2.5);
-          dot(x2, y, color, 2.5);
-          // 标签贴在形成点右侧
-          rayLabel(x2 + 4, y, `流动性池·${p.side === 'high' ? '等高' : '等低'}`, 'rgba(103, 232, 249, 0.95)');
-        }
-      }
-    }
-    } // ===== 第一层结束 =====
-  }, [showProfit, showMicro, isMember, symbol]);
-  drawZonesRef.current = drawZones;
+  }, [showAutoAB9, showFibonacci, isMember, symbol]);
 
   // 更新K线数据
   const updateChart = useCallback((klines: KlineData[], intv?: string) => {
@@ -783,31 +465,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     redrawOverlayLines();
   }, [redrawOverlayLines]);
 
-  // 拉取结构分析数据（利润测算+微构画线的数据源，与 AI 分析卡片同接口同缓存）
-  // 服务端按 4h 收盘缓存，这里 5 分钟静默轮询：跨 4h 收盘后能自动换新结构
-  useEffect(() => {
-    if ((!showProfit && !showMicro) || !isMember || !symbol) return;
-    let cancelled = false;
-    const fetchOnce = () => {
-      const st = profitFetchStateRef.current;
-      if (st && st.symbol === symbol && Date.now() - st.at < 4.5 * 60_000 && profitDataRef.current) return;
-      apiGet<Partial<ProfitLineData>>(`/api/structure-analysis?symbol=${symbol}`)
-        .then((d) => {
-          if (cancelled || !d || !Array.isArray(d.plans)) return;
-          profitDataRef.current = { ...(d as ProfitLineData), symbol };
-          profitFetchStateRef.current = { symbol, at: Date.now() };
-          redrawOverlayLines();
-        })
-        .catch(() => {});
-    };
-    fetchOnce();
-    const timer = setInterval(fetchOnce, 5 * 60_000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [showProfit, showMicro, isMember, symbol, redrawOverlayLines]);
-
   // Tick 实时更新（rAF + 50ms 节流，和 v24 一致）
   const flushTick = useCallback(() => {
     rAFRef.current = null;
@@ -828,9 +485,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     });
     // 图例跟随实时价（50ms 节流内更新，开销可忽略）
     setLegend(legendOf(last.open, last.high, last.low, last.close));
-
-    // 实时价可能推动价格刻度缩放，透明框的纵向坐标随之刷新（画几个矩形，开销可忽略）
-    drawZonesRef.current();
   }, [legendOf]);
 
   const updateTick = useCallback((price: number) => {
@@ -1041,10 +695,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       });
     }
 
-    // 主图和MACD联动（平移/缩放同时刷新测算透明框的坐标）
+    // 主图和MACD联动（平移/缩放时保持时间轴同步）
     chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
       if (range) mChart.timeScale().setVisibleLogicalRange(range);
-      drawZonesRef.current();
     });
 
     mainChart.current = chart;
@@ -1078,8 +731,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           height: rsiChartRef.current.clientHeight,
         });
       }
-      // 尺寸变化后图表重排，下一帧再画透明框（坐标才是新的）
-      requestAnimationFrame(() => drawZonesRef.current());
     };
     window.addEventListener('resize', handleResize);
     handleResize();
@@ -1113,7 +764,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           height: rsiChartRef.current.clientHeight,
         });
       }
-      drawZonesRef.current();
     }, 100);
     return () => clearTimeout(timer);
   }, [isFullscreen]);
@@ -1319,12 +969,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
               </div>
             </div>
           )}
-          {/* 测算透明框层：风险/盈利/汇流/FVG 区域化呈现；pointer-events-none 不挡K线交互 */}
-          <canvas
-            ref={zoneCanvasRef}
-            className="absolute inset-0 w-full h-full pointer-events-none"
-            style={{ zIndex: 2 }}
-          />
         </div>
       </div>
 
