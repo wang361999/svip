@@ -868,56 +868,77 @@ export function calcTrendSignal(klines: KlineData[]): TrendSignal | null {
 }
 
 // ========== 神奇九转（TD Sequential / Nine Turn） ==========
-// 核心规则：
-// - 底部九转（买入信号）：连续9根K线，每根收盘价 < 各自往前第4根的收盘价
-// - 顶部九转（卖出信号）：连续9根K线，每根收盘价 > 各自往前第4根的收盘价
-// - 返回值：每根K线对应的九转数字（1-9），0表示不在序列中
-//   正数=底部九转（下方显示，买入），负数=顶部九转（上方显示，卖出）
+// 标准 TD Sequential 规则：
+// 1. 底部九转（买入信号）：连续9根K线，每根收盘价 < 各自往前第4根的收盘价
+// 2. 顶部九转（卖出信号）：连续9根K线，每根收盘价 > 各自往前第4根的收盘价
+// 3. 序列必须连续，一旦中断（条件不满足）则计数归零
+// 4. 只有走到9的序列才确认有效（1-8为临时数字，未到9则不显示）
+// 5. 9之后重置，下一根满足条件的K线从1重新开始
+// 返回值：正数=底部九转（K线下方，买入），负数=顶部九转（K线上方，卖出），0=无
 
 export interface NineTurnResult {
-  value: number;  // 1~9 底部九转（正），-1~-9 顶部九转（负），0 无
+  value: number;
 }
 
 export function calcNineTurn(klines: KlineData[]): NineTurnResult[] {
-  const result: NineTurnResult[] = [];
   const n = klines.length;
+  const result: NineTurnResult[] = new Array(n);
+  for (let i = 0; i < n; i++) result[i] = { value: 0 };
 
-  // 底部九转计数（连续收盘价 < 前4根收盘价的天数）
-  let buyCount = 0;
-  // 顶部九转计数（连续收盘价 > 前4根收盘价的天数）
-  let sellCount = 0;
+  if (n < 5) return result;
 
-  for (let i = 0; i < n; i++) {
-    if (i < 4) {
-      // 前4根没有足够的历史数据，无法计算
-      result.push({ value: 0 });
-      buyCount = 0;
-      sellCount = 0;
-      continue;
-    }
+  // 扫描所有连续序列，记录每个序列的起点、长度、方向
+  const sequences: { start: number; length: number; isBuy: boolean }[] = [];
 
+  let i = 4;
+  while (i < n) {
     const currentClose = klines[i].close;
     const refClose = klines[i - 4].close;
 
-    if (currentClose < refClose) {
-      // 满足底部九转条件
-      buyCount++;
-      sellCount = 0;
-      // 显示数字（达到9后重置，开始新的计数周期）
-      const displayValue = buyCount <= 9 ? buyCount : (buyCount % 9 === 0 ? 9 : buyCount % 9);
-      result.push({ value: displayValue });
-    } else if (currentClose > refClose) {
-      // 满足顶部九转条件
-      sellCount++;
-      buyCount = 0;
-      const displayValue = sellCount <= 9 ? sellCount : (sellCount % 9 === 0 ? 9 : sellCount % 9);
-      result.push({ value: -displayValue });
-    } else {
-      // 收盘价相等，重置计数
-      buyCount = 0;
-      sellCount = 0;
-      result.push({ value: 0 });
+    if (currentClose === refClose) {
+      i++;
+      continue;
     }
+
+    const isBuy = currentClose < refClose;
+
+    // 计算连续满足条件的K线数量
+    let count = 0;
+    let j = i;
+    while (j < n) {
+      if (j < 4) break;
+      const meets = isBuy
+        ? klines[j].close < klines[j - 4].close
+        : klines[j].close > klines[j - 4].close;
+      if (!meets) break;
+      count++;
+      j++;
+    }
+
+    sequences.push({ start: i, length: count, isBuy });
+    i = j;
+  }
+
+  // 标记结果：
+  // - 已完成的序列（长度 >= 9）：显示 1-9
+  // - 最后一个进行中的序列：显示临时数字 1~length（可能会消失）
+  // - 历史上未完成的序列（长度 < 9）：不显示
+  for (let s = 0; s < sequences.length; s++) {
+    const seq = sequences[s];
+    const isLast = s === sequences.length - 1;
+
+    if (seq.length >= 9) {
+      // 完成的序列：显示 1-9（超过9的部分不显示，等下一轮）
+      for (let k = 0; k < 9; k++) {
+        result[seq.start + k] = { value: seq.isBuy ? (k + 1) : -(k + 1) };
+      }
+    } else if (isLast && seq.length >= 1) {
+      // 当前进行中的序列：显示临时数字（未来可能消失）
+      for (let k = 0; k < seq.length; k++) {
+        result[seq.start + k] = { value: seq.isBuy ? (k + 1) : -(k + 1) };
+      }
+    }
+    // 历史上未完成的序列（长度 < 9）：不显示任何数字
   }
 
   return result;
