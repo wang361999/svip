@@ -244,14 +244,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // 注意：指标显示开关（EMA/BOLL/MACD/RSI）不再从后台加载 —— 前台徽章直接管控
   useEffect(() => {
     let cancelled = false;
-    // 同时发起 settings + preferences，不串行等待
+    // 同时发起 settings 请求，不串行等待
     const settingsPromise = apiGet<Record<string, string>>('/api/settings');
-    const prefsPromise = isMember
-      ? apiGet<{ prefAB9?: boolean; prefFibonacci?: boolean }>('/api/user/preferences').catch(() => ({}) as any)
-      : Promise.resolve({} as any);
 
-    Promise.all([settingsPromise, prefsPromise])
-      .then(([data, prefs]) => {
+    settingsPromise
+      .then((data) => {
         if (cancelled) return;
         setPeriods({
           emaPeriod: parseInt(data.emaPeriod || '20', 10) || 20,
@@ -265,18 +262,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           kdjD: parseInt(data.kdjD || '3', 10) || 3,
           atrPeriod: parseInt(data.atrPeriod || '14', 10) || 14,
         });
-        if (prefs.prefAB9 !== undefined) {
-          setShowAutoAB9(prefs.prefAB9);
-          saveOverlayPrefs({ AB9: prefs.prefAB9, FIB: loadOverlayPrefs().FIB });
-        }
-        if (prefs.prefFibonacci !== undefined) {
-          setShowFibonacci(prefs.prefFibonacci);
-          saveOverlayPrefs({ AB9: loadOverlayPrefs().AB9, FIB: prefs.prefFibonacci });
-        }
+        // AB9/FIB 不再从后台读取，localStorage 是唯一数据源
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [isMember]);
+  }, []);
 
   // 持久化画线开关偏好到后端
   const saveUserPref = useCallback((key: string, value: boolean) => {

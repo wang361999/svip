@@ -29,8 +29,26 @@ function findSymbol(s: string, list: SymbolOption[]) {
   return list.find((x) => x.value === s) || list[0];
 }
 
+// ========== 交易对持久化（localStorage） ==========
+const SYMBOL_KEY = 'chart-symbol';
+
+function loadStoredSymbol(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage.getItem(SYMBOL_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveSymbol(value: string) {
+  try {
+    window.localStorage.setItem(SYMBOL_KEY, value);
+  } catch {}
+}
+
 const useSymbolStore = create<SymbolState>((set, get) => ({
-  symbol: 'ETHUSDT',
+  symbol: loadStoredSymbol() || 'ETHUSDT',
   okxId: 'ETH-USDT',
   label: 'ETH/USDT',
   pricePrecision: 2,
@@ -55,6 +73,7 @@ const useSymbolStore = create<SymbolState>((set, get) => ({
         pricePrecision: found.pricePrecision ?? 2,
         qtyPrecision: found.qtyPrecision ?? 4,
       });
+      saveSymbol(found.value);
     }
   },
 
@@ -79,6 +98,7 @@ const useSymbolStore = create<SymbolState>((set, get) => ({
         pricePrecision: symbols[0].pricePrecision ?? 2,
         qtyPrecision: symbols[0].qtyPrecision ?? 4,
       });
+      saveSymbol(symbols[0].value);
     }
   },
 
