@@ -1277,7 +1277,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             </div>
           </div>
         )}
-        <div className="relative w-full" style={{ height: isFullscreen ? 'calc(100vh - 40px)' : '620px' }}>
+        <div className="relative w-full overflow-hidden" style={{ height: isFullscreen ? 'calc(100vh - 40px)' : '620px' }}>
           {/* 币种水印：图表背景透明，水印置于K线之下透出（专业图表标配） */}
           <div
             className="absolute inset-0 flex items-center justify-center pointer-events-none select-none overflow-hidden"
@@ -1298,7 +1298,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           {/* 神奇九转数字标注覆盖层 */}
           <canvas
             ref={nineTurnCanvasRef}
-            className="absolute top-0 left-0 pointer-events-none"
+            className="absolute top-0 left-0 w-full h-full pointer-events-none"
             style={{ zIndex: 2 }}
           />
           {/* 左上角 OHLC 图例：十字线联动，颜色跟涨跌 */}
