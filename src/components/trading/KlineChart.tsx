@@ -298,19 +298,15 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         const difData: LineData[] = [];
         const deaData: LineData[] = [];
         for (let i = 0; i < klines.length; i++) {
-          if (macdData.hist[i] != null) {
-            histData.push({
-              time: klines[i].time as Time,
-              value: macdData.hist[i] as number,
-              color: (macdData.hist[i] as number) >= 0 ? 'rgba(14, 203, 129, 0.75)' : 'rgba(246, 70, 93, 0.75)',
-            });
-          }
-          if (macdData.dif[i] != null) {
-            difData.push({ time: klines[i].time as Time, value: macdData.dif[i] as number });
-          }
-          if (macdData.dea[i] != null) {
-            deaData.push({ time: klines[i].time as Time, value: macdData.dea[i] as number });
-          }
+          const t = klines[i].time as Time;
+          const hv = macdData.hist[i];
+          histData.push({
+            time: t,
+            value: hv as number,
+            color: (hv as number) >= 0 ? 'rgba(14, 203, 129, 0.75)' : 'rgba(246, 70, 93, 0.75)',
+          });
+          difData.push({ time: t, value: macdData.dif[i] as number });
+          deaData.push({ time: t, value: macdData.dea[i] as number });
         }
         macdHist.current.setData(histData);
         macdDif.current.setData(difData);
@@ -337,12 +333,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       const overboughtData: LineData[] = [];
       const oversoldData: LineData[] = [];
       for (let i = 0; i < klines.length; i++) {
-        if (rsiData[i] !== null) {
-          const t = klines[i].time as Time;
-          lineData.push({ time: t, value: rsiData[i] as number });
-          overboughtData.push({ time: t, value: 70 });
-          oversoldData.push({ time: t, value: 30 });
-        }
+        const t = klines[i].time as Time;
+        const v = rsiData[i];
+        lineData.push({ time: t, value: v as number });
+        overboughtData.push({ time: t, value: 70 });
+        oversoldData.push({ time: t, value: 30 });
       }
       rsiLine.current.setData(lineData);
       if (rsiOverbought.current) rsiOverbought.current.setData(overboughtData);
@@ -392,14 +387,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         const overboughtData: LineData[] = [];
         const oversoldData: LineData[] = [];
         for (let i = 0; i < klines.length; i++) {
-          if (kdjData.k[i] !== null) {
-            const t = klines[i].time as Time;
-            kData.push({ time: t, value: kdjData.k[i] as number });
-            dData.push({ time: t, value: kdjData.d[i] as number });
-            jData.push({ time: t, value: kdjData.j[i] as number });
-            overboughtData.push({ time: t, value: 80 });
-            oversoldData.push({ time: t, value: 20 });
-          }
+          const t = klines[i].time as Time;
+          kData.push({ time: t, value: kdjData.k[i] as number });
+          dData.push({ time: t, value: kdjData.d[i] as number });
+          jData.push({ time: t, value: kdjData.j[i] as number });
+          overboughtData.push({ time: t, value: 80 });
+          oversoldData.push({ time: t, value: 20 });
         }
         kdjKLine.current.setData(kData);
         kdjDLine.current.setData(dData);
@@ -428,9 +421,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       const atrData = calcATRArray(klines, periods.atrPeriod);
       const lineData: LineData[] = [];
       for (let i = 0; i < klines.length; i++) {
-        if (atrData[i] !== null) {
-          lineData.push({ time: klines[i].time as Time, value: atrData[i] as number });
-        }
+        lineData.push({ time: klines[i].time as Time, value: atrData[i] as number });
       }
       atrLine.current.setData(lineData);
       // 显示 ATR 副图
@@ -572,6 +563,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         mainChart.current.timeScale().fitContent();
       }
       mainChart.current.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx + 4 });
+      // 副图同步时间轴范围（保证所有副图与主图K线一一对齐）
+      const range = { from: fromIdx, to: toIdx + 4 };
+      if (macdChart.current) macdChart.current.timeScale().setVisibleLogicalRange(range);
+      if (rsiChart.current) rsiChart.current.timeScale().setVisibleLogicalRange(range);
+      if (kdjChart.current) kdjChart.current.timeScale().setVisibleLogicalRange(range);
+      if (atrChart.current) atrChart.current.timeScale().setVisibleLogicalRange(range);
     }
   }, [updateIndicators, redrawOverlayLines, legendOf]);
 
