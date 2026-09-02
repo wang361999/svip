@@ -99,6 +99,33 @@ function saveIndicatorPrefs(next: typeof DEFAULT_INDICATORS) {
   } catch {}
 }
 
+// ========== 画线开关持久化（AB9 / 斐波那契） ==========
+// 同样存于浏览器本地，刷新/换币种/换周期后保持用户的选择
+// 会员用户额外同步到后端（跨设备），非会员仅本地
+const OVERLAY_PREFS_KEY = 'kline-overlay-prefs';
+const DEFAULT_OVERLAY = { AB9: true, FIB: false };
+
+function loadOverlayPrefs() {
+  if (typeof window === 'undefined') return { ...DEFAULT_OVERLAY };
+  try {
+    const raw = window.localStorage.getItem(OVERLAY_PREFS_KEY);
+    if (!raw) return { ...DEFAULT_OVERLAY };
+    const parsed = JSON.parse(raw) as Partial<typeof DEFAULT_OVERLAY>;
+    return {
+      AB9: parsed.AB9 !== undefined ? !!parsed.AB9 : DEFAULT_OVERLAY.AB9,
+      FIB: parsed.FIB !== undefined ? !!parsed.FIB : DEFAULT_OVERLAY.FIB,
+    };
+  } catch {
+    return { ...DEFAULT_OVERLAY };
+  }
+}
+
+function saveOverlayPrefs(next: typeof DEFAULT_OVERLAY) {
+  try {
+    window.localStorage.setItem(OVERLAY_PREFS_KEY, JSON.stringify(next));
+  } catch {}
+}
+
 
 
 export default function KlineChart({ isFullscreen = false, onToggleFullscreen }: KlineChartProps) {
@@ -148,10 +175,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const rAFRef = useRef<number | null>(null);
   const lastTickAtRef = useRef<number>(0);
 
-  // AB9线
-  const [showAutoAB9, setShowAutoAB9] = useState(true);
-  // 斐波那契回调线
-  const [showFibonacci, setShowFibonacci] = useState(false);
+  // AB9线 + 斐波那契回调线：从 localStorage 初始化（刷新/切换后保持用户选择）
+  const overlayPrefsInit = loadOverlayPrefs();
+  const [showAutoAB9, setShowAutoAB9] = useState(overlayPrefsInit.AB9);
+  const [showFibonacci, setShowFibonacci] = useState(overlayPrefsInit.FIB);
   // 左上角 OHLC 图例：随十字线联动（悬停读历史K线，离开回落到最新一根，tick 实时刷新）
   interface LegendInfo { o: number; h: number; l: number; c: number; pct: number }
   const [legend, setLegend] = useState<LegendInfo | null>(null);
@@ -238,8 +265,14 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           kdjD: parseInt(data.kdjD || '3', 10) || 3,
           atrPeriod: parseInt(data.atrPeriod || '14', 10) || 14,
         });
-        if (prefs.prefAB9 !== undefined) setShowAutoAB9(prefs.prefAB9);
-        if (prefs.prefFibonacci !== undefined) setShowFibonacci(prefs.prefFibonacci);
+        if (prefs.prefAB9 !== undefined) {
+          setShowAutoAB9(prefs.prefAB9);
+          saveOverlayPrefs({ AB9: prefs.prefAB9, FIB: loadOverlayPrefs().FIB });
+        }
+        if (prefs.prefFibonacci !== undefined) {
+          setShowFibonacci(prefs.prefFibonacci);
+          saveOverlayPrefs({ AB9: loadOverlayPrefs().AB9, FIB: prefs.prefFibonacci });
+        }
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -1218,14 +1251,14 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             <>
               <div className="w-px h-4 bg-dark-700" />
               <button
-                onClick={() => { const v = !showAutoAB9; setShowAutoAB9(v); saveUserPref('prefAB9', v); }}
+                onClick={() => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ AB9: v, FIB: showFibonacci }); saveUserPref('prefAB9', v); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showAutoAB9 ? 'text-cyan-400' : 'text-dark-600'}`}
                 title="AB9线"
               >
                 AB9
               </button>
               <button
-                onClick={() => { const v = !showFibonacci; setShowFibonacci(v); saveUserPref('prefFibonacci', v); }}
+                onClick={() => { const v = !showFibonacci; setShowFibonacci(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: v }); saveUserPref('prefFibonacci', v); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showFibonacci ? 'text-cyan-400' : 'text-dark-600'}`}
                 title="斐波那契回调线"
               >
