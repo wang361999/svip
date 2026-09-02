@@ -10,6 +10,7 @@ import {
   calcVWAPArray,
   calcKDJ,
   calcATRArray,
+  calcNineTurn,
 } from '@/shared/lib/indicators';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
@@ -69,7 +70,7 @@ interface KlineChartProps {
 // 开关状态仅存于浏览器本地（localStorage），后台/数据库不再有任何指标开关，
 // 徽章点击即生效并持久化，刷新/换币种/换周期后保持用户的选择。
 const INDICATOR_PREFS_KEY = 'kline-indicator-prefs';
-const DEFAULT_INDICATORS = { EMA: false, BOLL: true, MACD: true, RSI: false, VWAP: true, KDJ: true, ATR: false };
+const DEFAULT_INDICATORS = { EMA: false, BOLL: true, MACD: true, RSI: false, VWAP: true, KDJ: true, ATR: false, NINE: true };
 
 function loadIndicatorPrefs(): typeof DEFAULT_INDICATORS {
   if (typeof window === 'undefined') return { ...DEFAULT_INDICATORS };
@@ -85,6 +86,7 @@ function loadIndicatorPrefs(): typeof DEFAULT_INDICATORS {
       VWAP: parsed.VWAP !== undefined ? !!parsed.VWAP : DEFAULT_INDICATORS.VWAP,
       KDJ: parsed.KDJ !== undefined ? !!parsed.KDJ : DEFAULT_INDICATORS.KDJ,
       ATR: parsed.ATR !== undefined ? !!parsed.ATR : DEFAULT_INDICATORS.ATR,
+      NINE: parsed.NINE !== undefined ? !!parsed.NINE : DEFAULT_INDICATORS.NINE,
     };
   } catch {
     return { ...DEFAULT_INDICATORS };
@@ -135,6 +137,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
   // VWAP（主图线）
   const vwapSeries = useRef<ISeriesApi<'Line'> | null>(null);
+
+  // 神奇九转（主图标注）
+  const nineTurnCanvasRef = useRef<HTMLCanvasElement>(null);
+  const nineTurnDataRef = useRef<{ value: number }[]>([]);
+  const drawNineTurnRef = useRef<() => void>(() => {});
 
   const allKlinesRef = useRef<KlineData[]>([]);
   const pendingTickRef = useRef<number | null>(null);
@@ -376,6 +383,15 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       });
       vwapSeries.current.setData(vwapData);
     }
+
+    // 神奇九转：计算数据并绘制到覆盖层 canvas
+    if (indicators.NINE) {
+      nineTurnDataRef.current = calcNineTurn(klines);
+    } else {
+      nineTurnDataRef.current = [];
+    }
+    // 延迟一帧重绘九转（等图表布局完成）
+    requestAnimationFrame(() => drawNineTurnRef.current());
 
     // KDJ 副图
     if (indicators.KDJ && kdjChart.current && kdjKLine.current && kdjDLine.current && kdjJLine.current) {
@@ -652,8 +668,14 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       // K线收盘后重算 AB9 / 斐波那契画线：新分形确认、突破换段都能及时反映，
       // 修复此前盘中形成的新高/新低要等手动刷新才会体现在画线上的问题
       redrawOverlayLines();
+      // K线收盘后重算九转序列
+      if (indicators.NINE) {
+        nineTurnDataRef.current = calcNineTurn(klines);
+      }
     }
-  }, [updateIndicators, redrawOverlayLines, legendOf]);
+    // 九转数字随最新K线重绘（价格变动导致数字位置变化）
+    drawNineTurnRef.current();
+  }, [updateIndicators, redrawOverlayLines, legendOf, indicators.NINE]);
 
   // 获取K线 — 用 ref 引用最新的 updateChart，避免指标切换导致重新拉取K线和重连WS
   const updateChartRef = useRef(updateChart);
@@ -889,6 +911,87 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       });
     }
 
+    // ========== 神奇九转数字绘制 ==========
+    const drawNineTurnNumbers = () => {
+      const canvas = nineTurnCanvasRef.current;
+      const chartAPI = mainChart.current;
+      const nineData = nineTurnDataRef.current;
+      const klines = allKlinesRef.current;
+      if (!canvas || !chartAPI || !nineData || nineData.length === 0 || klines.length === 0) return;
+
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      // 确保 canvas 尺寸与图表容器一致
+      if (canvas.width !== rect.width * dpr || canvas.height !== rect.height * dpr) {
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+      }
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      ctx.font = 'bold 11px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      const timeScale = chartAPI.timeScale();
+      const visibleRange = timeScale.getVisibleLogicalRange();
+      if (!visibleRange) { ctx.restore(); return; }
+
+      const from = Math.max(0, Math.floor(visibleRange.from));
+      const to = Math.min(klines.length - 1, Math.ceil(visibleRange.to));
+
+      for (let i = from; i <= to; i++) {
+        const val = nineData[i];
+        if (!val || val.value === 0) continue;
+
+        const time = klines[i].time as Time;
+        const x = timeScale.timeToCoordinate(time);
+        if (x === null) continue;
+
+        const isBuy = val.value > 0;  // 正数=底部九转（K线下方显示）
+        const num = Math.abs(val.value);
+        const isNine = num === 9;
+
+        // 计算Y坐标：底部九转显示在K线最低点下方，顶部九转显示在K线最高点上方
+        const low = klines[i].low;
+        const high = klines[i].high;
+        // 使用 candleSeries 进行价格-坐标转换（IPriceScaleApi 在 v4 上没有 priceToCoordinate）
+        const lowY = candleSeries.current?.priceToCoordinate(low);
+        const highY = candleSeries.current?.priceToCoordinate(high);
+        if (lowY === null || highY === null || lowY === undefined || highY === undefined) continue;
+
+        let y: number;
+        if (isBuy) {
+          y = lowY + 14;  // K线最低点下方
+        } else {
+          y = highY - 14; // K线最高点上方
+        }
+
+        // 第9根用红色/绿色醒目显示，其他用淡色
+        if (isNine && isBuy) {
+          ctx.fillStyle = '#10b981'; // 绿色=底部九转=买入信号
+          ctx.font = 'bold 12px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+        } else if (isNine && !isBuy) {
+          ctx.fillStyle = '#ef4444'; // 红色=顶部九转=卖出信号
+          ctx.font = 'bold 12px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+        } else if (isBuy) {
+          ctx.fillStyle = 'rgba(16, 185, 129, 0.6)';
+          ctx.font = '10px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+        } else {
+          ctx.fillStyle = 'rgba(239, 68, 68, 0.6)';
+          ctx.font = '10px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+        }
+
+        ctx.fillText(String(num), x, y);
+      }
+
+      ctx.restore();
+    };
+    // 暴露给外部调用（updateChart 后重绘）
+    drawNineTurnRef.current = drawNineTurnNumbers;
+
     // 主图和所有副图联动（平移/缩放时保持时间轴同步）
     chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
       if (range) {
@@ -897,6 +1000,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         if (kChart) kChart.timeScale().setVisibleLogicalRange(range);
         if (aChart) aChart.timeScale().setVisibleLogicalRange(range);
       }
+      // 九转数字随视图滚动重绘
+      drawNineTurnNumbers();
     });
 
     mainChart.current = chart;
@@ -950,6 +1055,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           height: atrChartRef.current.clientHeight,
         });
       }
+      // 九转数字随 resize 重绘
+      drawNineTurnNumbers();
     };
     window.addEventListener('resize', handleResize);
     handleResize();
@@ -1075,7 +1182,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           }`}>
             {dataStatus}
           </span>
-          {(['EMA', 'BOLL', 'MACD', 'RSI', 'VWAP', 'KDJ', 'ATR'] as const).map((ind) => (
+          {(['EMA', 'BOLL', 'MACD', 'RSI', 'VWAP', 'KDJ', 'ATR', 'NINE'] as const).map((ind) => (
             <button
               key={ind}
               onClick={() => {
@@ -1094,7 +1201,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
               }`}
               title={`点击切换${ind}显示`}
             >
-              {ind}
+              {ind === 'NINE' ? '九转' : ind}
             </button>
           ))}
           {/* AB9 + 斐波那契 独立按钮 */}
@@ -1178,6 +1285,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             ref={mainChartRef}
             className="w-full h-full"
             style={{ cursor: 'default', position: 'relative', zIndex: 1 }}
+          />
+          {/* 神奇九转数字标注覆盖层 */}
+          <canvas
+            ref={nineTurnCanvasRef}
+            className="absolute top-0 left-0 pointer-events-none"
+            style={{ zIndex: 2 }}
           />
           {/* 左上角 OHLC 图例：十字线联动，颜色跟涨跌 */}
           {legend && (

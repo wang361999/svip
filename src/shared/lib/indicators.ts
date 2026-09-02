@@ -867,3 +867,59 @@ export function calcTrendSignal(klines: KlineData[]): TrendSignal | null {
   return { direction, strength, label, price, lastHigh, lastLow, changePercent };
 }
 
+// ========== 神奇九转（TD Sequential / Nine Turn） ==========
+// 核心规则：
+// - 底部九转（买入信号）：连续9根K线，每根收盘价 < 各自往前第4根的收盘价
+// - 顶部九转（卖出信号）：连续9根K线，每根收盘价 > 各自往前第4根的收盘价
+// - 返回值：每根K线对应的九转数字（1-9），0表示不在序列中
+//   正数=底部九转（下方显示，买入），负数=顶部九转（上方显示，卖出）
+
+export interface NineTurnResult {
+  value: number;  // 1~9 底部九转（正），-1~-9 顶部九转（负），0 无
+}
+
+export function calcNineTurn(klines: KlineData[]): NineTurnResult[] {
+  const result: NineTurnResult[] = [];
+  const n = klines.length;
+
+  // 底部九转计数（连续收盘价 < 前4根收盘价的天数）
+  let buyCount = 0;
+  // 顶部九转计数（连续收盘价 > 前4根收盘价的天数）
+  let sellCount = 0;
+
+  for (let i = 0; i < n; i++) {
+    if (i < 4) {
+      // 前4根没有足够的历史数据，无法计算
+      result.push({ value: 0 });
+      buyCount = 0;
+      sellCount = 0;
+      continue;
+    }
+
+    const currentClose = klines[i].close;
+    const refClose = klines[i - 4].close;
+
+    if (currentClose < refClose) {
+      // 满足底部九转条件
+      buyCount++;
+      sellCount = 0;
+      // 显示数字（达到9后重置，开始新的计数周期）
+      const displayValue = buyCount <= 9 ? buyCount : (buyCount % 9 === 0 ? 9 : buyCount % 9);
+      result.push({ value: displayValue });
+    } else if (currentClose > refClose) {
+      // 满足顶部九转条件
+      sellCount++;
+      buyCount = 0;
+      const displayValue = sellCount <= 9 ? sellCount : (sellCount % 9 === 0 ? 9 : sellCount % 9);
+      result.push({ value: -displayValue });
+    } else {
+      // 收盘价相等，重置计数
+      buyCount = 0;
+      sellCount = 0;
+      result.push({ value: 0 });
+    }
+  }
+
+  return result;
+}
+
