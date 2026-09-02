@@ -391,7 +391,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       nineTurnDataRef.current = [];
     }
     // 延迟一帧重绘九转（等图表布局完成）
-    requestAnimationFrame(() => drawNineTurnRef.current());
+    requestAnimationFrame(() => {
+      try { drawNineTurnRef.current(); } catch (e) { console.warn('[NineTurn] raf error:', e); }
+    });
 
     // KDJ 副图
     if (indicators.KDJ && kdjChart.current && kdjKLine.current && kdjDLine.current && kdjJLine.current) {
@@ -674,7 +676,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       }
     }
     // 九转数字随最新K线重绘（价格变动导致数字位置变化）
-    drawNineTurnRef.current();
+    try { drawNineTurnRef.current(); } catch (e) { console.warn('[NineTurn] update error:', e); }
   }, [updateIndicators, redrawOverlayLines, legendOf, indicators.NINE]);
 
   // 获取K线 — 用 ref 引用最新的 updateChart，避免指标切换导致重新拉取K线和重连WS
@@ -913,18 +915,21 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
     // ========== 神奇九转数字绘制 ==========
     const drawNineTurnNumbers = () => {
+      try {
       const canvas = nineTurnCanvasRef.current;
       const chartAPI = mainChart.current;
       const nineData = nineTurnDataRef.current;
       const klines = allKlinesRef.current;
       if (!canvas || !chartAPI || !nineData || nineData.length === 0 || klines.length === 0) return;
+      if (!candleSeries.current) return;
 
       const dpr = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
       // 确保 canvas 尺寸与图表容器一致
-      if (canvas.width !== rect.width * dpr || canvas.height !== rect.height * dpr) {
-        canvas.width = rect.width * dpr;
-        canvas.height = rect.height * dpr;
+      if (canvas.width !== Math.floor(rect.width * dpr) || canvas.height !== Math.floor(rect.height * dpr)) {
+        canvas.width = Math.floor(rect.width * dpr);
+        canvas.height = Math.floor(rect.height * dpr);
       }
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
@@ -944,11 +949,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
       for (let i = from; i <= to; i++) {
         const val = nineData[i];
-        if (!val || val.value === 0) continue;
+        if (!val || val.value === 0 || val.value === undefined || val.value === null) continue;
 
         const time = klines[i].time as Time;
         const x = timeScale.timeToCoordinate(time);
-        if (x === null) continue;
+        if (x === null || x === undefined) continue;
 
         const isBuy = val.value > 0;  // 正数=底部九转（K线下方显示）
         const num = Math.abs(val.value);
@@ -988,6 +993,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       }
 
       ctx.restore();
+      } catch (e) {
+        // 静默失败，避免九转渲染异常导致整个图表崩溃
+        console.warn('[NineTurn] render error:', e);
+      }
     };
     // 暴露给外部调用（updateChart 后重绘）
     drawNineTurnRef.current = drawNineTurnNumbers;
@@ -1001,7 +1010,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         if (aChart) aChart.timeScale().setVisibleLogicalRange(range);
       }
       // 九转数字随视图滚动重绘
-      drawNineTurnNumbers();
+      try { drawNineTurnNumbers(); } catch (e) { console.warn('[NineTurn] scroll error:', e); }
     });
 
     mainChart.current = chart;
@@ -1056,7 +1065,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         });
       }
       // 九转数字随 resize 重绘
-      drawNineTurnNumbers();
+      try { drawNineTurnNumbers(); } catch (e) { console.warn('[NineTurn] resize error:', e); }
     };
     window.addEventListener('resize', handleResize);
     handleResize();
