@@ -162,6 +162,102 @@ export function calcATRArray(klines: KlineData[], period: number = 14): (number 
   return result;
 }
 
+// VWAP（成交量加权平均价）
+// VWAP = Σ(典型价格 × 成交量) / Σ(成交量)
+// 典型价格 = (高 + 低 + 收) / 3
+// 注意：VWAP 是日内指标，从当日开盘开始累积。这里按传入K线序列从头累积，
+// 调用方应保证传入的是当日K线或一个完整周期内的K线。
+export function calcVWAPArray(klines: KlineData[]): (number | null)[] {
+  const result: (number | null)[] = [];
+  if (!klines || klines.length === 0) return result;
+  let cumPV = 0; // 累计价格×成交量
+  let cumVol = 0; // 累计成交量
+  for (let i = 0; i < klines.length; i++) {
+    const typicalPrice = (klines[i].high + klines[i].low + klines[i].close) / 3;
+    const vol = klines[i].volume || 0;
+    cumPV += typicalPrice * vol;
+    cumVol += vol;
+    if (cumVol > 0) {
+      result.push(cumPV / cumVol);
+    } else {
+      result.push(null);
+    }
+  }
+  return result;
+}
+
+// KDJ（随机指标）
+// K 线 = RSV 的 EMA（通常 3 周期）
+// D 线 = K 的 EMA（通常 3 周期）
+// J 线 = 3K - 2D
+// RSV = (收盘价 - N日内最低价) / (N日内最高价 - N日内最低价) × 100
+export interface KDJData {
+  k: (number | null)[];
+  d: (number | null)[];
+  j: (number | null)[];
+  lastK: number;
+  lastD: number;
+  lastJ: number;
+}
+
+export function calcKDJ(klines: KlineData[], n: number = 9, kPeriod: number = 3, dPeriod: number = 3): KDJData | null {
+  if (!klines || klines.length < n) return null;
+
+  const kValues: (number | null)[] = [];
+  const dValues: (number | null)[] = [];
+  const jValues: (number | null)[] = [];
+
+  // 先计算 RSV
+  const rsv: (number | null)[] = [];
+  for (let i = 0; i < klines.length; i++) {
+    if (i < n - 1) {
+      rsv.push(null);
+      kValues.push(null);
+      dValues.push(null);
+      jValues.push(null);
+      continue;
+    }
+    // 找 n 日内最高和最低
+    let highN = -Infinity;
+    let lowN = Infinity;
+    for (let j = i - (n - 1); j <= i; j++) {
+      if (klines[j].high > highN) highN = klines[j].high;
+      if (klines[j].low < lowN) lowN = klines[j].low;
+    }
+    if (highN === lowN) {
+      rsv.push(50); // 极端情况，默认中值
+    } else {
+      const rsvVal = ((klines[i].close - lowN) / (highN - lowN)) * 100;
+      rsv.push(rsvVal);
+    }
+  }
+
+  // 计算 K 值：K = 前K × (kPeriod-1)/kPeriod + RSV × 1/kPeriod（EMA形式）
+  // 初始 K 值（第一个有效 RSV）用 SMA 近似：直接取第一个 RSV
+  let k = 50; // 初始值，很多平台默认50
+  let d = 50; // 初始值
+  for (let i = 0; i < klines.length; i++) {
+    if (rsv[i] == null) continue;
+    const rsvVal = rsv[i] as number;
+    k = (k * (kPeriod - 1) + rsvVal) / kPeriod;
+    d = (d * (dPeriod - 1) + k) / dPeriod;
+    const j = 3 * k - 2 * d;
+    kValues[i] = k;
+    dValues[i] = d;
+    jValues[i] = j;
+  }
+
+  const last = klines.length - 1;
+  return {
+    k: kValues,
+    d: dValues,
+    j: jValues,
+    lastK: kValues[last] ?? 50,
+    lastD: dValues[last] ?? 50,
+    lastJ: jValues[last] ?? 50,
+  };
+}
+
 // ========== 共享：分形检测与波段筛选 ==========
 // AB9线（江恩八分法）与斐波那契回调线共用同一套 A/B 点检测逻辑，
 // 保证两套画线在任何行情下始终锚定同一个波段、永不互相矛盾。

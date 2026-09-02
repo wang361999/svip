@@ -7,6 +7,9 @@ import {
   calcRSIArray,
   calcAB9Lines,
   calcFibonacci,
+  calcVWAPArray,
+  calcKDJ,
+  calcATRArray,
 } from '@/shared/lib/indicators';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
@@ -66,7 +69,7 @@ interface KlineChartProps {
 // 开关状态仅存于浏览器本地（localStorage），后台/数据库不再有任何指标开关，
 // 徽章点击即生效并持久化，刷新/换币种/换周期后保持用户的选择。
 const INDICATOR_PREFS_KEY = 'kline-indicator-prefs';
-const DEFAULT_INDICATORS = { EMA: false, BOLL: true, MACD: true, RSI: false };
+const DEFAULT_INDICATORS = { EMA: false, BOLL: true, MACD: true, RSI: false, VWAP: true, KDJ: true, ATR: false };
 
 function loadIndicatorPrefs(): typeof DEFAULT_INDICATORS {
   if (typeof window === 'undefined') return { ...DEFAULT_INDICATORS };
@@ -79,6 +82,9 @@ function loadIndicatorPrefs(): typeof DEFAULT_INDICATORS {
       BOLL: !!parsed.BOLL,
       MACD: !!parsed.MACD,
       RSI: !!parsed.RSI,
+      VWAP: parsed.VWAP !== undefined ? !!parsed.VWAP : DEFAULT_INDICATORS.VWAP,
+      KDJ: parsed.KDJ !== undefined ? !!parsed.KDJ : DEFAULT_INDICATORS.KDJ,
+      ATR: parsed.ATR !== undefined ? !!parsed.ATR : DEFAULT_INDICATORS.ATR,
     };
   } catch {
     return { ...DEFAULT_INDICATORS };
@@ -113,6 +119,23 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const rsiOverbought = useRef<ISeriesApi<'Line'> | null>(null);
   const rsiOversold = useRef<ISeriesApi<'Line'> | null>(null);
 
+  // KDJ 副图
+  const kdjChartRef = useRef<HTMLDivElement>(null);
+  const kdjChart = useRef<IChartApi | null>(null);
+  const kdjKLine = useRef<ISeriesApi<'Line'> | null>(null);
+  const kdjDLine = useRef<ISeriesApi<'Line'> | null>(null);
+  const kdjJLine = useRef<ISeriesApi<'Line'> | null>(null);
+  const kdjOverbought = useRef<ISeriesApi<'Line'> | null>(null);
+  const kdjOversold = useRef<ISeriesApi<'Line'> | null>(null);
+
+  // ATR 副图
+  const atrChartRef = useRef<HTMLDivElement>(null);
+  const atrChart = useRef<IChartApi | null>(null);
+  const atrLine = useRef<ISeriesApi<'Line'> | null>(null);
+
+  // VWAP（主图线）
+  const vwapSeries = useRef<ISeriesApi<'Line'> | null>(null);
+
   const allKlinesRef = useRef<KlineData[]>([]);
   const pendingTickRef = useRef<number | null>(null);
   const rAFRef = useRef<number | null>(null);
@@ -143,6 +166,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     macdFast: 12,
     macdSlow: 26,
     macdSignal: 9,
+    kdjN: 9,
+    kdjK: 3,
+    kdjD: 3,
+    atrPeriod: 14,
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -199,6 +226,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           macdFast: parseInt(data.macdFast || '12', 10) || 12,
           macdSlow: parseInt(data.macdSlow || '26', 10) || 26,
           macdSignal: parseInt(data.macdSignal || '9', 10) || 9,
+          kdjN: parseInt(data.kdjN || '9', 10) || 9,
+          kdjK: parseInt(data.kdjK || '3', 10) || 3,
+          kdjD: parseInt(data.kdjD || '3', 10) || 3,
+          atrPeriod: parseInt(data.atrPeriod || '14', 10) || 14,
         });
         if (prefs.prefAB9 !== undefined) setShowAutoAB9(prefs.prefAB9);
         if (prefs.prefFibonacci !== undefined) setShowFibonacci(prefs.prefFibonacci);
@@ -327,6 +358,90 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       if (rsiOversold.current) rsiOversold.current.setData([]);
       if (rsiChartRef.current?.parentElement) {
         rsiChartRef.current.parentElement.classList.add('hidden');
+      }
+    }
+
+    // VWAP（主图线）
+    if (vwapSeries.current) {
+      try { mainChart.current?.removeSeries(vwapSeries.current); } catch {}
+      vwapSeries.current = null;
+    }
+    if (indicators.VWAP) {
+      vwapSeries.current = mainChart.current.addLineSeries({
+        color: 'rgba(168, 85, 247, 0.85)',
+        lineWidth: 1,
+        lineStyle: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      const vwap = calcVWAPArray(klines);
+      const vwapData: LineData[] = [];
+      vwap.forEach((v, i) => {
+        if (v !== null && !isNaN(v)) vwapData.push({ time: klines[i].time as Time, value: v });
+      });
+      vwapSeries.current.setData(vwapData);
+    }
+
+    // KDJ 副图
+    if (indicators.KDJ && kdjChart.current && kdjKLine.current && kdjDLine.current && kdjJLine.current) {
+      const kdjData = calcKDJ(klines, periods.kdjN, periods.kdjK, periods.kdjD);
+      if (kdjData) {
+        const kData: LineData[] = [];
+        const dData: LineData[] = [];
+        const jData: LineData[] = [];
+        const overboughtData: LineData[] = [];
+        const oversoldData: LineData[] = [];
+        for (let i = 0; i < klines.length; i++) {
+          if (kdjData.k[i] !== null) {
+            const t = klines[i].time as Time;
+            kData.push({ time: t, value: kdjData.k[i] as number });
+            dData.push({ time: t, value: kdjData.d[i] as number });
+            jData.push({ time: t, value: kdjData.j[i] as number });
+            overboughtData.push({ time: t, value: 80 });
+            oversoldData.push({ time: t, value: 20 });
+          }
+        }
+        kdjKLine.current.setData(kData);
+        kdjDLine.current.setData(dData);
+        kdjJLine.current.setData(jData);
+        if (kdjOverbought.current) kdjOverbought.current.setData(overboughtData);
+        if (kdjOversold.current) kdjOversold.current.setData(oversoldData);
+      }
+      // 显示 KDJ 副图
+      if (kdjChartRef.current?.parentElement) {
+        kdjChartRef.current.parentElement.classList.remove('hidden');
+      }
+    } else {
+      // 关闭 KDJ：清空数据并隐藏副图面板
+      if (kdjKLine.current) kdjKLine.current.setData([]);
+      if (kdjDLine.current) kdjDLine.current.setData([]);
+      if (kdjJLine.current) kdjJLine.current.setData([]);
+      if (kdjOverbought.current) kdjOverbought.current.setData([]);
+      if (kdjOversold.current) kdjOversold.current.setData([]);
+      if (kdjChartRef.current?.parentElement) {
+        kdjChartRef.current.parentElement.classList.add('hidden');
+      }
+    }
+
+    // ATR 副图
+    if (indicators.ATR && atrChart.current && atrLine.current) {
+      const atrData = calcATRArray(klines, periods.atrPeriod);
+      const lineData: LineData[] = [];
+      for (let i = 0; i < klines.length; i++) {
+        if (atrData[i] !== null) {
+          lineData.push({ time: klines[i].time as Time, value: atrData[i] as number });
+        }
+      }
+      atrLine.current.setData(lineData);
+      // 显示 ATR 副图
+      if (atrChartRef.current?.parentElement) {
+        atrChartRef.current.parentElement.classList.remove('hidden');
+      }
+    } else {
+      // 关闭 ATR：清空数据并隐藏副图面板
+      if (atrLine.current) atrLine.current.setData([]);
+      if (atrChartRef.current?.parentElement) {
+        atrChartRef.current.parentElement.classList.add('hidden');
       }
     }
   }, [indicators, periods]);
@@ -695,14 +810,103 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       });
     }
 
-    // 主图和MACD联动（平移/缩放时保持时间轴同步）
+    // KDJ 副图
+    let kChart: IChartApi | null = null;
+    let kK: ISeriesApi<'Line'> | null = null;
+    let kD: ISeriesApi<'Line'> | null = null;
+    let kJ: ISeriesApi<'Line'> | null = null;
+    let kOver: ISeriesApi<'Line'> | null = null;
+    let kUnder: ISeriesApi<'Line'> | null = null;
+    if (kdjChartRef.current) {
+      kChart = createChart(kdjChartRef.current, {
+        layout: { background: { color: 'transparent' }, textColor: '#848e9c', fontSize: 10, fontFamily: CHART_FONT },
+        grid: {
+          vertLines: { color: GRID_COLOR, style: LineStyle.Dotted },
+          horzLines: { color: GRID_COLOR_FAINT, style: LineStyle.Dotted },
+        },
+        timeScale: { visible: false, borderColor: AXIS_BORDER, timeVisible: true },
+        rightPriceScale: { borderColor: AXIS_BORDER, autoScale: true },
+        crosshair: {
+          vertLine: { color: CROSSHAIR_COLOR, width: 1, style: LineStyle.Dashed, labelBackgroundColor: CROSSHAIR_LABEL_BG },
+          horzLine: { color: CROSSHAIR_COLOR, width: 1, style: LineStyle.Dashed, labelBackgroundColor: CROSSHAIR_LABEL_BG },
+        },
+      });
+      kK = kChart.addLineSeries({
+        color: '#fbbf24',
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      kD = kChart.addLineSeries({
+        color: '#60a5fa',
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      kJ = kChart.addLineSeries({
+        color: '#f472b6',
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      kOver = kChart.addLineSeries({
+        color: 'rgba(239, 68, 68, 0.3)',
+        lineWidth: 1,
+        lineStyle: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      kUnder = kChart.addLineSeries({
+        color: 'rgba(34, 197, 94, 0.3)',
+        lineWidth: 1,
+        lineStyle: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+    }
+
+    // ATR 副图
+    let aChart: IChartApi | null = null;
+    let aLine: ISeriesApi<'Line'> | null = null;
+    if (atrChartRef.current) {
+      aChart = createChart(atrChartRef.current, {
+        layout: { background: { color: 'transparent' }, textColor: '#848e9c', fontSize: 10, fontFamily: CHART_FONT },
+        grid: {
+          vertLines: { color: GRID_COLOR, style: LineStyle.Dotted },
+          horzLines: { color: GRID_COLOR_FAINT, style: LineStyle.Dotted },
+        },
+        timeScale: { visible: false, borderColor: AXIS_BORDER, timeVisible: true },
+        rightPriceScale: { borderColor: AXIS_BORDER, autoScale: true },
+        crosshair: {
+          vertLine: { color: CROSSHAIR_COLOR, width: 1, style: LineStyle.Dashed, labelBackgroundColor: CROSSHAIR_LABEL_BG },
+          horzLine: { color: CROSSHAIR_COLOR, width: 1, style: LineStyle.Dashed, labelBackgroundColor: CROSSHAIR_LABEL_BG },
+        },
+      });
+      aLine = aChart.addLineSeries({
+        color: '#a855f7',
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+    }
+
+    // 主图和所有副图联动（平移/缩放时保持时间轴同步）
     chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-      if (range) mChart.timeScale().setVisibleLogicalRange(range);
+      if (range) {
+        mChart.timeScale().setVisibleLogicalRange(range);
+        if (rChart) rChart.timeScale().setVisibleLogicalRange(range);
+        if (kChart) kChart.timeScale().setVisibleLogicalRange(range);
+        if (aChart) aChart.timeScale().setVisibleLogicalRange(range);
+      }
     });
 
     mainChart.current = chart;
     macdChart.current = mChart;
     rsiChart.current = rChart;
+    kdjChart.current = kChart;
+    atrChart.current = aChart;
     candleSeries.current = candle;
     volumeSeries.current = volume;
     macdHist.current = hist;
@@ -711,6 +915,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     rsiLine.current = rLine;
     rsiOverbought.current = rOver;
     rsiOversold.current = rUnder;
+    kdjKLine.current = kK;
+    kdjDLine.current = kD;
+    kdjJLine.current = kJ;
+    kdjOverbought.current = kOver;
+    kdjOversold.current = kUnder;
+    atrLine.current = aLine;
 
     const handleResize = () => {
       if (mainChartRef.current && mainChart.current) {
@@ -731,6 +941,18 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           height: rsiChartRef.current.clientHeight,
         });
       }
+      if (kdjChartRef.current && kdjChart.current) {
+        kdjChart.current.applyOptions({
+          width: kdjChartRef.current.clientWidth,
+          height: kdjChartRef.current.clientHeight,
+        });
+      }
+      if (atrChartRef.current && atrChart.current) {
+        atrChart.current.applyOptions({
+          width: atrChartRef.current.clientWidth,
+          height: atrChartRef.current.clientHeight,
+        });
+      }
     };
     window.addEventListener('resize', handleResize);
     handleResize();
@@ -740,6 +962,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       chart.remove();
       mChart.remove();
       if (rChart) rChart.remove();
+      if (kChart) kChart.remove();
+      if (aChart) aChart.remove();
     };
   }, []);
 
@@ -762,6 +986,18 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         rsiChart.current.applyOptions({
           width: rsiChartRef.current.clientWidth,
           height: rsiChartRef.current.clientHeight,
+        });
+      }
+      if (kdjChartRef.current && kdjChart.current) {
+        kdjChart.current.applyOptions({
+          width: kdjChartRef.current.clientWidth,
+          height: kdjChartRef.current.clientHeight,
+        });
+      }
+      if (atrChartRef.current && atrChart.current) {
+        atrChart.current.applyOptions({
+          width: atrChartRef.current.clientWidth,
+          height: atrChartRef.current.clientHeight,
         });
       }
     }, 100);
@@ -842,7 +1078,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           }`}>
             {dataStatus}
           </span>
-          {(['EMA', 'BOLL', 'MACD', 'RSI'] as const).map((ind) => (
+          {(['EMA', 'BOLL', 'MACD', 'RSI', 'VWAP', 'KDJ', 'ATR'] as const).map((ind) => (
             <button
               key={ind}
               onClick={() => {
@@ -985,6 +1221,22 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         <div ref={rsiChartRef} className="w-full" style={{ height: '100px' }} />
         <span className="absolute top-1.5 left-3 text-[10px] text-dark-400 pointer-events-none">
           RSI({periods.rsiPeriod})
+        </span>
+      </div>
+
+      {/* KDJ 副图（全屏时隐藏） */}
+      <div className={`relative border-t border-dark-700/30 ${isFullscreen ? 'hidden' : ''}`}>
+        <div ref={kdjChartRef} className="w-full" style={{ height: '100px' }} />
+        <span className="absolute top-1.5 left-3 text-[10px] text-dark-400 pointer-events-none">
+          KDJ({periods.kdjN},{periods.kdjK},{periods.kdjD})
+        </span>
+      </div>
+
+      {/* ATR 副图（全屏时隐藏） */}
+      <div className={`relative border-t border-dark-700/30 ${isFullscreen ? 'hidden' : ''}`}>
+        <div ref={atrChartRef} className="w-full" style={{ height: '80px' }} />
+        <span className="absolute top-1.5 left-3 text-[10px] text-dark-400 pointer-events-none">
+          ATR({periods.atrPeriod})
         </span>
       </div>
     </div>
