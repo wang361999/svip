@@ -93,8 +93,8 @@ export const RAPID_CONFIG = {
   bollingerPeriod: 20,
   bollingerStd: 2,
   rsiPeriod: 14,
-  rsiOversold: 25,
-  rsiOverbought: 75,
+  rsiOversold: 30,
+  rsiOverbought: 70,
   macdFast: 12,
   macdSlow: 26,
   macdSignal: 9,
@@ -426,9 +426,9 @@ export function analyzeRapid(
   }
 
   const latestBar = n - 1;
-  // 只看最新一根K线的信号（不再看前2根的窗口）
+  // 2根K线窗口：最新 + 前1根，捕捉跨K线共振
   const currentSignals = allSignals.filter(s => s.barIndex === latestBar);
-  const recentWindow = currentSignals;
+  const recentWindow = allSignals.filter(s => s.barIndex >= latestBar - 1);
   const longSources = new Set<SignalSource>();
   const shortSources = new Set<SignalSource>();
 
@@ -465,7 +465,8 @@ export function analyzeRapid(
   const winningSources = winningDir === 'long'
     ? Array.from(longSources) : Array.from(shortSources);
 
-  const suggestion = winningDir !== 'none' && confidence >= 1
+  // 最低2路共振才出信号，单信号不触发
+  const suggestion = winningDir !== 'none' && confidence >= 2
     ? {
         direction: winningDir as Direction,
         entry: currentPrice,
