@@ -1007,18 +1007,18 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           y = highY - 14; // K线最高点上方
         }
 
-        // 中文交易惯例：红色=买入/做多（底部九转），绿色=卖出/做空（顶部九转）
+        // 虚拟币国际惯例（与Binance K线色系一致）：绿色=买入/做多，红色=卖出/做空
         if (isNine && isBuy) {
-          ctx.fillStyle = '#ef4444'; // 红色=底部九转=买入/做多信号
+          ctx.fillStyle = '#10b981'; // 绿色=底部九转=买入/做多信号
           ctx.font = 'bold 12px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
         } else if (isNine && !isBuy) {
-          ctx.fillStyle = '#10b981'; // 绿色=顶部九转=卖出/做空信号
+          ctx.fillStyle = '#ef4444'; // 红色=顶部九转=卖出/做空信号
           ctx.font = 'bold 12px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
         } else if (isBuy) {
-          ctx.fillStyle = 'rgba(239, 68, 68, 0.6)';
+          ctx.fillStyle = 'rgba(16, 185, 129, 0.6)';
           ctx.font = '10px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
         } else {
-          ctx.fillStyle = 'rgba(16, 185, 129, 0.6)';
+          ctx.fillStyle = 'rgba(239, 68, 68, 0.6)';
           ctx.font = '10px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
         }
 
