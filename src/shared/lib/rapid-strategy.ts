@@ -426,8 +426,9 @@ export function analyzeRapid(
   }
 
   const latestBar = n - 1;
+  // 只看最新一根K线的信号（不再看前2根的窗口）
   const currentSignals = allSignals.filter(s => s.barIndex === latestBar);
-  const recentWindow = allSignals.filter(s => s.barIndex >= latestBar - 2);
+  const recentWindow = currentSignals;
   const longSources = new Set<SignalSource>();
   const shortSources = new Set<SignalSource>();
 
