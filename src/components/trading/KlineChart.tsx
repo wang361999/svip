@@ -1232,28 +1232,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
               >
                 FIB
               </button>
-              <button
-                onClick={() => {
-                  const v = !showProfit;
-                  setShowProfit(v);
-                  try { window.localStorage.setItem(PROFIT_PREF_KEY, v ? '1' : '0'); } catch {}
-                }}
-                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showProfit ? 'text-amber-400' : 'text-dark-600'}`}
-                title="利润测算透明框（结构分析：预案色带 / 汇流止盈区 / 盈利投影），具体数字见 AI 分析卡片"
-              >
-                止盈
-              </button>
-              <button
-                onClick={() => {
-                  const v = !showMicro;
-                  setShowMicro(v);
-                  try { window.localStorage.setItem(MICRO_PREF_KEY, v ? '1' : '0'); } catch {}
-                }}
-                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showMicro ? 'text-indigo-400' : 'text-dark-600'}`}
-                title="微观结构位画线（流动性池·等高/等低 + FVG缺口·50%回补），独立于止盈画线"
-              >
-                微构
-              </button>
             </>
           )}
 
