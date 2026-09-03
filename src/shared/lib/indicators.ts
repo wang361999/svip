@@ -135,6 +135,156 @@ export function calcRSIArray(klines: KlineData[], period: number = 14): (number 
   return result;
 }
 
+// ========== 缠论（Chanlun）分型→笔→中枢 ==========
+
+export interface ChanFractal {
+  index: number;
+  time: number;
+  price: number;
+  type: 'top' | 'bottom';
+}
+
+export interface ChanBi {
+  startIndex: number;
+  endIndex: number;
+  startTime: number;
+  endTime: number;
+  startPrice: number;
+  endPrice: number;
+  direction: 'up' | 'down';
+}
+
+export interface ChanZhongshu {
+  startTime: number;
+  endTime: number;
+  high: number;
+  low: number;
+  biCount: number;
+}
+
+export interface ChanResult {
+  fractals: ChanFractal[];
+  bis: ChanBi[];
+  zhongshus: ChanZhongshu[];
+}
+
+// 分型识别：顶分型 = 高点高于左右相邻，底分型 = 低点低于左右相邻
+function detectFractals(klines: KlineData[]): ChanFractal[] {
+  const fractals: ChanFractal[] = [];
+  for (let i = 1; i < klines.length - 1; i++) {
+    const prev = klines[i - 1];
+    const curr = klines[i];
+    const next = klines[i + 1];
+    // 顶分型：高点最高 + 低点也最高（标准缠论定义）
+    if (curr.high > prev.high && curr.high > next.high &&
+        curr.low > prev.low && curr.low > next.low) {
+      fractals.push({ index: i, time: curr.time, price: curr.high, type: 'top' });
+    }
+    // 底分型：低点最低 + 高点也最低
+    if (curr.low < prev.low && curr.low < next.low &&
+        curr.high < prev.high && curr.high < next.high) {
+      fractals.push({ index: i, time: curr.time, price: curr.low, type: 'bottom' });
+    }
+  }
+  return fractals;
+}
+
+// 笔：连接相邻的顶底分型，要求至少间隔4根K线，中间不能有同向更优分型
+function buildBi(fractals: ChanFractal[], klines: KlineData[]): ChanBi[] {
+  const bis: ChanBi[] = [];
+  if (fractals.length < 2) return bis;
+
+  let i = 0;
+  while (i < fractals.length - 1) {
+    const start = fractals[i];
+    // 找下一个相反类型的分型
+    let endIdx = -1;
+    for (let j = i + 1; j < fractals.length; j++) {
+      const candidate = fractals[j];
+      // 必须是相反类型
+      if (candidate.type === start.type) continue;
+      // 间隔至少4根K线
+      if (candidate.index - start.index < 4) continue;
+      // 对于顶→底（下降笔）：中间不能有比start更高的顶分型
+      // 对于底→顶（上升笔）：中间不能有比start更低的底分型
+      let valid = true;
+      for (let k = i + 1; k < j; k++) {
+        const mid = fractals[k];
+        if (mid.type === start.type) {
+          if (start.type === 'top' && mid.price > start.price) { valid = false; break; }
+          if (start.type === 'bottom' && mid.price < start.price) { valid = false; break; }
+        }
+      }
+      if (valid) {
+        endIdx = j;
+        break; // 找到第一个满足条件的就停止
+      }
+    }
+    if (endIdx === -1) { i++; continue; }
+    const end = fractals[endIdx];
+    bis.push({
+      startIndex: start.index,
+      endIndex: end.index,
+      startTime: start.time,
+      endTime: end.time,
+      startPrice: start.price,
+      endPrice: end.price,
+      direction: start.type === 'bottom' ? 'up' : 'down',
+    });
+    i = endIdx; // 从当前终点继续找下一笔
+  }
+  return bis;
+}
+
+// 中枢：至少3笔价格区间重叠
+function buildZhongshu(bis: ChanBi[]): ChanZhongshu[] {
+  const zhongshus: ChanZhongshu[] = [];
+  if (bis.length < 3) return zhongshus;
+
+  for (let i = 0; i <= bis.length - 3; i++) {
+    // 取连续3笔
+    const b1 = bis[i], b2 = bis[i + 1], b3 = bis[i + 2];
+    // 每笔的价格区间
+    const r1Low = Math.min(b1.startPrice, b1.endPrice);
+    const r1High = Math.max(b1.startPrice, b1.endPrice);
+    const r2Low = Math.min(b2.startPrice, b2.endPrice);
+    const r2High = Math.max(b2.startPrice, b2.endPrice);
+    const r3Low = Math.min(b3.startPrice, b3.endPrice);
+    const r3High = Math.max(b3.startPrice, b3.endPrice);
+    // 重叠区间 = [max(低点), min(高点)]
+    const overlapLow = Math.max(r1Low, r2Low, r3Low);
+    const overlapHigh = Math.min(r1High, r2High, r3High);
+    if (overlapLow < overlapHigh) {
+      // 有重叠 → 形成中枢
+      // 合并相邻中枢
+      const last = zhongshus[zhongshus.length - 1];
+      if (last && b1.startTime <= last.endTime) {
+        // 相邻中枢合并
+        last.endTime = b3.endTime;
+        last.high = Math.min(last.high, overlapHigh);
+        last.low = Math.max(last.low, overlapLow);
+        last.biCount += 1;
+      } else {
+        zhongshus.push({
+          startTime: b1.startTime,
+          endTime: b3.endTime,
+          high: overlapHigh,
+          low: overlapLow,
+          biCount: 3,
+        });
+      }
+    }
+  }
+  return zhongshus;
+}
+
+export function calcChan(klines: KlineData[]): ChanResult {
+  const fractals = detectFractals(klines);
+  const bis = buildBi(fractals, klines);
+  const zhongshus = buildZhongshu(bis);
+  return { fractals, bis, zhongshus };
+}
+
 // ATR 数组（用于图表绘制）
 export function calcATRArray(klines: KlineData[], period: number = 14): (number | null)[] {
   const result: (number | null)[] = [];

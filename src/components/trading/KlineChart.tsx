@@ -11,6 +11,8 @@ import {
   calcKDJ,
   calcATRArray,
   calcNineTurn,
+  calcChan,
+  type ChanResult,
 } from '@/shared/lib/indicators';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
@@ -70,7 +72,7 @@ interface KlineChartProps {
 // 开关状态仅存于浏览器本地（localStorage），后台/数据库不再有任何指标开关，
 // 徽章点击即生效并持久化，刷新/换币种/换周期后保持用户的选择。
 const INDICATOR_PREFS_KEY = 'kline-indicator-prefs';
-const DEFAULT_INDICATORS = { EMA: false, BOLL: true, MACD: true, RSI: false, VWAP: true, KDJ: true, ATR: false, NINE: true };
+const DEFAULT_INDICATORS = { EMA: false, BOLL: true, MACD: true, RSI: false, VWAP: true, KDJ: true, ATR: false, NINE: true, CHAN: false };
 
 function loadIndicatorPrefs(): typeof DEFAULT_INDICATORS {
   if (typeof window === 'undefined') return { ...DEFAULT_INDICATORS };
@@ -87,6 +89,7 @@ function loadIndicatorPrefs(): typeof DEFAULT_INDICATORS {
       KDJ: parsed.KDJ !== undefined ? !!parsed.KDJ : DEFAULT_INDICATORS.KDJ,
       ATR: parsed.ATR !== undefined ? !!parsed.ATR : DEFAULT_INDICATORS.ATR,
       NINE: parsed.NINE !== undefined ? !!parsed.NINE : DEFAULT_INDICATORS.NINE,
+      CHAN: parsed.CHAN !== undefined ? !!parsed.CHAN : DEFAULT_INDICATORS.CHAN,
     };
   } catch {
     return { ...DEFAULT_INDICATORS };
@@ -169,6 +172,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const nineTurnCanvasRef = useRef<HTMLCanvasElement>(null);
   const nineTurnDataRef = useRef<{ value: number }[]>([]);
   const drawNineTurnRef = useRef<() => void>(() => {});
+
+  // 缠论（主图标注）
+  const chanCanvasRef = useRef<HTMLCanvasElement>(null);
+  const chanDataRef = useRef<ChanResult | null>(null);
+  const drawChanRef = useRef<() => void>(() => {});
 
   const allKlinesRef = useRef<KlineData[]>([]);
   const pendingTickRef = useRef<number | null>(null);
@@ -416,6 +424,16 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     // 延迟一帧重绘九转（等图表布局完成）
     requestAnimationFrame(() => {
       try { drawNineTurnRef.current(); } catch (e) { console.warn('[NineTurn] raf error:', e); }
+    });
+
+    // 缠论：计算数据并绘制到覆盖层 canvas
+    if (indicators.CHAN) {
+      chanDataRef.current = calcChan(klines);
+    } else {
+      chanDataRef.current = null;
+    }
+    requestAnimationFrame(() => {
+      try { drawChanRef.current(); } catch (e) { console.warn('[Chan] raf error:', e); }
     });
 
     // KDJ 副图
@@ -700,7 +718,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     }
     // 九转数字随最新K线重绘（价格变动导致数字位置变化）
     try { drawNineTurnRef.current(); } catch (e) { console.warn('[NineTurn] update error:', e); }
-  }, [updateIndicators, redrawOverlayLines, legendOf, indicators.NINE]);
+    // 缠论同步重绘
+    try { drawChanRef.current(); } catch (e) { console.warn('[Chan] update error:', e); }
+  }, [updateIndicators, redrawOverlayLines, legendOf, indicators.NINE, indicators.CHAN]);
 
   // 获取K线 — 用 ref 引用最新的 updateChart，避免指标切换导致重新拉取K线和重连WS
   const updateChartRef = useRef(updateChart);
@@ -1024,6 +1044,92 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     // 暴露给外部调用（updateChart 后重绘）
     drawNineTurnRef.current = drawNineTurnNumbers;
 
+    // ========== 缠论（分型/笔/中枢）绘制 ==========
+    const drawChan = () => {
+      try {
+        const canvas = chanCanvasRef.current;
+        const chartAPI = mainChart.current;
+        const chanData = chanDataRef.current;
+        if (!canvas || !chartAPI || !chanData) return;
+        if (!candleSeries.current) return;
+
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return;
+        if (canvas.width !== Math.floor(rect.width * dpr) || canvas.height !== Math.floor(rect.height * dpr)) {
+          canvas.width = Math.floor(rect.width * dpr);
+          canvas.height = Math.floor(rect.height * dpr);
+        }
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.save();
+        ctx.scale(dpr, dpr);
+
+        const timeScale = chartAPI.timeScale();
+
+        // 1. 画中枢（半透明矩形）
+        for (const zs of chanData.zhongshus) {
+          const x1 = timeScale.timeToCoordinate(zs.startTime as Time);
+          const x2 = timeScale.timeToCoordinate(zs.endTime as Time);
+          const yHigh = candleSeries.current.priceToCoordinate(zs.high);
+          const yLow = candleSeries.current.priceToCoordinate(zs.low);
+          if (x1 === null || x2 === null || yHigh === null || yLow === null) continue;
+          const x = Math.min(x1, x2);
+          const w = Math.abs(x2 - x1);
+          const y = Math.min(yHigh, yLow);
+          const h = Math.abs(yLow - yHigh);
+          // 矩形背景
+          ctx.fillStyle = 'rgba(100, 181, 246, 0.10)';
+          ctx.fillRect(x, y, w, h);
+          // 边框
+          ctx.strokeStyle = 'rgba(100, 181, 246, 0.5)';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.strokeRect(x, y, w, h);
+          ctx.setLineDash([]);
+          // 标签
+          ctx.fillStyle = 'rgba(100, 181, 246, 0.8)';
+          ctx.font = '10px -apple-system, sans-serif';
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'top';
+          ctx.fillText(`中枢(${zs.biCount}笔)`, x + 4, y + 2);
+        }
+
+        // 2. 画笔（折线）
+        ctx.lineWidth = 1.5;
+        for (const bi of chanData.bis) {
+          const x1 = timeScale.timeToCoordinate(bi.startTime as Time);
+          const x2 = timeScale.timeToCoordinate(bi.endTime as Time);
+          const y1 = candleSeries.current.priceToCoordinate(bi.startPrice);
+          const y2 = candleSeries.current.priceToCoordinate(bi.endPrice);
+          if (x1 === null || x2 === null || y1 === null || y2 === null) continue;
+          // 上升笔绿色，下降笔红色
+          ctx.strokeStyle = bi.direction === 'up' ? 'rgba(34, 197, 94, 0.8)' : 'rgba(248, 113, 113, 0.8)';
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.stroke();
+        }
+
+        // 3. 画分型标记（小圆点）
+        for (const f of chanData.fractals) {
+          const x = timeScale.timeToCoordinate(f.time as Time);
+          const y = candleSeries.current.priceToCoordinate(f.price);
+          if (x === null || y === null) continue;
+          ctx.fillStyle = f.type === 'top' ? 'rgba(248, 113, 113, 0.9)' : 'rgba(34, 197, 94, 0.9)';
+          ctx.beginPath();
+          ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        ctx.restore();
+      } catch (e) {
+        console.warn('[Chan] render error:', e);
+      }
+    };
+    drawChanRef.current = drawChan;
+
     // 主图和所有副图联动（平移/缩放时保持时间轴同步）
     chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
       if (range) {
@@ -1034,6 +1140,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       }
       // 九转数字随视图滚动重绘
       try { drawNineTurnNumbers(); } catch (e) { console.warn('[NineTurn] scroll error:', e); }
+      // 缠论随视图滚动重绘
+      try { drawChan(); } catch (e) { console.warn('[Chan] scroll error:', e); }
     });
 
     mainChart.current = chart;
@@ -1089,6 +1197,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       }
       // 九转数字随 resize 重绘
       try { drawNineTurnNumbers(); } catch (e) { console.warn('[NineTurn] resize error:', e); }
+      // 缠论随 resize 重绘
+      try { drawChan(); } catch (e) { console.warn('[Chan] resize error:', e); }
     };
     window.addEventListener('resize', handleResize);
     handleResize();
@@ -1214,7 +1324,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           }`}>
             {dataStatus}
           </span>
-          {(['EMA', 'BOLL', 'MACD', 'RSI', 'VWAP', 'KDJ', 'ATR', 'NINE'] as const).map((ind) => (
+          {(['EMA', 'BOLL', 'MACD', 'RSI', 'VWAP', 'KDJ', 'ATR', 'NINE', 'CHAN'] as const).map((ind) => (
             <button
               key={ind}
               onClick={() => {
@@ -1233,7 +1343,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
               }`}
               title={`点击切换${ind}显示`}
             >
-              {ind === 'NINE' ? '九转' : ind}
+              {ind === 'NINE' ? '九转' : ind === 'CHAN' ? '缠论' : ind}
             </button>
           ))}
           {/* AB9 + 斐波那契 独立按钮 */}
@@ -1323,6 +1433,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             ref={nineTurnCanvasRef}
             className="absolute top-0 left-0 w-full h-full pointer-events-none"
             style={{ zIndex: 2 }}
+          />
+          {/* 缠论（分型/笔/中枢）覆盖层 */}
+          <canvas
+            ref={chanCanvasRef}
+            className="absolute top-0 left-0 w-full h-full pointer-events-none"
+            style={{ zIndex: 3 }}
           />
           {/* 左上角 OHLC 图例：十字线联动，颜色跟涨跌 */}
           {legend && (
