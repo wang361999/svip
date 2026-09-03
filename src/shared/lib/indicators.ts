@@ -393,82 +393,101 @@ function detectChanSignals(
   const signals: ChanSignal[] = [];
   if (zhongshus.length === 0 || bis.length === 0 || klines.length === 0) return signals;
 
-  const lastZs = zhongshus[zhongshus.length - 1];
-  const lastPrice = klines[klines.length - 1].close;
-  const lastTime = klines[klines.length - 1].time;
+  // 遍历每个中枢，检测各自的买卖点
+  for (let zi = 0; zi < zhongshus.length; zi++) {
+    const zs = zhongshus[zi];
+    const isLast = zi === zhongshus.length - 1;
 
-  // 找中枢之后的笔
-  const bisAfterZs = bis.filter(b => b.endTime >= lastZs.startTime);
-  if (bisAfterZs.length === 0) return signals;
+    // 找该中枢之后的笔
+    const bisAfterZs = bis.filter(b => b.endTime >= zs.startTime && b.startTime <= (isLast ? Infinity : zhongshus[zi + 1].startTime));
+    if (bisAfterZs.length === 0) continue;
 
-  const lastBi = bisAfterZs[bisAfterZs.length - 1];
+    // 对每个中枢，检查其后的笔是否形成买卖点
+    for (let bi = 0; bi < bisAfterZs.length; bi++) {
+      const cb = bisAfterZs[bi];
+      const lastPrice = cb.endPrice;
+      const lastTime = cb.endTime;
+      const lastBiLow = Math.min(cb.startPrice, cb.endPrice);
+      const lastBiHigh = Math.max(cb.startPrice, cb.endPrice);
 
-  // === 三买：价格在中枢上沿之上，且最近一笔的最低点也在上沿之上 ===
-  const lastBiLow = Math.min(lastBi.startPrice, lastBi.endPrice);
-  const lastBiHigh = Math.max(lastBi.startPrice, lastBi.endPrice);
-  if (lastPrice > lastZs.high && lastBiLow > lastZs.high) {
-    signals.push({
-      type: 'thirdBuy', price: lastPrice, time: lastTime,
-      description: '三买：突破中枢上沿后回踩不破',
-    });
-  }
-  // === 三卖：价格在中枢下沿之下，且最近一笔的最高点也在下沿之下 ===
-  if (lastPrice < lastZs.low && lastBiHigh < lastZs.low) {
-    signals.push({
-      type: 'thirdSell', price: lastPrice, time: lastTime,
-      description: '三卖：跌破中枢下沿后反弹不破',
-    });
-  }
-
-  // === 一买：中枢下方，最后一笔下降力度小于前一笔（背驰） ===
-  if (lastPrice < lastZs.low) {
-    const downBis = bisAfterZs.filter(b => b.direction === 'down');
-    if (downBis.length >= 2) {
-      const lastDown = downBis[downBis.length - 1];
-      const prevDown = downBis[downBis.length - 2];
-      const lastRange = Math.abs(lastDown.endPrice - lastDown.startPrice);
-      const prevRange = Math.abs(prevDown.endPrice - prevDown.startPrice);
-      if (lastRange < prevRange * 0.8) {
+      // 三买：中枢之后某笔的最低点在中枢上沿之上
+      if (lastBiLow > zs.high) {
         signals.push({
-          type: 'firstBuy', price: lastPrice, time: lastTime,
-          description: '一买：中枢下方下降笔背驰（力度衰减）',
+          type: 'thirdBuy', price: lastPrice, time: lastTime,
+          description: `三买：${zi + 1}#中枢后回踩不破上沿`,
         });
+        break; // 每个中枢只标第一个三买
+      }
+      // 三卖：中枢之后某笔的最高点在中枢下沿之下
+      if (lastBiHigh < zs.low) {
+        signals.push({
+          type: 'thirdSell', price: lastPrice, time: lastTime,
+          description: `三卖：${zi + 1}#中枢后反弹不破下沿`,
+        });
+        break;
       }
     }
-  }
-  // === 一卖：中枢上方，最后一笔上升力度小于前一笔（背驰） ===
-  if (lastPrice > lastZs.high) {
-    const upBis = bisAfterZs.filter(b => b.direction === 'up');
-    if (upBis.length >= 2) {
-      const lastUp = upBis[upBis.length - 1];
-      const prevUp = upBis[upBis.length - 2];
-      const lastRange = Math.abs(lastUp.endPrice - lastUp.startPrice);
-      const prevRange = Math.abs(prevUp.endPrice - prevUp.startPrice);
-      if (lastRange < prevRange * 0.8) {
-        signals.push({
-          type: 'firstSell', price: lastPrice, time: lastTime,
-          description: '一卖：中枢上方上升笔背驰（力度衰减）',
-        });
-      }
-    }
-  }
 
-  // === 二买：价格在中枢内偏上，最近下降笔回踩未破下沿 ===
-  if (lastPrice > lastZs.low && lastPrice < lastZs.high && lastBi.direction === 'down') {
-    if (lastBi.endPrice > lastZs.low) {
-      signals.push({
-        type: 'secondBuy', price: lastPrice, time: lastTime,
-        description: '二买：中枢内回踩未破下沿',
-      });
-    }
-  }
-  // === 二卖：价格在中枢内偏下，最近上升笔反弹未破上沿 ===
-  if (lastPrice > lastZs.low && lastPrice < lastZs.high && lastBi.direction === 'up') {
-    if (lastBi.endPrice < lastZs.high) {
-      signals.push({
-        type: 'secondSell', price: lastPrice, time: lastTime,
-        description: '二卖：中枢内反弹未破上沿',
-      });
+    // 对最后一个中枢，额外检测当前价格的买卖点
+    if (isLast) {
+      const lastPrice = klines[klines.length - 1].close;
+      const lastTime = klines[klines.length - 1].time;
+      const bisForLast = bis.filter(b => b.endTime >= zs.startTime);
+      if (bisForLast.length === 0) continue;
+      const lastBi = bisForLast[bisForLast.length - 1];
+      const lastBiLow = Math.min(lastBi.startPrice, lastBi.endPrice);
+      const lastBiHigh = Math.max(lastBi.startPrice, lastBi.endPrice);
+
+      // 一买：中枢下方，最后一笔下降背驰
+      if (lastPrice < zs.low) {
+        const downBis = bisForLast.filter(b => b.direction === 'down');
+        if (downBis.length >= 2) {
+          const lastDown = downBis[downBis.length - 1];
+          const prevDown = downBis[downBis.length - 2];
+          const lastRange = Math.abs(lastDown.endPrice - lastDown.startPrice);
+          const prevRange = Math.abs(prevDown.endPrice - prevDown.startPrice);
+          if (lastRange < prevRange * 0.8) {
+            signals.push({
+              type: 'firstBuy', price: lastPrice, time: lastTime,
+              description: '一买：中枢下方下降笔背驰',
+            });
+          }
+        }
+      }
+      // 一卖：中枢上方，最后一笔上升背驰
+      if (lastPrice > zs.high) {
+        const upBis = bisForLast.filter(b => b.direction === 'up');
+        if (upBis.length >= 2) {
+          const lastUp = upBis[upBis.length - 1];
+          const prevUp = upBis[upBis.length - 2];
+          const lastRange = Math.abs(lastUp.endPrice - lastUp.startPrice);
+          const prevRange = Math.abs(prevUp.endPrice - prevUp.startPrice);
+          if (lastRange < prevRange * 0.8) {
+            signals.push({
+              type: 'firstSell', price: lastPrice, time: lastTime,
+              description: '一卖：中枢上方上升笔背驰',
+            });
+          }
+        }
+      }
+      // 二买：中枢内偏上，回踩未破下沿
+      if (lastPrice > zs.low && lastPrice < zs.high && lastBi.direction === 'down') {
+        if (lastBi.endPrice > zs.low) {
+          signals.push({
+            type: 'secondBuy', price: lastPrice, time: lastTime,
+            description: '二买：中枢内回踩未破下沿',
+          });
+        }
+      }
+      // 二卖：中枢内偏下，反弹未破上沿
+      if (lastPrice > zs.low && lastPrice < zs.high && lastBi.direction === 'up') {
+        if (lastBi.endPrice < zs.high) {
+          signals.push({
+            type: 'secondSell', price: lastPrice, time: lastTime,
+            description: '二卖：中枢内反弹未破上沿',
+          });
+        }
+      }
     }
   }
 
