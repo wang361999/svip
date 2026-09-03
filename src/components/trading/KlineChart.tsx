@@ -1305,7 +1305,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     };
     drawChanRef.current = drawChan;
 
-    // ===== 多空信号箭头绘制 =====
+    // ===== 多空信号箭头绘制（透明框版） =====
     const drawSignals = () => {
       try {
         const canvas = signalCanvasRef.current;
@@ -1327,8 +1327,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         const timeScale = chartAPI.timeScale();
         const suggestions = [];
 
-        // 收集要显示的信号
-        // 1. 主建议（如果方向不是none）
+        // 只收集主建议（简化：只显示1个信号，避免画面乱）
         const lastKlineTime = allKlinesRef.current.length > 0
           ? allKlinesRef.current[allKlinesRef.current.length - 1].time
           : data.timestamp;
@@ -1344,124 +1343,105 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             time: lastKlineTime,
           });
         }
-        // 2. 最近3个信号
-        for (const sig of (data.recentSignals || []).slice(-3)) {
-          // 避免重复
-          if (suggestions.find(s => Math.abs(s.entry - sig.entry) < 0.5)) continue;
-          suggestions.push({
-            direction: sig.direction,
-            entry: sig.entry,
-            stop: sig.stop,
-            target: sig.target,
-            confidence: sig.confidence,
-            score: sig.confidence,
-            reason: sig.reason || sig.source,
-            time: sig.time,
-          });
-        }
 
-        if (suggestions.length === 0) {
-          ctx.restore();
-          return;
-        }
+        if (suggestions.length === 0) return;
 
         ctx.save();
 
-        // 只显示最近2个信号（避免画面太乱）
-        const display = suggestions.slice(-2);
-
-        for (const sig of display) {
+        for (const sig of suggestions.slice(-1)) { // 只画1个
           const isLong = sig.direction === 'long';
-          const color = isLong ? 'rgba(22, 199, 94, ' : 'rgba(246, 70, 93, ';
           const x = timeScale.timeToCoordinate(sig.time as Time);
           if (x === null) continue;
           const entryY = candleSeries.current.priceToCoordinate(sig.entry);
           const stopY = candleSeries.current.priceToCoordinate(sig.stop);
           const targetY = candleSeries.current.priceToCoordinate(sig.target);
-          if (entryY === null) continue;
+          if (entryY === null || stopY === null || targetY === null) continue;
 
-          // 1. 画入场价水平线
-          ctx.strokeStyle = color + '0.8)';
+          // 盈利区颜色：做多=绿，做空=红
+          const profitColor = isLong ? '22, 199, 94' : '246, 70, 93';
+          // 风险区颜色：始终用淡红
+          const riskColor = '246, 70, 93';
+
+          // 框宽度
+          const boxW = 70;
+          const boxX = x - 5;
+
+          // 1. 画盈利区透明框（entry→target）
+          // 做多：target在上(entryY>targetY)，entry在下
+          // 做空：target在下(entryY<targetY)，entry在上
+          const profitTop = isLong ? targetY : entryY;
+          const profitBot = isLong ? entryY : targetY;
+          ctx.fillStyle = `rgba(${profitColor}, 0.12)`;
+          ctx.fillRect(boxX, profitTop, boxW, profitBot - profitTop);
+          ctx.strokeStyle = `rgba(${profitColor}, 0.6)`;
           ctx.lineWidth = 1.5;
-          ctx.setLineDash([8, 4]);
-          ctx.beginPath();
-          ctx.moveTo(x - 25, entryY);
-          ctx.lineTo(x + 80, entryY);
-          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.strokeRect(boxX, profitTop, boxW, profitBot - profitTop);
+
+          // 2. 画风险区透明框（entry→stop）
+          // 做多：entry在上，stop在下
+          // 做空：entry在下，stop在上
+          const riskTop = isLong ? entryY : stopY;
+          const riskBot = isLong ? stopY : entryY;
+          ctx.fillStyle = `rgba(${riskColor}, 0.10)`;
+          ctx.fillRect(boxX, riskTop, boxW, riskBot - riskTop);
+          ctx.strokeStyle = `rgba(${riskColor}, 0.5)`;
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 3]);
+          ctx.strokeRect(boxX, riskTop, boxW, riskBot - riskTop);
           ctx.setLineDash([]);
 
-          // 2. 画止损价水平线（红色短虚线）
-          if (stopY !== null) {
-            ctx.strokeStyle = 'rgba(246, 70, 93, 0.5)';
-            ctx.lineWidth = 1;
-            ctx.setLineDash([3, 3]);
-            ctx.beginPath();
-            ctx.moveTo(x - 15, stopY);
-            ctx.lineTo(x + 60, stopY);
-            ctx.stroke();
-            ctx.setLineDash([]);
-            // 止损标签
-            ctx.fillStyle = 'rgba(246, 70, 93, 0.7)';
-            ctx.font = '9px -apple-system, sans-serif';
-            ctx.textAlign = 'left';
-            ctx.textBaseline = 'middle';
-            ctx.fillText('SL', x + 62, stopY);
-          }
-
-          // 3. 画目标价水平线（绿色短虚线）
-          if (targetY !== null) {
-            ctx.strokeStyle = 'rgba(22, 199, 94, 0.5)';
-            ctx.lineWidth = 1;
-            ctx.setLineDash([3, 3]);
-            ctx.beginPath();
-            ctx.moveTo(x - 15, targetY);
-            ctx.lineTo(x + 60, targetY);
-            ctx.stroke();
-            ctx.setLineDash([]);
-            ctx.fillStyle = 'rgba(22, 199, 94, 0.7)';
-            ctx.font = '9px -apple-system, sans-serif';
-            ctx.textAlign = 'left';
-            ctx.textBaseline = 'middle';
-            ctx.fillText('TP', x + 62, targetY);
-          }
-
-          // 4. 画箭头标记
-          const arrowY = isLong ? entryY + 25 : entryY - 25;
-          // 背景圆
-          ctx.fillStyle = color + '0.2)';
-          ctx.beginPath();
-          ctx.arc(x, arrowY, 16, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.strokeStyle = color + '1)';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.arc(x, arrowY, 16, 0, Math.PI * 2);
-          ctx.stroke();
-
-          // 箭头
-          ctx.fillStyle = color + '1)';
-          ctx.font = 'bold 14px -apple-system, sans-serif';
+          // 3. 框内标签
+          ctx.font = '9px -apple-system, sans-serif';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillText(isLong ? '▲' : '▼', x, arrowY - 2);
 
-          // 方向标签
-          ctx.fillStyle = color + '1)';
+          // 止盈标签（盈利区中间）
+          ctx.fillStyle = `rgba(${profitColor}, 0.9)`;
+          ctx.fillText('止盈', boxX + boxW / 2, (profitTop + profitBot) / 2);
+
+          // 止损标签（风险区中间）
+          ctx.fillStyle = `rgba(${riskColor}, 0.8)`;
+          ctx.fillText('止损', boxX + boxW / 2, (riskTop + riskBot) / 2);
+
+          // 入场标签（entry线右侧）
+          ctx.fillStyle = `rgba(${profitColor}, 1)`;
           ctx.font = 'bold 9px -apple-system, sans-serif';
-          ctx.fillText(isLong ? '做多' : '做空', x, arrowY + 12);
+          ctx.fillText('入场', boxX + boxW / 2, entryY);
 
-          // 5. 置信度和价格标签
-          ctx.fillStyle = color + '0.9)';
-          ctx.font = 'bold 10px -apple-system, sans-serif';
-          ctx.textAlign = 'left';
-          ctx.textBaseline = 'middle';
-          const labelText = `${sig.confidence.toFixed(0)}%`;
-          ctx.fillText(labelText, x + 20, entryY - 8);
-
-          // 入场价标签
-          ctx.fillStyle = color + '0.8)';
+          // 4. 价格标签（框右侧）
           ctx.font = '9px -apple-system, sans-serif';
-          ctx.fillText(`@${sig.entry.toFixed(1)}`, x + 20, entryY + 8);
+          ctx.textAlign = 'left';
+          ctx.fillStyle = `rgba(${profitColor}, 0.8)`;
+          ctx.fillText(sig.target.toFixed(1), boxX + boxW + 4, targetY);
+          ctx.fillStyle = `rgba(${profitColor}, 1)`;
+          ctx.fillText(sig.entry.toFixed(1), boxX + boxW + 4, entryY);
+          ctx.fillStyle = `rgba(${riskColor}, 0.8)`;
+          ctx.fillText(sig.stop.toFixed(1), boxX + boxW + 4, stopY);
+
+          // 5. 方向标签 + 置信度（框上方）
+          const labelY = Math.min(profitTop, riskTop) - 14;
+          // 背景胶囊
+          const dirText = isLong ? '做多' : '做空';
+          const confText = `${sig.confidence.toFixed(0)}%`;
+          const labelText = `${dirText} ${confText}`;
+          const labelW = ctx.measureText(labelText).width + 16;
+          const labelX = boxX + boxW / 2 - labelW / 2;
+          ctx.fillStyle = `rgba(${profitColor}, 0.15)`;
+          ctx.beginPath();
+          ctx.roundRect(labelX, labelY - 7, labelW, 16, 8);
+          ctx.fill();
+          ctx.strokeStyle = `rgba(${profitColor}, 0.6)`;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.roundRect(labelX, labelY - 7, labelW, 16, 8);
+          ctx.stroke();
+          // 文字
+          ctx.fillStyle = `rgba(${profitColor}, 1)`;
+          ctx.font = 'bold 10px -apple-system, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(labelText, boxX + boxW / 2, labelY);
         }
 
         ctx.restore();
