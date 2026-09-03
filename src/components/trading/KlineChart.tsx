@@ -1331,7 +1331,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         const lastKlineTime = allKlinesRef.current.length > 0
           ? allKlinesRef.current[allKlinesRef.current.length - 1].time
           : data.timestamp;
-        if (data.suggestion.direction !== 'none' && data.suggestion.confidence > 50) {
+        if (data.suggestion.direction !== 'none' && data.suggestion.score >= 50) {
           suggestions.push({
             direction: data.suggestion.direction,
             entry: data.suggestion.entry,
@@ -1423,7 +1423,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           const labelY = Math.min(profitTop, riskTop) - 14;
           // 背景胶囊
           const dirText = isLong ? '做多' : '做空';
-          const confText = `${sig.confidence.toFixed(0)}%`;
+          const confText = `${sig.score.toFixed(0)}%`;
           const labelText = `${dirText} ${confText}`;
           const labelW = ctx.measureText(labelText).width + 16;
           const labelX = boxX + boxW / 2 - labelW / 2;
