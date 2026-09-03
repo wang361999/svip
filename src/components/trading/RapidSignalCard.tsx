@@ -198,7 +198,11 @@ export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: strin
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [soundEnabled, setSoundEnabled] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    const stored = localStorage.getItem('rapid-sound-enabled');
+    return stored === null ? true : stored === 'true';
+  });
   const prevDirectionRef = useRef<string>('none');
   const interval = useChartStore((s) => s.interval);
 
@@ -299,6 +303,7 @@ export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: strin
             onClick={() => {
               const next = !soundEnabled;
               setSoundEnabled(next);
+              localStorage.setItem('rapid-sound-enabled', String(next));
               if (next) playTestSound();
             }}
             className={`text-xs px-2 py-0.5 rounded ${
