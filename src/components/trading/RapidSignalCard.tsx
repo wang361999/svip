@@ -6,9 +6,99 @@
  * v2：评分制 (0-100) + 趋势过滤 + 成交量 + 背离 + 冷却期
  */
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { apiGet } from '@/shared/api/client';
 import useChartStore from '@/store/chartStore';
+
+// ==================== 声音提醒工具 ====================
+
+let audioCtx: AudioContext | null = null;
+
+function getAudioCtx(): AudioContext | null {
+  if (typeof window === 'undefined') return null;
+  if (!audioCtx) {
+    try {
+      audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    } catch {
+      return null;
+    }
+  }
+  return audioCtx;
+}
+
+/** 播放做多信号音：两声升调（低→高） */
+function playLongSound() {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  if (ctx.state === 'suspended') ctx.resume();
+
+  const now = ctx.currentTime;
+  // 第一声：523Hz (C5)
+  const osc1 = ctx.createOscillator();
+  const gain1 = ctx.createGain();
+  osc1.type = 'sine';
+  osc1.frequency.setValueAtTime(523, now);
+  gain1.gain.setValueAtTime(0, now);
+  gain1.gain.linearRampToValueAtTime(0.3, now + 0.02);
+  gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+  osc1.connect(gain1);
+  gain1.connect(ctx.destination);
+  osc1.start(now);
+  osc1.stop(now + 0.25);
+
+  // 第二声：784Hz (G5)，延迟0.15s
+  const osc2 = ctx.createOscillator();
+  const gain2 = ctx.createGain();
+  osc2.type = 'sine';
+  osc2.frequency.setValueAtTime(784, now + 0.15);
+  gain2.gain.setValueAtTime(0, now + 0.15);
+  gain2.gain.linearRampToValueAtTime(0.3, now + 0.17);
+  gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+  osc2.connect(gain2);
+  gain2.connect(ctx.destination);
+  osc2.start(now + 0.15);
+  osc2.stop(now + 0.4);
+}
+
+/** 播放做空信号音：两声降调（高→低） */
+function playShortSound() {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  if (ctx.state === 'suspended') ctx.resume();
+
+  const now = ctx.currentTime;
+  // 第一声：784Hz (G5)
+  const osc1 = ctx.createOscillator();
+  const gain1 = ctx.createGain();
+  osc1.type = 'sine';
+  osc1.frequency.setValueAtTime(784, now);
+  gain1.gain.setValueAtTime(0, now);
+  gain1.gain.linearRampToValueAtTime(0.3, now + 0.02);
+  gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+  osc1.connect(gain1);
+  gain1.connect(ctx.destination);
+  osc1.start(now);
+  osc1.stop(now + 0.25);
+
+  // 第二声：523Hz (C5)，延迟0.15s
+  const osc2 = ctx.createOscillator();
+  const gain2 = ctx.createGain();
+  osc2.type = 'sine';
+  osc2.frequency.setValueAtTime(523, now + 0.15);
+  gain2.gain.setValueAtTime(0, now + 0.15);
+  gain2.gain.linearRampToValueAtTime(0.3, now + 0.17);
+  gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+  osc2.connect(gain2);
+  gain2.connect(ctx.destination);
+  osc2.start(now + 0.15);
+  osc2.stop(now + 0.4);
+}
+
+/** 测试声音 */
+function playTestSound() {
+  playLongSound();
+  setTimeout(() => playShortSound(), 600);
+}
 
 interface ScoreBreakdown {
   trend: number;
@@ -108,6 +198,8 @@ export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: strin
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [soundEnabled, setSoundEnabled] = useState(false);
+  const prevDirectionRef = useRef<string>('none');
   const interval = useChartStore((s) => s.interval);
 
   const fetchSignal = useCallback(async () => {
@@ -115,12 +207,20 @@ export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: strin
       const json = await apiGet<RapidAnalysis>(`/api/rapid-signals?symbol=${symbol}&timeframe=${interval}`);
       setData(json);
       setError(null);
+
+      // 声音提醒：检测方向变化
+      const newDir = json.suggestion.direction;
+      if (soundEnabled && newDir !== 'none' && newDir !== prevDirectionRef.current) {
+        if (newDir === 'long') playLongSound();
+        else if (newDir === 'short') playShortSound();
+      }
+      prevDirectionRef.current = newDir;
     } catch (err) {
       setError(err instanceof Error ? err.message : '未知错误');
     } finally {
       setLoading(false);
     }
-  }, [symbol, interval]);
+  }, [symbol, interval, soundEnabled]);
 
   useEffect(() => {
     fetchSignal();
@@ -194,6 +294,19 @@ export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: strin
             }`}
           >
             {autoRefresh ? '● 自动' : '○ 暂停'}
+          </button>
+          <button
+            onClick={() => {
+              const next = !soundEnabled;
+              setSoundEnabled(next);
+              if (next) playTestSound();
+            }}
+            className={`text-xs px-2 py-0.5 rounded ${
+              soundEnabled ? 'bg-amber-900/50 text-amber-400' : 'bg-dark-800 text-dark-500'
+            }`}
+            title={soundEnabled ? '声音提醒已开启（做多升调/做空降调）' : '开启声音提醒'}
+          >
+            {soundEnabled ? '🔊 声音' : '🔇 静音'}
           </button>
           <button
             onClick={fetchSignal}
