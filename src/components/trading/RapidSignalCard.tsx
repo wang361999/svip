@@ -206,17 +206,74 @@ export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: strin
   const prevDirectionRef = useRef<string>('none');
   const interval = useChartStore((s) => s.interval);
 
+  // 持久化 key：按 symbol+interval 区分
+  const storageKey = `rapid-signal-${symbol}-${interval}`;
+  const historyKey = `rapid-signal-history-${symbol}-${interval}`;
+
+  // 初始化：从 localStorage 恢复上次信号
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(storageKey);
+      if (saved) {
+        const savedData = JSON.parse(saved) as RapidAnalysis;
+        setData(savedData);
+        prevDirectionRef.current = savedData.suggestion?.direction || 'none';
+      }
+    } catch {}
+
+    // 恢复历史信号
+    try {
+      const savedHist = localStorage.getItem(historyKey);
+      if (savedHist) {
+        signalHistoryRef.current = JSON.parse(savedHist) as RapidSignal[];
+      }
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storageKey, historyKey]);
+
+  const signalHistoryRef = useRef<RapidSignal[]>([]);
+  const [, setHistVersion] = useState(0);
+
   const fetchSignal = useCallback(async () => {
     try {
       const json = await apiGet<RapidAnalysis>(`/api/rapid-signals?symbol=${symbol}&timeframe=${interval}`);
       setData(json);
       setError(null);
 
-      // 声音提醒：检测方向变化
+      // 持久化最新信号数据
+      try {
+        localStorage.setItem(storageKey, JSON.stringify(json));
+      } catch {}
+
+      // 记录信号历史（只在有信号且方向变化时添加）
       const newDir = json.suggestion.direction;
-      if (soundEnabled && newDir !== 'none' && newDir !== prevDirectionRef.current) {
-        if (newDir === 'long') playLongSound();
-        else if (newDir === 'short') playShortSound();
+      if (newDir !== 'none' && newDir !== prevDirectionRef.current) {
+        // 声音提醒
+        if (soundEnabled) {
+          if (newDir === 'long') playLongSound();
+          else if (newDir === 'short') playShortSound();
+        }
+
+        // 添加到历史
+        const histSignal: RapidSignal = {
+          id: `${Date.now()}-${newDir}`,
+          source: 'rapid',
+          direction: newDir,
+          entry: json.suggestion.entry,
+          stop: json.suggestion.stop,
+          target: json.suggestion.target,
+          atr: json.indicatorState.atr,
+          confidence: json.suggestion.confidence,
+          confluenceSources: json.suggestion.sources,
+          time: Math.floor(Date.now() / 1000),
+          reason: json.suggestion.reason,
+          barIndex: 0,
+        };
+        signalHistoryRef.current = [...signalHistoryRef.current, histSignal].slice(-50);
+        setHistVersion(v => v + 1);
+        try {
+          localStorage.setItem(historyKey, JSON.stringify(signalHistoryRef.current));
+        } catch {}
       }
       prevDirectionRef.current = newDir;
     } catch (err) {
@@ -224,7 +281,7 @@ export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: strin
     } finally {
       setLoading(false);
     }
-  }, [symbol, interval, soundEnabled]);
+  }, [symbol, interval, soundEnabled, storageKey, historyKey]);
 
   useEffect(() => {
     fetchSignal();
@@ -525,16 +582,29 @@ export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: strin
         </div>
       </div>
 
-      {/* 最近信号历史 */}
-      {data.recentSignals && data.recentSignals.length > 0 && (
+      {/* 信号历史（持久化） */}
+      {signalHistoryRef.current.length > 0 && (
         <div className="px-4 py-2">
-          <div className="text-xs text-dark-600 mb-1">最近信号</div>
-          <div className="space-y-0.5 max-h-24 overflow-y-auto">
-            {data.recentSignals.slice(-5).reverse().map(sig => (
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-xs text-dark-600">信号历史 ({signalHistoryRef.current.length})</span>
+            <button
+              onClick={() => {
+                signalHistoryRef.current = [];
+                setHistVersion(v => v + 1);
+                try { localStorage.removeItem(historyKey); } catch {}
+              }}
+              className="text-[10px] text-dark-600 hover:text-red-400"
+            >
+              清除
+            </button>
+          </div>
+          <div className="space-y-0.5 max-h-32 overflow-y-auto">
+            {signalHistoryRef.current.slice().reverse().map((sig) => (
               <div key={sig.id} className="flex items-center justify-between text-[10px]">
                 <span className={`font-mono ${sig.direction === 'long' ? 'text-green-500' : 'text-red-500'}`}>
-                  {sig.direction === 'long' ? '多' : '空'} {SOURCE_NAMES[sig.source] || sig.source}
+                  {sig.direction === 'long' ? '多' : '空'} {sig.entry.toFixed(2)}
                 </span>
+                <span className="text-dark-500 text-[9px]">{sig.reason.slice(0, 20)}</span>
                 <span className="text-dark-600">
                   {new Date(sig.time * 1000).toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit', month: 'numeric', day: 'numeric' })}
                 </span>
