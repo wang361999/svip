@@ -1132,16 +1132,16 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           const y = Math.min(yHigh, yLow);
           const h = Math.abs(yLow - yHigh);
           // 矩形背景
-          ctx.fillStyle = 'rgba(100, 181, 246, 0.25)';
+          ctx.fillStyle = 'rgba(100, 181, 246, 0.08)';
           ctx.fillRect(x, y, w, h);
           // 边框
-          ctx.strokeStyle = 'rgba(100, 181, 246, 1)';
-          ctx.lineWidth = 2;
+          ctx.strokeStyle = 'rgba(100, 181, 246, 0.5)';
+          ctx.lineWidth = 1;
           ctx.setLineDash([4, 4]);
           ctx.strokeRect(x, y, w, h);
           ctx.setLineDash([]);
           // 标签
-          ctx.fillStyle = 'rgba(100, 181, 246, 0.8)';
+          ctx.fillStyle = 'rgba(100, 181, 246, 0.6)';
           ctx.font = '10px -apple-system, sans-serif';
           ctx.textAlign = 'left';
           ctx.textBaseline = 'top';
