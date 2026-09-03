@@ -11,8 +11,6 @@ import {
   calcKDJ,
   calcATRArray,
   calcNineTurn,
-  calcGannEighths,
-  type GannLevel,
 } from '@/shared/lib/indicators';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
@@ -20,7 +18,6 @@ import {
   createChart,
   IChartApi,
   ISeriesApi,
-  IPriceLine,
   CandlestickData,
   HistogramData,
   LineData,
@@ -73,7 +70,7 @@ interface KlineChartProps {
 // 开关状态仅存于浏览器本地（localStorage），后台/数据库不再有任何指标开关，
 // 徽章点击即生效并持久化，刷新/换币种/换周期后保持用户的选择。
 const INDICATOR_PREFS_KEY = 'kline-indicator-prefs';
-const DEFAULT_INDICATORS = { EMA: false, BOLL: true, MACD: true, RSI: false, VWAP: true, KDJ: true, ATR: false, NINE: true, GANN: false };
+const DEFAULT_INDICATORS = { EMA: false, BOLL: true, MACD: true, RSI: false, VWAP: true, KDJ: true, ATR: false, NINE: true };
 
 function loadIndicatorPrefs(): typeof DEFAULT_INDICATORS {
   if (typeof window === 'undefined') return { ...DEFAULT_INDICATORS };
@@ -90,7 +87,6 @@ function loadIndicatorPrefs(): typeof DEFAULT_INDICATORS {
       KDJ: parsed.KDJ !== undefined ? !!parsed.KDJ : DEFAULT_INDICATORS.KDJ,
       ATR: parsed.ATR !== undefined ? !!parsed.ATR : DEFAULT_INDICATORS.ATR,
       NINE: parsed.NINE !== undefined ? !!parsed.NINE : DEFAULT_INDICATORS.NINE,
-      GANN: parsed.GANN !== undefined ? !!parsed.GANN : DEFAULT_INDICATORS.GANN,
     };
   } catch {
     return { ...DEFAULT_INDICATORS };
@@ -168,9 +164,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
   // VWAP（主图线）
   const vwapSeries = useRef<ISeriesApi<'Line'> | null>(null);
-
-  // 江恩八分位（主图价格线）
-  const gannLinesRef = useRef<IPriceLine[]>([]);
 
   // 神奇九转（主图标注）
   const nineTurnCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -412,31 +405,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         if (v !== null && !isNaN(v)) vwapData.push({ time: klines[i].time as Time, value: v });
       });
       vwapSeries.current.setData(vwapData);
-    }
-
-    // 江恩八分位（主图价格线，只显示当前价附近的关键位）
-    // 先清除旧线
-    for (const pl of gannLinesRef.current) {
-      try { candleSeries.current?.removePriceLine(pl); } catch {}
-    }
-    gannLinesRef.current = [];
-    if (indicators.GANN && klines.length > 10 && candleSeries.current) {
-      const gannLevels = calcGannEighths(klines);
-      const currentPrice = klines[klines.length - 1].close;
-      // 只显示距当前价 ±3% 范围内的位 + 4/8 中轴（如果范围内）
-      const range = currentPrice * 0.03;
-      for (const lvl of gannLevels) {
-        if (Math.abs(lvl.price - currentPrice) > range) continue;
-        const pl = candleSeries.current.createPriceLine({
-          price: lvl.price,
-          color: lvl.isMajor ? 'rgba(255, 193, 7, 0.7)' : 'rgba(255, 193, 7, 0.3)',
-          lineWidth: lvl.isMajor ? 2 : 1,
-          lineStyle: lvl.isMajor ? LineStyle.Solid : LineStyle.Dashed,
-          axisLabelVisible: true,
-          title: `G ${lvl.label}`,
-        });
-        gannLinesRef.current.push(pl);
-      }
     }
 
     // 神奇九转：计算数据并绘制到覆盖层 canvas
@@ -1246,7 +1214,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           }`}>
             {dataStatus}
           </span>
-          {(['EMA', 'BOLL', 'MACD', 'RSI', 'VWAP', 'KDJ', 'ATR', 'NINE', 'GANN'] as const).map((ind) => (
+          {(['EMA', 'BOLL', 'MACD', 'RSI', 'VWAP', 'KDJ', 'ATR', 'NINE'] as const).map((ind) => (
             <button
               key={ind}
               onClick={() => {
@@ -1265,7 +1233,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
               }`}
               title={`点击切换${ind}显示`}
             >
-              {ind === 'NINE' ? '九转' : ind === 'GANN' ? '江恩' : ind}
+              {ind === 'NINE' ? '九转' : ind}
             </button>
           ))}
           {/* AB9 + 斐波那契 独立按钮 */}
