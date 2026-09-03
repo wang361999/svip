@@ -1052,21 +1052,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         const canvas = chanCanvasRef.current;
         const chartAPI = mainChart.current;
         const chanData = chanDataRef.current;
-        // 调试：暴露缠论数据到全局
-        (window as any).__chanDebug = {
-          fractals: chanData?.fractals.length ?? 0,
-          bis: chanData?.bis.length ?? 0,
-          zhongshus: chanData?.zhongshus.length ?? 0,
-          signals: chanData?.signals.length ?? 0,
-          projections: chanData?.projections.length ?? 0,
-          zhongshuDetails: chanData?.zhongshus.map(zs => ({ high: zs.high, low: zs.low, biCount: zs.biCount, level: zs.level })) ?? [],
-          projectionDetails: chanData?.projections.map(p => ({ type: p.type, price: p.price, label: p.label, isNear: p.isNear })) ?? [],
-          lastBi: chanData?.bis[chanData.bis.length - 1] ? {
-            direction: chanData.bis[chanData.bis.length - 1].direction,
-            startPrice: chanData.bis[chanData.bis.length - 1].startPrice,
-            endPrice: chanData.bis[chanData.bis.length - 1].endPrice,
-          } : null,
-        };
         if (!canvas || !chartAPI || !chanData) return;
         if (!candleSeries.current) return;
 
@@ -1097,11 +1082,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           const y = Math.min(yHigh, yLow);
           const h = Math.abs(yLow - yHigh);
           // 矩形背景
-          ctx.fillStyle = 'rgba(100, 181, 246, 0.18)';
+          ctx.fillStyle = 'rgba(100, 181, 246, 0.25)';
           ctx.fillRect(x, y, w, h);
           // 边框
-          ctx.strokeStyle = 'rgba(100, 181, 246, 0.8)';
-          ctx.lineWidth = 1.5;
+          ctx.strokeStyle = 'rgba(100, 181, 246, 1)';
+          ctx.lineWidth = 2;
           ctx.setLineDash([4, 4]);
           ctx.strokeRect(x, y, w, h);
           ctx.setLineDash([]);
@@ -1188,9 +1173,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             // 中枢上下沿突破投射线：虚线水平延伸
             const isUp = proj.type === 'zsBreakoutUp';
             const baseColor = isUp ? 'rgba(248, 113, 113, ' : 'rgba(34, 197, 94, ';
-            const alpha = proj.isNear ? '1' : '0.5';
+            const alpha = proj.isNear ? '1' : '0.65';
             ctx.strokeStyle = baseColor + alpha + ')';
-            ctx.lineWidth = proj.isNear ? 2.5 : 1.5;
+            ctx.lineWidth = proj.isNear ? 2.5 : 2;
             ctx.setLineDash([6, 4]);
             ctx.beginPath();
             ctx.moveTo(startX, y);
