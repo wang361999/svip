@@ -12,7 +12,11 @@ import {
   calcATRArray,
   calcNineTurn,
   calcChan,
+  calcTrendChannel,
+  calcPitchfork,
   type ChanResult,
+  type TrendChannel,
+  type Pitchfork,
 } from '@/shared/lib/indicators';
 import { analyzeRapid, type RapidAnalysis } from '@/shared/lib/rapid-strategy';
 
@@ -107,7 +111,7 @@ function saveIndicatorPrefs(next: typeof DEFAULT_INDICATORS) {
 // 同样存于浏览器本地，刷新/换币种/换周期后保持用户的选择
 // 会员用户额外同步到后端（跨设备），非会员仅本地
 const OVERLAY_PREFS_KEY = 'kline-overlay-prefs';
-const DEFAULT_OVERLAY = { AB9: true, FIB: false };
+const DEFAULT_OVERLAY = { AB9: true, FIB: false, CHANNEL: true, PITCHFORK: true };
 
 function loadOverlayPrefs() {
   if (typeof window === 'undefined') return { ...DEFAULT_OVERLAY };
@@ -118,6 +122,8 @@ function loadOverlayPrefs() {
     return {
       AB9: parsed.AB9 !== undefined ? !!parsed.AB9 : DEFAULT_OVERLAY.AB9,
       FIB: parsed.FIB !== undefined ? !!parsed.FIB : DEFAULT_OVERLAY.FIB,
+      CHANNEL: parsed.CHANNEL !== undefined ? !!parsed.CHANNEL : DEFAULT_OVERLAY.CHANNEL,
+      PITCHFORK: parsed.PITCHFORK !== undefined ? !!parsed.PITCHFORK : DEFAULT_OVERLAY.PITCHFORK,
     };
   } catch {
     return { ...DEFAULT_OVERLAY };
@@ -177,6 +183,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // 缠论（主图标注）
   const chanCanvasRef = useRef<HTMLCanvasElement>(null);
   const chanDataRef = useRef<ChanResult | null>(null);
+  const trendChannelRef = useRef<TrendChannel | null>(null);
+  const pitchforkRef = useRef<Pitchfork | null>(null);
   const drawChanRef = useRef<() => void>(() => {});
 
   // 多空信号箭头画布
@@ -191,10 +199,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const rAFRef = useRef<number | null>(null);
   const lastTickAtRef = useRef<number>(0);
 
-  // AB9线 + 斐波那契回调线：从 localStorage 初始化（刷新/切换后保持用户选择）
+  // AB9线 + 斐波那契回调线 + 趋势通道 + 安德鲁音叉：从 localStorage 初始化
   const overlayPrefsInit = loadOverlayPrefs();
   const [showAutoAB9, setShowAutoAB9] = useState(overlayPrefsInit.AB9);
   const [showFibonacci, setShowFibonacci] = useState(overlayPrefsInit.FIB);
+  const [showTrendChannel, setShowTrendChannel] = useState(overlayPrefsInit.CHANNEL);
+  const [showPitchfork, setShowPitchfork] = useState(overlayPrefsInit.PITCHFORK);
   // 左上角 OHLC 图例：随十字线联动（悬停读历史K线，离开回落到最新一根，tick 实时刷新）
   interface LegendInfo { o: number; h: number; l: number; c: number; pct: number }
   const [legend, setLegend] = useState<LegendInfo | null>(null);
@@ -440,6 +450,21 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     } else {
       chanDataRef.current = null;
     }
+
+    // 趋势通道
+    if (showTrendChannel) {
+      trendChannelRef.current = calcTrendChannel(klines, 60);
+    } else {
+      trendChannelRef.current = null;
+    }
+
+    // 安德鲁音叉
+    if (showPitchfork) {
+      pitchforkRef.current = calcPitchfork(klines, 80);
+    } else {
+      pitchforkRef.current = null;
+    }
+
     requestAnimationFrame(() => {
       try { drawChanRef.current(); } catch (e) { console.warn('[Chan] raf error:', e); }
     });
@@ -551,6 +576,28 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       updateIndicators();
     }
   }, [indicators, updateIndicators]);
+
+  // 趋势通道/音叉开关切换时立即重算
+  useEffect(() => {
+    if (allKlinesRef.current.length > 0 && mainChart.current) {
+      const klines = allKlinesRef.current;
+      // 趋势通道
+      if (showTrendChannel) {
+        trendChannelRef.current = calcTrendChannel(klines, 60);
+      } else {
+        trendChannelRef.current = null;
+      }
+      // 安德鲁音叉
+      if (showPitchfork) {
+        pitchforkRef.current = calcPitchfork(klines, 80);
+      } else {
+        pitchforkRef.current = null;
+      }
+      requestAnimationFrame(() => {
+        try { drawChanRef.current(); } catch (e) { console.warn('[Overlay] raf error:', e); }
+      });
+    }
+  }, [showTrendChannel, showPitchfork]);
 
   // === AB9线 + 斐波那契回调线重绘 ===
   // 数据加载、开关切换、K线收盘（isFinal）时调用，统一走这一个入口
@@ -1330,6 +1377,208 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           }
         }
 
+        // ========== 趋势通道绘制 ==========
+        const tc = trendChannelRef.current;
+        if (tc) {
+          const xUpperStart = timeScale.timeToCoordinate(tc.upperStart.time as Time);
+          const xUpperEnd = timeScale.timeToCoordinate(tc.upperEnd.time as Time);
+          const xLowerStart = timeScale.timeToCoordinate(tc.lowerStart.time as Time);
+          const xLowerEnd = timeScale.timeToCoordinate(tc.lowerEnd.time as Time);
+          const yUpperStart = candleSeries.current?.priceToCoordinate(tc.upperStart.price);
+          const yUpperEnd = candleSeries.current?.priceToCoordinate(tc.upperEnd.price);
+          const yLowerStart = candleSeries.current?.priceToCoordinate(tc.lowerStart.price);
+          const yLowerEnd = candleSeries.current?.priceToCoordinate(tc.lowerEnd.price);
+          const yMidStart = candleSeries.current?.priceToCoordinate(tc.midStart.price);
+          const yMidEnd = candleSeries.current?.priceToCoordinate(tc.midEnd.price);
+
+          if (xUpperStart !== null && xUpperEnd !== null && xLowerStart !== null && xLowerEnd !== null
+            && yUpperStart !== null && yUpperEnd !== null && yLowerStart !== null && yLowerEnd !== null
+            && yMidStart !== null && yMidEnd !== null) {
+
+            const chanColor = tc.direction === 'up' ? 'rgba(34, 197, 94,' : tc.direction === 'down' ? 'rgba(246, 70, 93,' : 'rgba(148, 163, 184,';
+
+            // 通道填充（极淡）
+            ctx.fillStyle = chanColor + '0.04)';
+            ctx.beginPath();
+            ctx.moveTo(xUpperStart, yUpperStart);
+            ctx.lineTo(xUpperEnd, yUpperEnd);
+            ctx.lineTo(xLowerEnd, yLowerEnd);
+            ctx.lineTo(xLowerStart, yLowerStart);
+            ctx.closePath();
+            ctx.fill();
+
+            // 上轨
+            ctx.strokeStyle = chanColor + '0.4)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(xUpperStart, yUpperStart);
+            ctx.lineTo(xUpperEnd, yUpperEnd);
+            ctx.stroke();
+
+            // 中轨
+            ctx.strokeStyle = chanColor + '0.25)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([2, 4]);
+            ctx.beginPath();
+            ctx.moveTo(xLowerStart, yMidStart);
+            ctx.lineTo(xLowerEnd, yMidEnd);
+            ctx.stroke();
+
+            // 下轨
+            ctx.strokeStyle = chanColor + '0.4)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(xLowerStart, yLowerStart);
+            ctx.lineTo(xLowerEnd, yLowerEnd);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // 标签
+            const labelX = xUpperEnd - 2;
+            ctx.font = '9px -apple-system, sans-serif';
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'bottom';
+            ctx.fillStyle = chanColor + '0.6)';
+            ctx.fillText(`通道上轨 ${tc.upperTouches}触`, labelX, yUpperEnd - 2);
+            ctx.textBaseline = 'top';
+            ctx.fillText(`通道下轨 ${tc.lowerTouches}触`, labelX, yLowerEnd + 2);
+          }
+        }
+
+        // ========== 安德鲁音叉绘制 ==========
+        const pf = pitchforkRef.current;
+        if (pf) {
+          // 辅助函数：计算坐标
+          const toX = (t: number) => timeScale.timeToCoordinate(t as Time);
+          const toY = (p: number) => candleSeries.current?.priceToCoordinate(p) ?? null;
+
+          const xA = toX(pf.pointA.time);
+          const yA = toY(pf.pointA.price);
+          const xB = toX(pf.pointB.time);
+          const yB = toY(pf.pointB.price);
+          const xC = toX(pf.pointC.time);
+          const yC = toY(pf.pointC.price);
+
+          const xMedStart = toX(pf.medianStart.time);
+          const yMedStart = toY(pf.medianStart.price);
+          const xMedEnd = toX(pf.medianEnd.time);
+          const yMedEnd = toY(pf.medianEnd.price);
+
+          const xUpStart = toX(pf.upperStart.time);
+          const yUpStart = toY(pf.upperStart.price);
+          const xUpEnd = toX(pf.upperEnd.time);
+          const yUpEnd = toY(pf.upperEnd.price);
+
+          const xLowStart = toX(pf.lowerStart.time);
+          const yLowStart = toY(pf.lowerStart.price);
+          const xLowEnd = toX(pf.lowerEnd.time);
+          const yLowEnd = toY(pf.lowerEnd.price);
+
+          const xUpWarnStart = toX(pf.upperWarningStart.time);
+          const yUpWarnStart = toY(pf.upperWarningStart.price);
+          const xUpWarnEnd = toX(pf.upperWarningEnd.time);
+          const yUpWarnEnd = toY(pf.upperWarningEnd.price);
+
+          const xLowWarnStart = toX(pf.lowerWarningStart.time);
+          const yLowWarnStart = toY(pf.lowerWarningStart.price);
+          const xLowWarnEnd = toX(pf.lowerWarningEnd.time);
+          const yLowWarnEnd = toY(pf.lowerWarningEnd.price);
+
+          const allCoords = [xA, yA, xB, yB, xC, yC,
+            xMedStart, yMedStart, xMedEnd, yMedEnd,
+            xUpStart, yUpStart, xUpEnd, yUpEnd,
+            xLowStart, yLowStart, xLowEnd, yLowEnd,
+            xUpWarnStart, yUpWarnStart, xUpWarnEnd, yUpWarnEnd,
+            xLowWarnStart, yLowWarnStart, xLowWarnEnd, yLowWarnEnd];
+
+          if (allCoords.every(c => c !== null)) {
+            const pfColor = pf.direction === 'up' ? 'rgba(251, 191, 36,' : 'rgba(168, 85, 247,';
+
+            // 警告线（最淡）
+            ctx.strokeStyle = pfColor + '0.15)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([2, 6]);
+            ctx.beginPath();
+            ctx.moveTo(xUpWarnStart!, yUpWarnStart!);
+            ctx.lineTo(xUpWarnEnd!, yUpWarnEnd!);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(xLowWarnStart!, yLowWarnStart!);
+            ctx.lineTo(xLowWarnEnd!, yLowWarnEnd!);
+            ctx.stroke();
+
+            // 上轨和下轨
+            ctx.strokeStyle = pfColor + '0.35)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(xUpStart!, yUpStart!);
+            ctx.lineTo(xUpEnd!, yUpEnd!);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(xLowStart!, yLowStart!);
+            ctx.lineTo(xLowEnd!, yLowEnd!);
+            ctx.stroke();
+
+            // 中轨（实线，最显眼）
+            ctx.strokeStyle = pfColor + '0.7)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([]);
+            ctx.beginPath();
+            ctx.moveTo(xMedStart!, yMedStart!);
+            ctx.lineTo(xMedEnd!, yMedEnd!);
+            ctx.stroke();
+
+            // A/B/C 三个基准点
+            const dotRadius = 3;
+            ctx.fillStyle = pfColor + '0.9)';
+            // A点
+            ctx.beginPath();
+            ctx.arc(xA!, yA!, dotRadius, 0, Math.PI * 2);
+            ctx.fill();
+            // B点
+            ctx.beginPath();
+            ctx.arc(xB!, yB!, dotRadius, 0, Math.PI * 2);
+            ctx.fill();
+            // C点
+            ctx.beginPath();
+            ctx.arc(xC!, yC!, dotRadius, 0, Math.PI * 2);
+            ctx.fill();
+
+            // AB和BC连线（淡虚线）
+            ctx.strokeStyle = pfColor + '0.25)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(xA!, yA!);
+            ctx.lineTo(xB!, yB!);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(xB!, yB!);
+            ctx.lineTo(xC!, yC!);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // 标签
+            ctx.font = '9px -apple-system, sans-serif';
+            ctx.fillStyle = pfColor + '0.8)';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(' A', xA! + 4, yA!);
+            ctx.fillText(' B', xB! + 4, yB!);
+            ctx.fillText(' C', xC! + 4, yC!);
+
+            // 音叉末端标签
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'bottom';
+            ctx.fillText('音叉上轨', xUpEnd! - 2, yUpEnd! - 2);
+            ctx.textBaseline = 'top';
+            ctx.fillText('音叉下轨', xLowEnd! - 2, yLowEnd! + 2);
+          }
+        }
+
         ctx.restore();
       } catch (e) {
         console.warn('[Chan] render error:', e);
@@ -1566,18 +1815,32 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             <>
               <div className="w-px h-4 bg-dark-700" />
               <button
-                onClick={() => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ AB9: v, FIB: showFibonacci }); saveUserPref('prefAB9', v); }}
+                onClick={() => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ AB9: v, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork }); saveUserPref('prefAB9', v); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showAutoAB9 ? 'text-cyan-400' : 'text-dark-600'}`}
                 title="AB9线"
               >
                 AB9
               </button>
               <button
-                onClick={() => { const v = !showFibonacci; setShowFibonacci(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: v }); saveUserPref('prefFibonacci', v); }}
+                onClick={() => { const v = !showFibonacci; setShowFibonacci(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: v, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork }); saveUserPref('prefFibonacci', v); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showFibonacci ? 'text-cyan-400' : 'text-dark-600'}`}
                 title="斐波那契回调线"
               >
                 FIB
+              </button>
+              <button
+                onClick={() => { const v = !showTrendChannel; setShowTrendChannel(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: v, PITCHFORK: showPitchfork }); }}
+                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showTrendChannel ? 'text-green-400' : 'text-dark-600'}`}
+                title="趋势通道"
+              >
+                通道
+              </button>
+              <button
+                onClick={() => { const v = !showPitchfork; setShowPitchfork(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: v }); }}
+                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showPitchfork ? 'text-amber-400' : 'text-dark-600'}`}
+                title="安德鲁音叉"
+              >
+                音叉
               </button>
             </>
           )}

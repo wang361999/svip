@@ -135,6 +135,300 @@ export function calcRSIArray(klines: KlineData[], period: number = 14): (number 
   return result;
 }
 
+// ==================== 趋势通道（Trend Channel） ====================
+
+export interface TrendChannel {
+  direction: 'up' | 'down' | 'neutral';
+  // 上轨：两个高点连线
+  upperStart: { time: number; price: number };
+  upperEnd: { time: number; price: number };
+  // 下轨：两个低点连线
+  lowerStart: { time: number; price: number };
+  lowerEnd: { time: number; price: number };
+  // 中轨
+  midStart: { time: number; price: number };
+  midEnd: { time: number; price: number };
+  // 触及次数
+  upperTouches: number;
+  lowerTouches: number;
+  // 通道宽度百分比
+  widthPct: number;
+  // 回归斜率（每根K线变化量）
+  slope: number;
+}
+
+/**
+ * 自动识别趋势通道
+ * 算法：
+ * 1. 在最近N根K线内找到两个显著高点和两个显著低点
+ * 2. 用线性回归拟合趋势方向
+ * 3. 上下轨平行于回归线，距离为极值偏差
+ */
+export function calcTrendChannel(klines: KlineData[], lookback: number = 60): TrendChannel | null {
+  const n = klines.length;
+  if (n < 20) return null;
+
+  const window = klines.slice(Math.max(0, n - lookback));
+  const w = window.length;
+  if (w < 15) return null;
+
+  // 线性回归：用收盘价拟合趋势线
+  let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+  for (let i = 0; i < w; i++) {
+    sumX += i;
+    sumY += window[i].close;
+    sumXY += i * window[i].close;
+    sumX2 += i * i;
+  }
+  const meanX = sumX / w;
+  const meanY = sumY / w;
+  const slope = (sumXY - w * meanX * meanY) / (sumX2 - w * meanX * meanX);
+  const intercept = meanY - slope * meanX;
+
+  // 计算每个点到回归线的偏差
+  let maxDevUp = 0, maxDevDown = 0;
+  let upperTouches = 0, lowerTouches = 0;
+  for (let i = 0; i < w; i++) {
+    const trendPrice = intercept + slope * i;
+    const devHigh = window[i].high - trendPrice;
+    const devLow = window[i].low - trendPrice;
+    if (devHigh > maxDevUp) maxDevUp = devHigh;
+    if (devLow < maxDevDown) maxDevDown = devLow;
+  }
+
+  // 用更稳健的方式：取最高的3个高点均值 和 最低的3个低点均值 作为轨道
+  const highs: number[] = [];
+  const lows: number[] = [];
+  for (let i = 0; i < w; i++) {
+    highs.push(window[i].high);
+    lows.push(window[i].low);
+  }
+  highs.sort((a, b) => b - a);
+  lows.sort((a, b) => a - b);
+
+  const avgHigh = highs.slice(0, Math.min(3, Math.floor(w / 5))).reduce((s, v) => s + v, 0) / Math.min(3, Math.floor(w / 5));
+  const avgLow = lows.slice(0, Math.min(3, Math.floor(w / 5))).reduce((s, v) => s + v, 0) / Math.min(3, Math.floor(w / 5));
+
+  const upperOffset = avgHigh - (intercept + slope * (w / 2));
+  const lowerOffset = avgLow - (intercept + slope * (w / 2));
+
+  // 实际的上下轨：平行于回归线
+  const upperIntercept = intercept + upperOffset;
+  const lowerIntercept = intercept + lowerOffset;
+
+  // 统计触及次数（接近轨道的K线数）
+  const tolerance = Math.abs(maxDevUp - maxDevDown) * 0.15;
+  for (let i = 0; i < w; i++) {
+    const upperPrice = upperIntercept + slope * i;
+    const lowerPrice = lowerIntercept + slope * i;
+    if (Math.abs(window[i].high - upperPrice) < tolerance) upperTouches++;
+    if (Math.abs(window[i].low - lowerPrice) < tolerance) lowerTouches++;
+  }
+
+  const startIdx = Math.max(0, n - lookback);
+  const endIdx = n - 1;
+  const startTime = window[0].time;
+  const endTime = window[w - 1].time;
+
+  // 延伸到未来5根K线的位置（用于预测）
+  const extendBars = 5;
+  const endX = w - 1 + extendBars;
+  const endTimeExtended = window[w - 1].time + (window[w - 1].time - window[w - 2].time) * extendBars;
+
+  const midPriceStart = intercept;
+  const midPriceEnd = intercept + slope * endX;
+  const upperPriceStart = upperIntercept;
+  const upperPriceEnd = upperIntercept + slope * endX;
+  const lowerPriceStart = lowerIntercept;
+  const lowerPriceEnd = lowerIntercept + slope * endX;
+
+  const widthPct = midPriceStart > 0 ? ((upperPriceStart - lowerPriceStart) / midPriceStart) * 100 : 0;
+  const direction = slope > 0.001 ? 'up' : slope < -0.001 ? 'down' : 'neutral';
+
+  return {
+    direction,
+    upperStart: { time: startTime, price: upperPriceStart },
+    upperEnd: { time: endTimeExtended, price: upperPriceEnd },
+    lowerStart: { time: startTime, price: lowerPriceStart },
+    lowerEnd: { time: endTimeExtended, price: lowerPriceEnd },
+    midStart: { time: startTime, price: midPriceStart },
+    midEnd: { time: endTimeExtended, price: midPriceEnd },
+    upperTouches,
+    lowerTouches,
+    widthPct: Math.round(widthPct * 100) / 100,
+    slope,
+  };
+}
+
+// ==================== 安德鲁音叉（Andrew's Pitchfork） ====================
+
+export interface Pitchfork {
+  direction: 'up' | 'down';
+  // 三个基准点（A=起点, B=第一腿终点, C=回调终点）
+  pointA: { time: number; price: number };
+  pointB: { time: number; price: number };
+  pointC: { time: number; price: number };
+  // 中轨（median line）：从A出发，穿过B-C中点
+  medianStart: { time: number; price: number };
+  medianEnd: { time: number; price: number };
+  // 上轨（upper MLH）：从B出发，平行于中轨
+  upperStart: { time: number; price: number };
+  upperEnd: { time: number; price: number };
+  // 下轨（lower MLH）：从C出发，平行于中轨
+  lowerStart: { time: number; price: number };
+  lowerEnd: { time: number; price: number };
+  // 警告线（上下各一条，距离中轨2倍间距）
+  upperWarningStart: { time: number; price: number };
+  upperWarningEnd: { time: number; price: number };
+  lowerWarningStart: { time: number; price: number };
+  lowerWarningEnd: { time: number; price: number };
+  // 价格在音叉中的位置
+  pricePosition: 'above-upper' | 'between-upper-median' | 'between-median-lower' | 'below-lower';
+}
+
+/**
+ * 自动识别安德鲁音叉
+ * 算法：
+ * 1. 找最近一段显著趋势（A到B）
+ * 2. 找B之后的回调点C
+ * 3. 从A出发，穿过B-C中点画中轨
+ * 4. 从B和C分别画平行线作为上下轨
+ */
+export function calcPitchfork(klines: KlineData[], lookback: number = 80): Pitchfork | null {
+  const n = klines.length;
+  if (n < 30) return null;
+
+  const startIdx = Math.max(0, n - lookback);
+  const window = klines.slice(startIdx);
+  const w = window.length;
+  if (w < 25) return null;
+
+  // 找窗口内的最高点和最低点
+  let highestIdx = 0, lowestIdx = 0;
+  for (let i = 1; i < w; i++) {
+    if (window[i].high > window[highestIdx].high) highestIdx = i;
+    if (window[i].low < window[lowestIdx].low) lowestIdx = i;
+  }
+
+  // 判断趋势方向：先有低点再有高点=上升趋势音叉，反之=下降趋势音叉
+  const isUpward = lowestIdx < highestIdx;
+  const direction: 'up' | 'down' = isUpward ? 'up' : 'down';
+
+  let pointA_idx: number, pointB_idx: number, pointC_idx: number;
+
+  if (isUpward) {
+    // 上升音叉：A=最低点，B=最高点，C=B之后的回调低点
+    pointA_idx = lowestIdx;
+    pointB_idx = highestIdx;
+
+    // 在B之后找回调低点（B到窗口末端之间的最低low）
+    let cbLow = Infinity;
+    pointC_idx = pointB_idx;
+    for (let i = pointB_idx + 1; i < w; i++) {
+      if (window[i].low < cbLow) {
+        cbLow = window[i].low;
+        pointC_idx = i;
+      }
+    }
+    // C点不能等于B点（没有回调）
+    if (pointC_idx === pointB_idx) return null;
+    // C点至少要回调到AB段的20%以上
+    const abRange = window[pointB_idx].high - window[pointA_idx].low;
+    const cbRetrace = window[pointB_idx].high - cbLow;
+    if (cbRetrace < abRange * 0.15) return null;
+  } else {
+    // 下降音叉：A=最高点，B=最低点，C=B之后的反弹高点
+    pointA_idx = highestIdx;
+    pointB_idx = lowestIdx;
+
+    let cbHigh = -Infinity;
+    pointC_idx = pointB_idx;
+    for (let i = pointB_idx + 1; i < w; i++) {
+      if (window[i].high > cbHigh) {
+        cbHigh = window[i].high;
+        pointC_idx = i;
+      }
+    }
+    if (pointC_idx === pointB_idx) return null;
+    const abRange = window[pointA_idx].high - window[pointB_idx].low;
+    const cbRetrace = cbHigh - window[pointB_idx].low;
+    if (cbRetrace < abRange * 0.15) return null;
+  }
+
+  // 三个基准点
+  const pointA = { time: window[pointA_idx].time, price: isUpward ? window[pointA_idx].low : window[pointA_idx].high };
+  const pointB = { time: window[pointB_idx].time, price: isUpward ? window[pointB_idx].high : window[pointB_idx].low };
+  const pointC = { time: window[pointC_idx].time, price: isUpward ? window[pointC_idx].low : window[pointC_idx].high };
+
+  // B-C中点
+  const midBC = {
+    time: (pointB.time + pointC.time) / 2,
+    price: (pointB.price + pointC.price) / 2,
+  };
+
+  // 中轨：从A出发，穿过B-C中点，延伸到未来
+  // 计算斜率（每单位时间的价格变化）
+  const timeSpan = midBC.time - pointA.time;
+  if (timeSpan <= 0) return null;
+  const medianSlope = (midBC.price - pointA.price) / timeSpan;
+
+  // 延伸到未来：窗口末端 + 音叉总长度的0.5倍
+  const totalTimeSpan = pointC.time - pointA.time;
+  const extendTime = totalTimeSpan * 0.5;
+  const endTime = window[w - 1].time + extendTime;
+
+  // 中轨起止点
+  const medianStart = { time: pointA.time, price: pointA.price };
+  const medianEnd = { time: endTime, price: pointA.price + medianSlope * (endTime - pointA.time) };
+
+  // 上轨：从B出发，平行于中轨
+  const upperStart = { time: pointB.time, price: pointB.price };
+  const upperEnd = { time: endTime, price: pointB.price + medianSlope * (endTime - pointB.time) };
+
+  // 下轨：从C出发，平行于中轨
+  const lowerStart = { time: pointC.time, price: pointC.price };
+  const lowerEnd = { time: endTime, price: pointC.price + medianSlope * (endTime - pointC.time) };
+
+  // 警告线：距离中轨2倍间距（在中轨另一侧再加一倍）
+  // 上警告线 = 上轨 + (上轨-中轨) = 2*上轨 - 中轨
+  const upperWarningStart = { time: pointB.time, price: pointB.price + (pointB.price - midBC.price) };
+  const upperWarningEnd = { time: endTime, price: upperWarningStart.price + medianSlope * (endTime - pointB.time) };
+
+  const lowerWarningStart = { time: pointC.time, price: pointC.price - (midBC.price - pointC.price) };
+  const lowerWarningEnd = { time: endTime, price: lowerWarningStart.price + medianSlope * (endTime - pointC.time) };
+
+  // 当前价格位置
+  const currentPrice = window[w - 1].close;
+  const currentTime = window[w - 1].time;
+  const medianAtCurrent = pointA.price + medianSlope * (currentTime - pointA.time);
+  const upperAtCurrent = pointB.price + medianSlope * (currentTime - pointB.time);
+  const lowerAtCurrent = pointC.price + medianSlope * (currentTime - pointC.time);
+
+  let pricePosition: Pitchfork['pricePosition'];
+  if (currentPrice > upperAtCurrent) pricePosition = 'above-upper';
+  else if (currentPrice > medianAtCurrent) pricePosition = 'between-upper-median';
+  else if (currentPrice > lowerAtCurrent) pricePosition = 'between-median-lower';
+  else pricePosition = 'below-lower';
+
+  return {
+    direction,
+    pointA,
+    pointB,
+    pointC,
+    medianStart,
+    medianEnd,
+    upperStart,
+    upperEnd,
+    lowerStart,
+    lowerEnd,
+    upperWarningStart,
+    upperWarningEnd,
+    lowerWarningStart,
+    lowerWarningEnd,
+    pricePosition,
+  };
+}
+
 // ========== 缠论（Chanlun）K线合并→分型→笔→中枢→买卖点 ==========
 
 export interface ChanFractal {
