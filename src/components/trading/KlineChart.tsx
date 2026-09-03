@@ -1159,6 +1159,126 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           ctx.fillText(label, x, y);
         }
 
+        // 5. 画预警投射线（提前预测画线）
+        for (const proj of chanData.projections) {
+          const x1 = timeScale.timeToCoordinate(proj.time as Time);
+          const x2 = timeScale.timeToCoordinate(proj.endTime as Time);
+          const y = candleSeries.current.priceToCoordinate(proj.price);
+          if (y === null) continue;
+          const startX = x1 !== null ? x1 : 0;
+          const endX = x2 !== null ? x2 : rect.width;
+
+          if (proj.type === 'zsBreakoutUp' || proj.type === 'zsBreakoutDown') {
+            // 中枢上下沿突破投射线：虚线水平延伸
+            const isUp = proj.type === 'zsBreakoutUp';
+            const baseColor = isUp ? 'rgba(248, 113, 113, ' : 'rgba(34, 197, 94, ';
+            const alpha = proj.isNear ? '0.9' : '0.35';
+            ctx.strokeStyle = baseColor + alpha + ')';
+            ctx.lineWidth = proj.isNear ? 2 : 1;
+            ctx.setLineDash([6, 4]);
+            ctx.beginPath();
+            ctx.moveTo(startX, y);
+            ctx.lineTo(endX, y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            // 标签
+            ctx.fillStyle = baseColor + (proj.isNear ? '1' : '0.6') + ')';
+            ctx.font = proj.isNear ? 'bold 10px -apple-system, sans-serif' : '10px -apple-system, sans-serif';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(proj.label, endX - 50, y - 8);
+            // 接近时闪烁圆点
+            if (proj.isNear) {
+              ctx.fillStyle = baseColor + '0.3)';
+              ctx.beginPath();
+              ctx.arc(endX - 55, y, 5, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.strokeStyle = baseColor + '1)';
+              ctx.lineWidth = 1.5;
+              ctx.beginPath();
+              ctx.arc(endX - 55, y, 5, 0, Math.PI * 2);
+              ctx.stroke();
+            }
+          } else if (proj.type === 'potentialBuy' || proj.type === 'potentialSell') {
+            // 潜在买卖点预标：半透明圆 + 标签
+            const isBuy = proj.type === 'potentialBuy';
+            const color = isBuy ? 'rgba(34, 197, 94, ' : 'rgba(248, 113, 113, ';
+            const x = timeScale.timeToCoordinate(proj.time as Time);
+            if (x === null) continue;
+            // 虚线连接到价格位
+            ctx.strokeStyle = color + '0.4)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.lineTo(endX, y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            // 预标圆
+            ctx.fillStyle = color + '0.15)';
+            ctx.beginPath();
+            ctx.arc(x, y, 10, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = color + '0.8)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([2, 2]);
+            ctx.beginPath();
+            ctx.arc(x, y, 10, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            // 标签
+            ctx.fillStyle = color + '0.9)';
+            ctx.font = 'bold 9px -apple-system, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(proj.label, x, y);
+          } else if (proj.type === 'pendingFractal') {
+            // 未完成分型预警：菱形标记 + 确认价位线
+            const x = timeScale.timeToCoordinate(proj.time as Time);
+            if (x === null) continue;
+            const isTop = proj.label.includes('顶');
+            const color = isTop ? 'rgba(248, 113, 113, ' : 'rgba(34, 197, 94, ';
+            // 菱形
+            ctx.fillStyle = color + '0.3)';
+            ctx.beginPath();
+            ctx.moveTo(x, y - 6);
+            ctx.lineTo(x + 6, y);
+            ctx.lineTo(x, y + 6);
+            ctx.lineTo(x - 6, y);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = color + '0.7)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([2, 2]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            // 标签
+            ctx.fillStyle = color + '0.8)';
+            ctx.font = '9px -apple-system, sans-serif';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'bottom';
+            ctx.fillText(proj.label, x + 8, y);
+          } else if (proj.type === 'biExtension') {
+            // 笔延长投射：虚线箭头
+            const x1Coord = timeScale.timeToCoordinate(proj.time as Time);
+            if (x1Coord === null) continue;
+            ctx.strokeStyle = 'rgba(168, 85, 247, 0.5)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(x1Coord, y);
+            ctx.lineTo(endX, y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            // 标签
+            ctx.fillStyle = 'rgba(168, 85, 247, 0.7)';
+            ctx.font = '9px -apple-system, sans-serif';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(proj.label, endX - 40, y - 8);
+          }
+        }
+
         ctx.restore();
       } catch (e) {
         console.warn('[Chan] render error:', e);

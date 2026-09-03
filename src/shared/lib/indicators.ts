@@ -171,11 +171,30 @@ export interface ChanSignal {
   description: string;
 }
 
+// ===== 预警投射：提前预测画线 =====
+// 中枢突破投射线、潜在买卖点预标、未完成笔预警、笔延长投射
+export interface ChanProjection {
+  type:
+    | 'zsBreakoutUp'    // 中枢上沿突破投射线
+    | 'zsBreakoutDown'  // 中枢下沿突破投射线
+    | 'potentialBuy'    // 潜在买点预标
+    | 'potentialSell'   // 潜在卖点预标
+    | 'biExtension'     // 笔延长投射（虚线）
+    | 'pendingFractal'; // 未完成分型预警
+  price: number;
+  time: number;         // 起始时间
+  endTime: number;      // 投射线结束时间（延伸到屏幕右侧）
+  label: string;
+  description: string;
+  isNear: boolean;      // 价格是否接近该投射位
+}
+
 export interface ChanResult {
   fractals: ChanFractal[];
   bis: ChanBi[];
   zhongshus: ChanZhongshu[];
   signals: ChanSignal[];
+  projections: ChanProjection[];
 }
 
 // ===== 第一步：K线包含关系处理（合并） =====
@@ -440,14 +459,209 @@ function detectChanSignals(
   return signals;
 }
 
-// ===== 主函数：K线合并 → 分型 → 笔 → 中枢 → 买卖点 =====
+// ===== 第六步：预警投射（提前预测画线） =====
+// 1. 中枢突破投射线：从最近中枢的上下沿画水平延伸线
+// 2. 潜在买卖点预标：价格接近中枢边界时预标注
+// 3. 未完成笔预警：当前K线若收在某价位将形成新分型
+// 4. 笔延长投射：当前未完成笔按方向延伸虚线
+function calcChanProjections(
+  bis: ChanBi[],
+  zhongshus: ChanZhongshu[],
+  klines: KlineData[],
+): ChanProjection[] {
+  const projections: ChanProjection[] = [];
+  if (klines.length === 0) return projections;
+
+  const lastKline = klines[klines.length - 1];
+  const lastPrice = lastKline.close;
+  const lastTime = lastKline.time;
+  // 投射线延伸到屏幕右侧：用最后一根K线时间 + 额外的K线周期
+  const interval = klines.length > 1 ? klines[klines.length - 1].time - klines[klines.length - 2].time : 3600000;
+  const projectionEndTime = lastTime + interval * 20; // 向右延伸20根K线
+
+  // ===== 1. 中枢突破投射线 =====
+  if (zhongshus.length > 0) {
+    const lastZs = zhongshus[zhongshus.length - 1];
+
+    // 上沿突破投射线
+    const distUp = Math.abs(lastPrice - lastZs.high);
+    const threshold = (lastZs.high - lastZs.low) * 0.15; // 15%中枢高度作为"接近"阈值
+    const isNearUp = distUp < threshold;
+    projections.push({
+      type: 'zsBreakoutUp',
+      price: lastZs.high,
+      time: lastZs.startTime,
+      endTime: projectionEndTime,
+      label: '中枢上沿',
+      description: isNearUp
+        ? `⚠️价格接近中枢上沿(${lastZs.high.toFixed(2)})，突破即三买`
+        : `中枢上沿压力位(${lastZs.high.toFixed(2)})`,
+      isNear: isNearUp,
+    });
+
+    // 下沿突破投射线
+    const distDown = Math.abs(lastPrice - lastZs.low);
+    const isNearDown = distDown < threshold;
+    projections.push({
+      type: 'zsBreakoutDown',
+      price: lastZs.low,
+      time: lastZs.startTime,
+      endTime: projectionEndTime,
+      label: '中枢下沿',
+      description: isNearDown
+        ? `⚠️价格接近中枢下沿(${lastZs.low.toFixed(2)})，跌破即三卖`
+        : `中枢下沿支撑位(${lastZs.low.toFixed(2)})`,
+      isNear: isNearDown,
+    });
+  }
+
+  // ===== 2. 潜在买卖点预标 =====
+  // 价格在中枢上方接近上沿 → 潜在三买
+  // 价格在中枢下方接近下沿 → 潜在三卖
+  // 价格在中枢内接近下沿 → 潜在二买
+  // 价格在中枢内接近上沿 → 潜在二卖
+  if (zhongshus.length > 0) {
+    const lastZs = zhongshus[zhongshus.length - 1];
+    const zsRange = lastZs.high - lastZs.low;
+    const nearThreshold = zsRange * 0.10; // 10%中枢高度
+
+    // 潜在三买：价格在中枢上方，接近上沿
+    if (lastPrice > lastZs.high && lastPrice < lastZs.high + nearThreshold) {
+      projections.push({
+        type: 'potentialBuy',
+        price: lastPrice,
+        time: lastTime,
+        endTime: projectionEndTime,
+        label: '预3B',
+        description: `潜在三买：价格刚突破中枢上沿，若站稳确认三买`,
+        isNear: true,
+      });
+    }
+    // 潜在三卖：价格在中枢下方，接近下沿
+    if (lastPrice < lastZs.low && lastPrice > lastZs.low - nearThreshold) {
+      projections.push({
+        type: 'potentialSell',
+        price: lastPrice,
+        time: lastTime,
+        endTime: projectionEndTime,
+        label: '预3S',
+        description: `潜在三卖：价格刚跌破中枢下沿，若站稳确认三卖`,
+        isNear: true,
+      });
+    }
+    // 潜在二买：价格在中枢内，接近下沿
+    if (lastPrice >= lastZs.low && lastPrice <= lastZs.high) {
+      if (Math.abs(lastPrice - lastZs.low) < nearThreshold) {
+        projections.push({
+          type: 'potentialBuy',
+          price: lastZs.low,
+          time: lastTime,
+          endTime: projectionEndTime,
+          label: '预2B',
+          description: `潜在二买：中枢内回踩接近下沿，不破即二买`,
+          isNear: true,
+        });
+      }
+      if (Math.abs(lastPrice - lastZs.high) < nearThreshold) {
+        projections.push({
+          type: 'potentialSell',
+          price: lastZs.high,
+          time: lastTime,
+          endTime: projectionEndTime,
+          label: '预2S',
+          description: `潜在二卖：中枢内反弹接近上沿，不破即二卖`,
+          isNear: true,
+        });
+      }
+    }
+  }
+
+  // ===== 3. 未完成分型预警 =====
+  // 如果当前K线和前一根K线形成潜在分型，标注可能形成的分型位置
+  if (klines.length >= 3) {
+    const prev = klines[klines.length - 2];
+    const prev2 = klines[klines.length - 3];
+    // 潜在顶分型：前一根高点最高，当前K线如果收低于前一根低点则确认
+    if (prev.high > prev2.high && prev.high > lastKline.high) {
+      // 当前K线若跌破prev的低点，则顶分型确认
+      const confirmPrice = prev.low;
+      if (lastPrice > confirmPrice) {
+        projections.push({
+          type: 'pendingFractal',
+          price: prev.high,
+          time: lastTime,
+          endTime: projectionEndTime,
+          label: '待顶分',
+          description: `未完成顶分型：若价格跌破${confirmPrice.toFixed(2)}则确认顶分型`,
+          isNear: lastPrice < prev.high && lastPrice > confirmPrice,
+        });
+      }
+    }
+    // 潜在底分型：前一根低点最低，当前K线如果收高于前一根高点则确认
+    if (prev.low < prev2.low && prev.low < lastKline.low) {
+      const confirmPrice = prev.high;
+      if (lastPrice < confirmPrice) {
+        projections.push({
+          type: 'pendingFractal',
+          price: prev.low,
+          time: lastTime,
+          endTime: projectionEndTime,
+          label: '待底分',
+          description: `未完成底分型：若价格突破${confirmPrice.toFixed(2)}则确认底分型`,
+          isNear: lastPrice > prev.low && lastPrice < confirmPrice,
+        });
+      }
+    }
+  }
+
+  // ===== 4. 笔延长投射 =====
+  // 如果最后一笔方向确定，沿其方向画虚线投射
+  if (bis.length > 0) {
+    const lastBi = bis[bis.length - 1];
+    // 按笔的斜率延伸
+    const barCount = Math.max(1, lastBi.endIndex - lastBi.startIndex);
+    const slope = (lastBi.endPrice - lastBi.startPrice) / barCount;
+    // 投射3根K线
+    const projectedPrice = lastBi.endPrice + slope * 3;
+
+    projections.push({
+      type: 'biExtension',
+      price: lastBi.endPrice,
+      time: lastBi.endTime,
+      endTime: lastTime + interval * 3,
+      label: lastBi.direction === 'up' ? '笔延↑' : '笔延↓',
+      description: `${lastBi.direction === 'up' ? '上升' : '下降'}笔延长投射：按当前斜率预计到达${projectedPrice.toFixed(2)}`,
+      isNear: false,
+    });
+
+    // 额外标记投射终点
+    const priceDist = Math.abs(projectedPrice - lastPrice);
+    const priceThreshold = Math.abs(lastBi.endPrice) * 0.01; // 1%的价格波动范围
+    if (priceDist < priceThreshold) {
+      projections.push({
+        type: 'biExtension',
+        price: projectedPrice,
+        time: lastTime + interval,
+        endTime: lastTime + interval * 3,
+        label: '投射位',
+        description: `笔投射目标位：${projectedPrice.toFixed(2)}`,
+        isNear: priceDist < Math.abs(slope) * 2,
+      });
+    }
+  }
+
+  return projections;
+}
+
+// ===== 主函数：K线合并 → 分型 → 笔 → 中枢 → 买卖点 → 预警投射 =====
 export function calcChan(klines: KlineData[]): ChanResult {
   const merged = mergeKlines(klines);
   const fractals = detectChanFractals(merged);
   const bis = buildBi(fractals, klines);
   const zhongshus = buildZhongshu(bis);
   const signals = detectChanSignals(bis, zhongshus, klines);
-  return { fractals, bis, zhongshus, signals };
+  const projections = calcChanProjections(bis, zhongshus, klines);
+  return { fractals, bis, zhongshus, signals, projections };
 }
 
 // ATR 数组（用于图表绘制）
