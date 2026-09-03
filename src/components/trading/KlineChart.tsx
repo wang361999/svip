@@ -20,6 +20,7 @@ import {
   createChart,
   IChartApi,
   ISeriesApi,
+  IPriceLine,
   CandlestickData,
   HistogramData,
   LineData,
@@ -168,8 +169,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // VWAP（主图线）
   const vwapSeries = useRef<ISeriesApi<'Line'> | null>(null);
 
-  // 江恩八分位（主图水平线）
-  const gannLinesRef = useRef<ISeriesApi<'Line'>[]>([]);
+  // 江恩八分位（主图价格线）
+  const gannLinesRef = useRef<IPriceLine[]>([]);
 
   // 神奇九转（主图标注）
   const nineTurnCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -413,30 +414,28 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       vwapSeries.current.setData(vwapData);
     }
 
-    // 江恩八分位（主图水平线）
+    // 江恩八分位（主图价格线，只显示当前价附近的关键位）
     // 先清除旧线
-    for (const line of gannLinesRef.current) {
-      try { mainChart.current?.removeSeries(line); } catch {}
+    for (const pl of gannLinesRef.current) {
+      try { candleSeries.current?.removePriceLine(pl); } catch {}
     }
     gannLinesRef.current = [];
-    if (indicators.GANN && klines.length > 10) {
+    if (indicators.GANN && klines.length > 10 && candleSeries.current) {
       const gannLevels = calcGannEighths(klines);
-      const firstTime = klines[0].time as Time;
-      const lastTime = klines[klines.length - 1].time as Time;
+      const currentPrice = klines[klines.length - 1].close;
+      // 只显示距当前价 ±3% 范围内的位 + 4/8 中轴（如果范围内）
+      const range = currentPrice * 0.03;
       for (const lvl of gannLevels) {
-        const line = mainChart.current.addLineSeries({
-          color: lvl.isMajor ? 'rgba(255, 193, 7, 0.8)' : 'rgba(255, 193, 7, 0.35)',
+        if (Math.abs(lvl.price - currentPrice) > range) continue;
+        const pl = candleSeries.current.createPriceLine({
+          price: lvl.price,
+          color: lvl.isMajor ? 'rgba(255, 193, 7, 0.7)' : 'rgba(255, 193, 7, 0.3)',
           lineWidth: lvl.isMajor ? 2 : 1,
-          lineStyle: lvl.isMajor ? 0 : 2, // 实线 for major, 虚线 for minor
-          priceLineVisible: false,
-          lastValueVisible: true,
+          lineStyle: lvl.isMajor ? LineStyle.Solid : LineStyle.Dashed,
+          axisLabelVisible: true,
           title: `G ${lvl.label}`,
         });
-        line.setData([
-          { time: firstTime, value: lvl.price },
-          { time: lastTime, value: lvl.price },
-        ]);
-        gannLinesRef.current.push(line);
+        gannLinesRef.current.push(pl);
       }
     }
 
