@@ -14,6 +14,7 @@ import {
   calcChan,
   type ChanResult,
 } from '@/shared/lib/indicators';
+import { analyzeRapid, type RapidAnalysis } from '@/shared/lib/rapid-strategy';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import {
@@ -177,6 +178,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const chanCanvasRef = useRef<HTMLCanvasElement>(null);
   const chanDataRef = useRef<ChanResult | null>(null);
   const drawChanRef = useRef<() => void>(() => {});
+
+  // 多空信号箭头画布
+  const signalCanvasRef = useRef<HTMLCanvasElement>(null);
+  const signalDataRef = useRef<RapidAnalysis | null>(null);
+  const drawSignalsRef = useRef<() => void>(() => {});
 
   const allKlinesRef = useRef<KlineData[]>([]);
   const pendingTickRef = useRef<number | null>(null);
@@ -434,6 +440,16 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     }
     requestAnimationFrame(() => {
       try { drawChanRef.current(); } catch (e) { console.warn('[Chan] raf error:', e); }
+    });
+
+    // 多空信号：基于当前K线计算快速策略信号
+    try {
+      signalDataRef.current = analyzeRapid(symbol, klines);
+    } catch (e) {
+      console.warn('[Signals] analyze error:', e);
+    }
+    requestAnimationFrame(() => {
+      try { drawSignalsRef.current(); } catch (e) { console.warn('[Signals] raf error:', e); }
     });
 
     // KDJ 副图
@@ -722,6 +738,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       try { drawNineTurnRef.current(); } catch (e) { console.warn('[NineTurn] update error:', e); }
       try { drawChanRef.current(); } catch (e) { console.warn('[Chan] update error:', e); }
     }
+    // 多空信号箭头每次tick都重绘（跟随最新价格）
+    try { drawSignalsRef.current(); } catch (e) { console.warn('[Signals] update error:', e); }
   }, [updateIndicators, redrawOverlayLines, legendOf, indicators.NINE, indicators.CHAN]);
 
   // 获取K线 — 用 ref 引用最新的 updateChart，避免指标切换导致重新拉取K线和重连WS
@@ -1287,6 +1305,172 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     };
     drawChanRef.current = drawChan;
 
+    // ===== 多空信号箭头绘制 =====
+    const drawSignals = () => {
+      try {
+        const canvas = signalCanvasRef.current;
+        const chartAPI = mainChart.current;
+        const data = signalDataRef.current;
+        if (!canvas || !chartAPI || !data) return;
+        if (!candleSeries.current) return;
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, rect.width, rect.height);
+
+        const timeScale = chartAPI.timeScale();
+        const suggestions = [];
+
+        // 收集要显示的信号
+        // 1. 主建议（如果方向不是none）
+        const lastKlineTime = allKlinesRef.current.length > 0
+          ? allKlinesRef.current[allKlinesRef.current.length - 1].time
+          : data.timestamp;
+        if (data.suggestion.direction !== 'none' && data.suggestion.confidence > 50) {
+          suggestions.push({
+            direction: data.suggestion.direction,
+            entry: data.suggestion.entry,
+            stop: data.suggestion.stop,
+            target: data.suggestion.target,
+            confidence: data.suggestion.confidence,
+            score: data.suggestion.score,
+            reason: data.suggestion.reason,
+            time: lastKlineTime,
+          });
+        }
+        // 2. 最近3个信号
+        for (const sig of (data.recentSignals || []).slice(-3)) {
+          // 避免重复
+          if (suggestions.find(s => Math.abs(s.entry - sig.entry) < 0.5)) continue;
+          suggestions.push({
+            direction: sig.direction,
+            entry: sig.entry,
+            stop: sig.stop,
+            target: sig.target,
+            confidence: sig.confidence,
+            score: sig.confidence,
+            reason: sig.reason || sig.source,
+            time: sig.time,
+          });
+        }
+
+        if (suggestions.length === 0) {
+          ctx.restore();
+          return;
+        }
+
+        ctx.save();
+
+        // 只显示最近2个信号（避免画面太乱）
+        const display = suggestions.slice(-2);
+
+        for (const sig of display) {
+          const isLong = sig.direction === 'long';
+          const color = isLong ? 'rgba(22, 199, 94, ' : 'rgba(246, 70, 93, ';
+          const x = timeScale.timeToCoordinate(sig.time as Time);
+          if (x === null) continue;
+          const entryY = candleSeries.current.priceToCoordinate(sig.entry);
+          const stopY = candleSeries.current.priceToCoordinate(sig.stop);
+          const targetY = candleSeries.current.priceToCoordinate(sig.target);
+          if (entryY === null) continue;
+
+          // 1. 画入场价水平线
+          ctx.strokeStyle = color + '0.8)';
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([8, 4]);
+          ctx.beginPath();
+          ctx.moveTo(x - 25, entryY);
+          ctx.lineTo(x + 80, entryY);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // 2. 画止损价水平线（红色短虚线）
+          if (stopY !== null) {
+            ctx.strokeStyle = 'rgba(246, 70, 93, 0.5)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(x - 15, stopY);
+            ctx.lineTo(x + 60, stopY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            // 止损标签
+            ctx.fillStyle = 'rgba(246, 70, 93, 0.7)';
+            ctx.font = '9px -apple-system, sans-serif';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('SL', x + 62, stopY);
+          }
+
+          // 3. 画目标价水平线（绿色短虚线）
+          if (targetY !== null) {
+            ctx.strokeStyle = 'rgba(22, 199, 94, 0.5)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(x - 15, targetY);
+            ctx.lineTo(x + 60, targetY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillStyle = 'rgba(22, 199, 94, 0.7)';
+            ctx.font = '9px -apple-system, sans-serif';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('TP', x + 62, targetY);
+          }
+
+          // 4. 画箭头标记
+          const arrowY = isLong ? entryY + 25 : entryY - 25;
+          // 背景圆
+          ctx.fillStyle = color + '0.2)';
+          ctx.beginPath();
+          ctx.arc(x, arrowY, 16, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = color + '1)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(x, arrowY, 16, 0, Math.PI * 2);
+          ctx.stroke();
+
+          // 箭头
+          ctx.fillStyle = color + '1)';
+          ctx.font = 'bold 14px -apple-system, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(isLong ? '▲' : '▼', x, arrowY - 2);
+
+          // 方向标签
+          ctx.fillStyle = color + '1)';
+          ctx.font = 'bold 9px -apple-system, sans-serif';
+          ctx.fillText(isLong ? '做多' : '做空', x, arrowY + 12);
+
+          // 5. 置信度和价格标签
+          ctx.fillStyle = color + '0.9)';
+          ctx.font = 'bold 10px -apple-system, sans-serif';
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'middle';
+          const labelText = `${sig.confidence.toFixed(0)}%`;
+          ctx.fillText(labelText, x + 20, entryY - 8);
+
+          // 入场价标签
+          ctx.fillStyle = color + '0.8)';
+          ctx.font = '9px -apple-system, sans-serif';
+          ctx.fillText(`@${sig.entry.toFixed(1)}`, x + 20, entryY + 8);
+        }
+
+        ctx.restore();
+      } catch (e) {
+        console.warn('[Signals] render error:', e);
+      }
+    };
+    drawSignalsRef.current = drawSignals;
+
     // 主图和所有副图联动（平移/缩放时保持时间轴同步）
     chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
       if (range) {
@@ -1299,6 +1483,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       try { drawNineTurnNumbers(); } catch (e) { console.warn('[NineTurn] scroll error:', e); }
       // 缠论随视图滚动重绘
       try { drawChan(); } catch (e) { console.warn('[Chan] scroll error:', e); }
+      // 多空信号随视图滚动重绘
+      try { drawSignals(); } catch (e) { console.warn('[Signals] scroll error:', e); }
     });
 
     mainChart.current = chart;
@@ -1596,6 +1782,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             ref={chanCanvasRef}
             className="absolute top-0 left-0 w-full h-full pointer-events-none"
             style={{ zIndex: 3 }}
+          />
+          {/* 多空信号箭头覆盖层 */}
+          <canvas
+            ref={signalCanvasRef}
+            className="absolute top-0 left-0 w-full h-full pointer-events-none"
+            style={{ zIndex: 4 }}
           />
           {/* 左上角 OHLC 图例：十字线联动，颜色跟涨跌 */}
           {legend && (
