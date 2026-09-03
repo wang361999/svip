@@ -169,7 +169,7 @@ export interface ChanResult {
 }
 
 // 分型识别：顶分型 = 高点高于左右相邻，底分型 = 低点低于左右相邻
-function detectFractals(klines: KlineData[]): ChanFractal[] {
+function detectChanFractals(klines: KlineData[]): ChanFractal[] {
   const fractals: ChanFractal[] = [];
   for (let i = 1; i < klines.length - 1; i++) {
     const prev = klines[i - 1];
@@ -279,7 +279,7 @@ function buildZhongshu(bis: ChanBi[]): ChanZhongshu[] {
 }
 
 export function calcChan(klines: KlineData[]): ChanResult {
-  const fractals = detectFractals(klines);
+  const fractals = detectChanFractals(klines);
   const bis = buildBi(fractals, klines);
   const zhongshus = buildZhongshu(bis);
   return { fractals, bis, zhongshus };
