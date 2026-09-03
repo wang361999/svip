@@ -408,13 +408,15 @@ function calcSignalScore(
     }
   }
 
-  // 4. 背离分 (20分)：RSI 或 MACD 背离
-  if (ctx.rsiDiv === 'bull') longScore += 20;
-  else if (ctx.rsiDiv === 'bear') shortScore += 20;
-  if (ctx.macdDiv === 'bull') longScore += 20;
-  else if (ctx.macdDiv === 'bear') shortScore += 20;
-  // 两个背离都有但方向冲突 → 不加分
-  // 同方向两个都有 → 加满40但封顶20（已实现）
+  // 4. 背离分 (20分)：RSI 或 MACD 背离，单个背离12分，双重背离封顶20分
+  let divLong = 0, divShort = 0;
+  if (ctx.rsiDiv === 'bull') divLong += 12;
+  if (ctx.macdDiv === 'bull') divLong += 12;
+  if (ctx.rsiDiv === 'bear') divShort += 12;
+  if (ctx.macdDiv === 'bear') divShort += 12;
+  // 双重背离是更强的信号，但背离总分封顶20分
+  longScore += Math.min(divLong, 20);
+  shortScore += Math.min(divShort, 20);
 
   // 5. 成交量分 (15分)：放量确认
   if (vAvg > 0) {

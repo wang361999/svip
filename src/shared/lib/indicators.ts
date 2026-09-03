@@ -135,7 +135,7 @@ export function calcRSIArray(klines: KlineData[], period: number = 14): (number 
   return result;
 }
 
-// ========== 缠论（Chanlun）分型→笔→中枢 ==========
+// ========== 缠论（Chanlun）K线合并→分型→笔→中枢→买卖点 ==========
 
 export interface ChanFractal {
   index: number;
@@ -160,30 +160,94 @@ export interface ChanZhongshu {
   high: number;
   low: number;
   biCount: number;
+  level: number;        // 级别：1=本级别，2=高一级别（延伸9笔升级）
+  isExtended: boolean;  // 是否延伸（超过6笔未突破）
+}
+
+export interface ChanSignal {
+  type: 'firstBuy' | 'firstSell' | 'secondBuy' | 'secondSell' | 'thirdBuy' | 'thirdSell';
+  price: number;
+  time: number;
+  description: string;
 }
 
 export interface ChanResult {
   fractals: ChanFractal[];
   bis: ChanBi[];
   zhongshus: ChanZhongshu[];
+  signals: ChanSignal[];
 }
 
-// 分型识别：顶分型 = 高点高于左右相邻，底分型 = 低点低于左右相邻
-function detectChanFractals(klines: KlineData[]): ChanFractal[] {
-  const fractals: ChanFractal[] = [];
-  for (let i = 1; i < klines.length - 1; i++) {
-    const prev = klines[i - 1];
+// ===== 第一步：K线包含关系处理（合并） =====
+// 标准缠论要求先合并包含关系的K线，再识别分型。
+// 规则：相邻两根K线，如果一根完全包含另一根（高低点都在范围内），则合并。
+// 合并方向取决于趋势方向：
+//   向上趋势中：取较高的高点和较高的低点
+//   向下趋势中：取较低的高点和较低的低点
+interface MergedKline {
+  index: number;   // 原始K线索引
+  time: number;
+  high: number;
+  low: number;
+  open: number;
+  close: number;
+  volume: number;
+  direction: 'up' | 'down';
+}
+
+function mergeKlines(klines: KlineData[]): MergedKline[] {
+  if (klines.length === 0) return [];
+  const merged: MergedKline[] = [{
+    index: 0, time: klines[0].time, high: klines[0].high, low: klines[0].low,
+    open: klines[0].open, close: klines[0].close, volume: klines[0].volume,
+    direction: klines[0].close >= klines[0].open ? 'up' : 'down',
+  }];
+  for (let i = 1; i < klines.length; i++) {
     const curr = klines[i];
-    const next = klines[i + 1];
-    // 顶分型：高点最高 + 低点也最高（标准缠论定义）
+    const last = merged[merged.length - 1];
+    // 包含关系：一方的高低点完全包含另一方
+    const hasInclusion =
+      (last.high >= curr.high && last.low <= curr.low) ||
+      (curr.high >= last.high && curr.low <= last.low);
+    if (hasInclusion) {
+      // 按趋势方向合并
+      if (last.direction === 'up') {
+        last.high = Math.max(last.high, curr.high);
+        last.low = Math.max(last.low, curr.low);
+      } else {
+        last.high = Math.min(last.high, curr.high);
+        last.low = Math.min(last.low, curr.low);
+      }
+      last.volume += curr.volume;
+    } else {
+      // 无包含，新增，方向由高低点关系确定
+      const newDir: 'up' | 'down' =
+        curr.high > last.high ? 'up' : curr.low < last.low ? 'down' : last.direction;
+      merged.push({
+        index: i, time: curr.time, high: curr.high, low: curr.low,
+        open: curr.open, close: curr.close, volume: curr.volume, direction: newDir,
+      });
+    }
+  }
+  return merged;
+}
+
+// ===== 第二步：分型识别（在合并后的K线上） =====
+function detectChanFractals(merged: MergedKline[]): ChanFractal[] {
+  const fractals: ChanFractal[] = [];
+  for (let i = 1; i < merged.length - 1; i++) {
+    const prev = merged[i - 1];
+    const curr = merged[i];
+    const next = merged[i + 1];
+    // 顶分型：高点最高 + 低点也最高
     if (curr.high > prev.high && curr.high > next.high &&
         curr.low > prev.low && curr.low > next.low) {
-      fractals.push({ index: i, time: curr.time, price: curr.high, type: 'top' });
+      fractals.push({ index: curr.index, time: curr.time, price: curr.high, type: 'top' });
     }
     // 底分型：低点最低 + 高点也最低
     if (curr.low < prev.low && curr.low < next.low &&
         curr.high < prev.high && curr.high < next.high) {
-      fractals.push({ index: i, time: curr.time, price: curr.low, type: 'bottom' });
+      fractals.push({ index: curr.index, time: curr.time, price: curr.low, type: 'bottom' });
     }
   }
   return fractals;
@@ -236,34 +300,36 @@ function buildBi(fractals: ChanFractal[], klines: KlineData[]): ChanBi[] {
   return bis;
 }
 
-// 中枢：至少3笔价格区间重叠
+// ===== 第四步：中枢构建（3笔重叠区间）+ 级别追踪 =====
+// 中枢 = 至少3笔的价格重叠区间
+// 延伸：中枢内超过6笔仍未突破 → 标记为延伸
+// 升级：中枢内超过9笔 → 级别升级（level+1）
 function buildZhongshu(bis: ChanBi[]): ChanZhongshu[] {
   const zhongshus: ChanZhongshu[] = [];
   if (bis.length < 3) return zhongshus;
 
   for (let i = 0; i <= bis.length - 3; i++) {
-    // 取连续3笔
     const b1 = bis[i], b2 = bis[i + 1], b3 = bis[i + 2];
-    // 每笔的价格区间
     const r1Low = Math.min(b1.startPrice, b1.endPrice);
     const r1High = Math.max(b1.startPrice, b1.endPrice);
     const r2Low = Math.min(b2.startPrice, b2.endPrice);
     const r2High = Math.max(b2.startPrice, b2.endPrice);
     const r3Low = Math.min(b3.startPrice, b3.endPrice);
     const r3High = Math.max(b3.startPrice, b3.endPrice);
-    // 重叠区间 = [max(低点), min(高点)]
     const overlapLow = Math.max(r1Low, r2Low, r3Low);
     const overlapHigh = Math.min(r1High, r2High, r3High);
     if (overlapLow < overlapHigh) {
-      // 有重叠 → 形成中枢
-      // 合并相邻中枢
       const last = zhongshus[zhongshus.length - 1];
       if (last && b1.startTime <= last.endTime) {
-        // 相邻中枢合并
+        // 延伸已有中枢
         last.endTime = b3.endTime;
         last.high = Math.min(last.high, overlapHigh);
         last.low = Math.max(last.low, overlapLow);
         last.biCount += 1;
+        // 延伸判断：超过6笔标记延伸
+        last.isExtended = last.biCount >= 6;
+        // 升级判断：超过9笔级别+1
+        if (last.biCount >= 9) last.level = 2;
       } else {
         zhongshus.push({
           startTime: b1.startTime,
@@ -271,6 +337,8 @@ function buildZhongshu(bis: ChanBi[]): ChanZhongshu[] {
           high: overlapHigh,
           low: overlapLow,
           biCount: 3,
+          level: 1,
+          isExtended: false,
         });
       }
     }
@@ -278,11 +346,108 @@ function buildZhongshu(bis: ChanBi[]): ChanZhongshu[] {
   return zhongshus;
 }
 
+// ===== 第五步：三类买卖点检测 =====
+// 一买/一卖：趋势背驰后的反转点（中枢外的力度衰减）
+// 二买/二卖：反转后的第一次回抽不破中枢
+// 三买/三卖：突破中枢后回踩不破中枢边界
+function detectChanSignals(
+  bis: ChanBi[],
+  zhongshus: ChanZhongshu[],
+  klines: KlineData[],
+): ChanSignal[] {
+  const signals: ChanSignal[] = [];
+  if (zhongshus.length === 0 || bis.length === 0 || klines.length === 0) return signals;
+
+  const lastZs = zhongshus[zhongshus.length - 1];
+  const lastPrice = klines[klines.length - 1].close;
+  const lastTime = klines[klines.length - 1].time;
+
+  // 找中枢之后的笔
+  const bisAfterZs = bis.filter(b => b.endTime >= lastZs.startTime);
+  if (bisAfterZs.length === 0) return signals;
+
+  const lastBi = bisAfterZs[bisAfterZs.length - 1];
+
+  // === 三买：价格在中枢上沿之上，且最近一笔的最低点也在上沿之上 ===
+  const lastBiLow = Math.min(lastBi.startPrice, lastBi.endPrice);
+  const lastBiHigh = Math.max(lastBi.startPrice, lastBi.endPrice);
+  if (lastPrice > lastZs.high && lastBiLow > lastZs.high) {
+    signals.push({
+      type: 'thirdBuy', price: lastPrice, time: lastTime,
+      description: '三买：突破中枢上沿后回踩不破',
+    });
+  }
+  // === 三卖：价格在中枢下沿之下，且最近一笔的最高点也在下沿之下 ===
+  if (lastPrice < lastZs.low && lastBiHigh < lastZs.low) {
+    signals.push({
+      type: 'thirdSell', price: lastPrice, time: lastTime,
+      description: '三卖：跌破中枢下沿后反弹不破',
+    });
+  }
+
+  // === 一买：中枢下方，最后一笔下降力度小于前一笔（背驰） ===
+  if (lastPrice < lastZs.low) {
+    const downBis = bisAfterZs.filter(b => b.direction === 'down');
+    if (downBis.length >= 2) {
+      const lastDown = downBis[downBis.length - 1];
+      const prevDown = downBis[downBis.length - 2];
+      const lastRange = Math.abs(lastDown.endPrice - lastDown.startPrice);
+      const prevRange = Math.abs(prevDown.endPrice - prevDown.startPrice);
+      if (lastRange < prevRange * 0.8) {
+        signals.push({
+          type: 'firstBuy', price: lastPrice, time: lastTime,
+          description: '一买：中枢下方下降笔背驰（力度衰减）',
+        });
+      }
+    }
+  }
+  // === 一卖：中枢上方，最后一笔上升力度小于前一笔（背驰） ===
+  if (lastPrice > lastZs.high) {
+    const upBis = bisAfterZs.filter(b => b.direction === 'up');
+    if (upBis.length >= 2) {
+      const lastUp = upBis[upBis.length - 1];
+      const prevUp = upBis[upBis.length - 2];
+      const lastRange = Math.abs(lastUp.endPrice - lastUp.startPrice);
+      const prevRange = Math.abs(prevUp.endPrice - prevUp.startPrice);
+      if (lastRange < prevRange * 0.8) {
+        signals.push({
+          type: 'firstSell', price: lastPrice, time: lastTime,
+          description: '一卖：中枢上方上升笔背驰（力度衰减）',
+        });
+      }
+    }
+  }
+
+  // === 二买：价格在中枢内偏上，最近下降笔回踩未破下沿 ===
+  if (lastPrice > lastZs.low && lastPrice < lastZs.high && lastBi.direction === 'down') {
+    if (lastBi.endPrice > lastZs.low) {
+      signals.push({
+        type: 'secondBuy', price: lastPrice, time: lastTime,
+        description: '二买：中枢内回踩未破下沿',
+      });
+    }
+  }
+  // === 二卖：价格在中枢内偏下，最近上升笔反弹未破上沿 ===
+  if (lastPrice > lastZs.low && lastPrice < lastZs.high && lastBi.direction === 'up') {
+    if (lastBi.endPrice < lastZs.high) {
+      signals.push({
+        type: 'secondSell', price: lastPrice, time: lastTime,
+        description: '二卖：中枢内反弹未破上沿',
+      });
+    }
+  }
+
+  return signals;
+}
+
+// ===== 主函数：K线合并 → 分型 → 笔 → 中枢 → 买卖点 =====
 export function calcChan(klines: KlineData[]): ChanResult {
-  const fractals = detectChanFractals(klines);
+  const merged = mergeKlines(klines);
+  const fractals = detectChanFractals(merged);
   const bis = buildBi(fractals, klines);
   const zhongshus = buildZhongshu(bis);
-  return { fractals, bis, zhongshus };
+  const signals = detectChanSignals(bis, zhongshus, klines);
+  return { fractals, bis, zhongshus, signals };
 }
 
 // ATR 数组（用于图表绘制）

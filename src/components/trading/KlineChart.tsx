@@ -72,7 +72,7 @@ interface KlineChartProps {
 // 开关状态仅存于浏览器本地（localStorage），后台/数据库不再有任何指标开关，
 // 徽章点击即生效并持久化，刷新/换币种/换周期后保持用户的选择。
 const INDICATOR_PREFS_KEY = 'kline-indicator-prefs';
-const DEFAULT_INDICATORS = { EMA: true, BOLL: true, MACD: true, RSI: true, VWAP: true, KDJ: true, ATR: true, NINE: true, CHAN: true };
+const DEFAULT_INDICATORS = { EMA: true, BOLL: false, MACD: true, RSI: false, VWAP: false, KDJ: false, ATR: false, NINE: false, CHAN: true };
 
 function loadIndicatorPrefs(): typeof DEFAULT_INDICATORS {
   if (typeof window === 'undefined') return { ...DEFAULT_INDICATORS };
@@ -716,10 +716,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         nineTurnDataRef.current = calcNineTurn(klines);
       }
     }
-    // 九转数字随最新K线重绘（价格变动导致数字位置变化）
-    try { drawNineTurnRef.current(); } catch (e) { console.warn('[NineTurn] update error:', e); }
-    // 缠论同步重绘
-    try { drawChanRef.current(); } catch (e) { console.warn('[Chan] update error:', e); }
+    // 九转/缠论canvas只在K线收盘时重绘（避免盘中每次tick都重绘浪费性能）
+    // 盘中价格变动不影响九转/缠论数据，只在K线收盘后数据才变化
+    if (isFinal) {
+      try { drawNineTurnRef.current(); } catch (e) { console.warn('[NineTurn] update error:', e); }
+      try { drawChanRef.current(); } catch (e) { console.warn('[Chan] update error:', e); }
+    }
   }, [updateIndicators, redrawOverlayLines, legendOf, indicators.NINE, indicators.CHAN]);
 
   // 获取K线 — 用 ref 引用最新的 updateChart，避免指标切换导致重新拉取K线和重连WS
@@ -1093,7 +1095,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           ctx.font = '10px -apple-system, sans-serif';
           ctx.textAlign = 'left';
           ctx.textBaseline = 'top';
-          ctx.fillText(`中枢(${zs.biCount}笔)`, x + 4, y + 2);
+          ctx.fillText(
+            zs.level > 1
+              ? `中枢L${zs.level}(${zs.biCount}笔${zs.isExtended ? '·延伸' : ''})`
+              : `中枢(${zs.biCount}笔${zs.isExtended ? '·延伸' : ''})`,
+            x + 4, y + 2
+          );
         }
 
         // 2. 画笔（折线）
@@ -1121,6 +1128,35 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           ctx.beginPath();
           ctx.arc(x, y, 2.5, 0, Math.PI * 2);
           ctx.fill();
+        }
+
+        // 4. 画买卖点信号（三类买卖点标注）
+        for (const sig of chanData.signals) {
+          const x = timeScale.timeToCoordinate(sig.time as Time);
+          const y = candleSeries.current.priceToCoordinate(sig.price);
+          if (x === null || y === null) continue;
+          const isBuy = sig.type.includes('Buy');
+          const color = isBuy ? 'rgba(34, 197, 94, 1)' : 'rgba(248, 113, 113, 1)';
+          const bgColor = isBuy ? 'rgba(34, 197, 94, 0.2)' : 'rgba(248, 113, 113, 0.2)';
+          const label = sig.type === 'firstBuy' ? '1B' : sig.type === 'secondBuy' ? '2B' : sig.type === 'thirdBuy' ? '3B'
+            : sig.type === 'firstSell' ? '1S' : sig.type === 'secondSell' ? '2S' : '3S';
+          // 背景圆
+          ctx.fillStyle = bgColor;
+          ctx.beginPath();
+          ctx.arc(x, y, 12, 0, Math.PI * 2);
+          ctx.fill();
+          // 边框圆
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.arc(x, y, 12, 0, Math.PI * 2);
+          ctx.stroke();
+          // 文字
+          ctx.fillStyle = color;
+          ctx.font = 'bold 11px -apple-system, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(label, x, y);
         }
 
         ctx.restore();
