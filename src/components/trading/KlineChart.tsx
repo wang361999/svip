@@ -205,6 +205,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const [showFibonacci, setShowFibonacci] = useState(overlayPrefsInit.FIB);
   const [showTrendChannel, setShowTrendChannel] = useState(overlayPrefsInit.CHANNEL);
   const [showPitchfork, setShowPitchfork] = useState(overlayPrefsInit.PITCHFORK);
+  // ref 镜像：updateIndicators 的 useCallback 依赖里没有这两个开关，
+  // 切换币种/周期重载数据时闭包里是旧值，会出现"关了又冒出来/开了不出来"的状态错乱
+  const showTrendChannelRef = useRef(showTrendChannel);
+  showTrendChannelRef.current = showTrendChannel;
+  const showPitchforkRef = useRef(showPitchfork);
+  showPitchforkRef.current = showPitchfork;
   // 左上角 OHLC 图例：随十字线联动（悬停读历史K线，离开回落到最新一根，tick 实时刷新）
   interface LegendInfo { o: number; h: number; l: number; c: number; pct: number }
   const [legend, setLegend] = useState<LegendInfo | null>(null);
@@ -451,15 +457,15 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       chanDataRef.current = null;
     }
 
-    // 趋势通道
-    if (showTrendChannel) {
+    // 趋势通道（读 ref 镜像，避免闭包过期）
+    if (showTrendChannelRef.current) {
       trendChannelRef.current = calcTrendChannel(klines, 60);
     } else {
       trendChannelRef.current = null;
     }
 
-    // 安德鲁音叉
-    if (showPitchfork) {
+    // 安德鲁音叉（读 ref 镜像，避免闭包过期）
+    if (showPitchforkRef.current) {
       pitchforkRef.current = calcPitchfork(klines, 80);
     } else {
       pitchforkRef.current = null;
@@ -1169,6 +1175,30 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
         const timeScale = chartAPI.timeScale();
 
+        // ========== 时间→X坐标解析器（关键修复） ==========
+        // lightweight-charts 的 timeToCoordinate 只认数据里真实存在的时间，
+        // 通道/音叉的右端点延伸到了未来（最后一根K线之后，数据里没有这个时间），
+        // 直接转换会返回 null，导致整块指标被非空校验拦截、静默不绘制。
+        // 这里对未来时间用最后两根K线的实际像素间距外推。
+        const ksForX = allKlinesRef.current;
+        const timeToX = (t: number): number | null => {
+          const x = timeScale.timeToCoordinate(t as Time);
+          if (x !== null) return x;
+          // 未命中数据时间：按未来时间外推
+          if (ksForX.length < 2) return null;
+          const lastK = ksForX[ksForX.length - 1];
+          const prevK = ksForX[ksForX.length - 2];
+          const interval = lastK.time - prevK.time;
+          if (interval <= 0 || t <= lastK.time) return null;
+          const xLast = timeScale.timeToCoordinate(lastK.time as Time);
+          const xPrev = timeScale.timeToCoordinate(prevK.time as Time);
+          if (xLast === null || xPrev === null) return null;
+          const spacing = xLast - xPrev; // 有符号：时间向右递增
+          if (spacing === 0) return null;
+          const barsAhead = (t - lastK.time) / interval;
+          return xLast + barsAhead * spacing;
+        };
+
         // 缠论绘制（仅当有缠论数据时）
         if (chanData) {
 
@@ -1387,10 +1417,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         // ========== 趋势通道绘制 ==========
         const tc = trendChannelRef.current;
         if (tc) {
-          const xUpperStart = timeScale.timeToCoordinate(tc.upperStart.time as Time);
-          const xUpperEnd = timeScale.timeToCoordinate(tc.upperEnd.time as Time);
-          const xLowerStart = timeScale.timeToCoordinate(tc.lowerStart.time as Time);
-          const xLowerEnd = timeScale.timeToCoordinate(tc.lowerEnd.time as Time);
+          const xUpperStart = timeToX(tc.upperStart.time);
+          const xUpperEnd = timeToX(tc.upperEnd.time);
+          const xLowerStart = timeToX(tc.lowerStart.time);
+          const xLowerEnd = timeToX(tc.lowerEnd.time);
           const yUpperStart = candleSeries.current?.priceToCoordinate(tc.upperStart.price);
           const yUpperEnd = candleSeries.current?.priceToCoordinate(tc.upperEnd.price);
           const yLowerStart = candleSeries.current?.priceToCoordinate(tc.lowerStart.price);
@@ -1457,8 +1487,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         // ========== 安德鲁音叉绘制 ==========
         const pf = pitchforkRef.current;
         if (pf) {
-          // 辅助函数：计算坐标
-          const toX = (t: number) => timeScale.timeToCoordinate(t as Time);
+          // 辅助函数：计算坐标（未来延伸时间用 timeToX 外推，确保右端点可解析）
+          const toX = (t: number) => timeToX(t);
           const toY = (p: number) => candleSeries.current?.priceToCoordinate(p) ?? null;
 
           const xA = toX(pf.pointA.time);

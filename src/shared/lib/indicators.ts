@@ -303,57 +303,100 @@ export function calcPitchfork(klines: KlineData[], lookback: number = 80): Pitch
   const w = window.length;
   if (w < 25) return null;
 
-  // 找窗口内的最高点和最低点
-  let highestIdx = 0, lowestIdx = 0;
-  for (let i = 1; i < w; i++) {
-    if (window[i].high > window[highestIdx].high) highestIdx = i;
-    if (window[i].low < window[lowestIdx].low) lowestIdx = i;
+  // 摆动点检测（分形：不低于/不高于前后各2根）
+  const isSwingHigh = (i: number): boolean => {
+    if (i < 2 || i > w - 3) return false;
+    return window[i].high >= window[i-1].high && window[i].high >= window[i-2].high
+        && window[i].high >= window[i+1].high && window[i].high >= window[i+2].high;
+  };
+  const isSwingLow = (i: number): boolean => {
+    if (i < 2 || i > w - 3) return false;
+    return window[i].low <= window[i-1].low && window[i].low <= window[i-2].low
+        && window[i].low <= window[i+1].low && window[i].low <= window[i+2].low;
+  };
+
+  // 窗口总波幅（用于显著性过滤）
+  let wHigh = -Infinity, wLow = Infinity;
+  for (const k of window) {
+    if (k.high > wHigh) wHigh = k.high;
+    if (k.low < wLow) wLow = k.low;
   }
+  const totalRange = wHigh - wLow;
+  if (totalRange <= 0) return null;
 
-  // 判断趋势方向：先有低点再有高点=上升趋势音叉，反之=下降趋势音叉
-  const isUpward = lowestIdx < highestIdx;
-  const direction: 'up' | 'down' = isUpward ? 'up' : 'down';
-
-  let pointA_idx: number, pointB_idx: number, pointC_idx: number;
-
-  if (isUpward) {
-    // 上升音叉：A=最低点，B=最高点，C=B之后的回调低点
-    pointA_idx = lowestIdx;
-    pointB_idx = highestIdx;
-
-    // 在B之后找回调低点（B到窗口末端之间的最低low）
-    let cbLow = Infinity;
-    pointC_idx = pointB_idx;
-    for (let i = pointB_idx + 1; i < w; i++) {
-      if (window[i].low < cbLow) {
-        cbLow = window[i].low;
-        pointC_idx = i;
+  // 上升音叉：A=B之前的最低点（趋势起点），B=摆动高点，C=B之后的回调低点
+  const tryUpward = (minABPct: number): { a: number; b: number; c: number } | null => {
+    const minAB = totalRange * minABPct;
+    for (let b = w - 3; b >= 3; b--) {
+      if (!isSwingHigh(b)) continue;
+      // C = B 之后的最低 low
+      let cIdx = -1, cLow = Infinity;
+      for (let i = b + 1; i < w; i++) {
+        if (window[i].low < cLow) { cLow = window[i].low; cIdx = i; }
       }
-    }
-    // C点不能等于B点（没有回调）
-    if (pointC_idx === pointB_idx) return null;
-    // C点至少要回调到AB段的20%以上
-    const abRange = window[pointB_idx].high - window[pointA_idx].low;
-    const cbRetrace = window[pointB_idx].high - cbLow;
-    if (cbRetrace < abRange * 0.15) return null;
-  } else {
-    // 下降音叉：A=最高点，B=最低点，C=B之后的反弹高点
-    pointA_idx = highestIdx;
-    pointB_idx = lowestIdx;
-
-    let cbHigh = -Infinity;
-    pointC_idx = pointB_idx;
-    for (let i = pointB_idx + 1; i < w; i++) {
-      if (window[i].high > cbHigh) {
-        cbHigh = window[i].high;
-        pointC_idx = i;
+      if (cIdx < 0) continue;
+      // A = B 之前的最低 low
+      let aIdx = -1, aLow = Infinity;
+      for (let i = 0; i < b; i++) {
+        if (window[i].low < aLow) { aLow = window[i].low; aIdx = i; }
       }
+      if (aIdx < 0) continue;
+      const abRange = window[b].high - aLow;
+      if (abRange < minAB) continue;
+      const cbRetrace = window[b].high - cLow;
+      if (cbRetrace < abRange * 0.15) continue;
+      return { a: aIdx, b, c: cIdx };
     }
-    if (pointC_idx === pointB_idx) return null;
-    const abRange = window[pointA_idx].high - window[pointB_idx].low;
-    const cbRetrace = cbHigh - window[pointB_idx].low;
-    if (cbRetrace < abRange * 0.15) return null;
+    return null;
+  };
+
+  // 下降音叉：A=B之前的最高点，B=摆动低点，C=B之后的反弹高点
+  const tryDownward = (minABPct: number): { a: number; b: number; c: number } | null => {
+    const minAB = totalRange * minABPct;
+    for (let b = w - 3; b >= 3; b--) {
+      if (!isSwingLow(b)) continue;
+      // C = B 之后的最高 high
+      let cIdx = -1, cHigh = -Infinity;
+      for (let i = b + 1; i < w; i++) {
+        if (window[i].high > cHigh) { cHigh = window[i].high; cIdx = i; }
+      }
+      if (cIdx < 0) continue;
+      // A = B 之前的最高 high
+      let aIdx = -1, aHigh = -Infinity;
+      for (let i = 0; i < b; i++) {
+        if (window[i].high > aHigh) { aHigh = window[i].high; aIdx = i; }
+      }
+      if (aIdx < 0) continue;
+      const abRange = aHigh - window[b].low;
+      if (abRange < minAB) continue;
+      const cbRetrace = cHigh - window[b].low;
+      if (cbRetrace < abRange * 0.15) continue;
+      return { a: aIdx, b, c: cIdx };
+    }
+    return null;
+  };
+
+  // 第一轮要求 AB 段占窗口波幅 35% 以上（显著趋势）；
+  // 第二轮放宽到 12% —— 强单边行情里最近的回调都很浅，完全过滤会导致音叉经常消失
+  const upStruct = tryUpward(0.35) ?? tryUpward(0.12);
+  const downStruct = tryDownward(0.35) ?? tryDownward(0.12);
+
+  // 两个方向都有结构时取更近的（b 更大）那个，保证音叉锚定最新行情
+  let built: { a: number; b: number; c: number; dir: 'up' | 'down' } | null = null;
+  if (upStruct && downStruct) {
+    built = upStruct.b >= downStruct.b ? { ...upStruct, dir: 'up' as const } : { ...downStruct, dir: 'down' as const };
+  } else if (upStruct) {
+    built = { ...upStruct, dir: 'up' as const };
+  } else if (downStruct) {
+    built = { ...downStruct, dir: 'down' as const };
   }
+  if (!built) return null;
+
+  const isUpward = built.dir === 'up';
+  const direction: 'up' | 'down' = built.dir;
+  const pointA_idx = built.a;
+  const pointB_idx = built.b;
+  const pointC_idx = built.c;
 
   // 三个基准点
   const pointA = { time: window[pointA_idx].time, price: isUpward ? window[pointA_idx].low : window[pointA_idx].high };
