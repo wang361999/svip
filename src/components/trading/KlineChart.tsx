@@ -1149,8 +1149,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         const canvas = chanCanvasRef.current;
         const chartAPI = mainChart.current;
         const chanData = chanDataRef.current;
-        if (!canvas || !chartAPI || !chanData) return;
+        if (!canvas || !chartAPI) return;
         if (!candleSeries.current) return;
+        // 至少要有一种数据才绘制（缠论/通道/音叉任一即可）
+        if (!chanData && !trendChannelRef.current && !pitchforkRef.current) return;
 
         const dpr = window.devicePixelRatio || 1;
         const rect = canvas.getBoundingClientRect();
@@ -1166,6 +1168,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         ctx.scale(dpr, dpr);
 
         const timeScale = chartAPI.timeScale();
+
+        // 缠论绘制（仅当有缠论数据时）
+        if (chanData) {
 
         // 1. 画中枢（半透明矩形）
         for (const zs of chanData.zhongshus) {
@@ -1377,6 +1382,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           }
         }
 
+        } // end of chanData
+
         // ========== 趋势通道绘制 ==========
         const tc = trendChannelRef.current;
         if (tc) {
@@ -1397,8 +1404,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
             const chanColor = tc.direction === 'up' ? 'rgba(34, 197, 94,' : tc.direction === 'down' ? 'rgba(246, 70, 93,' : 'rgba(148, 163, 184,';
 
-            // 通道填充（极淡）
-            ctx.fillStyle = chanColor + '0.04)';
+            // 通道填充（淡）
+            ctx.fillStyle = chanColor + '0.08)';
             ctx.beginPath();
             ctx.moveTo(xUpperStart, yUpperStart);
             ctx.lineTo(xUpperEnd, yUpperEnd);
@@ -1408,16 +1415,16 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             ctx.fill();
 
             // 上轨
-            ctx.strokeStyle = chanColor + '0.4)';
-            ctx.lineWidth = 1;
-            ctx.setLineDash([3, 3]);
+            ctx.strokeStyle = chanColor + '0.7)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([4, 4]);
             ctx.beginPath();
             ctx.moveTo(xUpperStart, yUpperStart);
             ctx.lineTo(xUpperEnd, yUpperEnd);
             ctx.stroke();
 
             // 中轨
-            ctx.strokeStyle = chanColor + '0.25)';
+            ctx.strokeStyle = chanColor + '0.4)';
             ctx.lineWidth = 1;
             ctx.setLineDash([2, 4]);
             ctx.beginPath();
@@ -1426,9 +1433,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             ctx.stroke();
 
             // 下轨
-            ctx.strokeStyle = chanColor + '0.4)';
-            ctx.lineWidth = 1;
-            ctx.setLineDash([3, 3]);
+            ctx.strokeStyle = chanColor + '0.7)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([4, 4]);
             ctx.beginPath();
             ctx.moveTo(xLowerStart, yLowerStart);
             ctx.lineTo(xLowerEnd, yLowerEnd);
@@ -1497,7 +1504,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             const pfColor = pf.direction === 'up' ? 'rgba(251, 191, 36,' : 'rgba(168, 85, 247,';
 
             // 警告线（最淡）
-            ctx.strokeStyle = pfColor + '0.15)';
+            ctx.strokeStyle = pfColor + '0.25)';
             ctx.lineWidth = 1;
             ctx.setLineDash([2, 6]);
             ctx.beginPath();
@@ -1510,9 +1517,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             ctx.stroke();
 
             // 上轨和下轨
-            ctx.strokeStyle = pfColor + '0.35)';
-            ctx.lineWidth = 1;
-            ctx.setLineDash([4, 4]);
+            ctx.strokeStyle = pfColor + '0.6)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([5, 4]);
             ctx.beginPath();
             ctx.moveTo(xUpStart!, yUpStart!);
             ctx.lineTo(xUpEnd!, yUpEnd!);
@@ -1523,8 +1530,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             ctx.stroke();
 
             // 中轨（实线，最显眼）
-            ctx.strokeStyle = pfColor + '0.7)';
-            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = pfColor + '0.9)';
+            ctx.lineWidth = 2;
             ctx.setLineDash([]);
             ctx.beginPath();
             ctx.moveTo(xMedStart!, yMedStart!);
@@ -1532,8 +1539,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             ctx.stroke();
 
             // A/B/C 三个基准点
-            const dotRadius = 3;
-            ctx.fillStyle = pfColor + '0.9)';
+            const dotRadius = 4;
+            ctx.fillStyle = pfColor + '1)';
             // A点
             ctx.beginPath();
             ctx.arc(xA!, yA!, dotRadius, 0, Math.PI * 2);
@@ -1548,7 +1555,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             ctx.fill();
 
             // AB和BC连线（淡虚线）
-            ctx.strokeStyle = pfColor + '0.25)';
+            ctx.strokeStyle = pfColor + '0.4)';
             ctx.lineWidth = 1;
             ctx.setLineDash([3, 3]);
             ctx.beginPath();
