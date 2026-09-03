@@ -70,6 +70,17 @@ export interface IndicatorState {
   macdDivergence: 'bull' | 'bear' | 'none';
 }
 
+export interface RangeInfo {
+  isRange: boolean;
+  support: number;       // 区间下沿
+  resistance: number;    // 区间上沿
+  width: number;         // 区间宽度
+  widthPct: number;      // 宽度百分比
+  position: 'near-support' | 'near-resistance' | 'middle';
+  touches: number;       // 触及次数
+  lookbackBars: number;  // 检测窗口
+}
+
 export interface RapidAnalysis {
   symbol: string;
   currentPrice: number;
@@ -78,6 +89,7 @@ export interface RapidAnalysis {
   confluence: { long: number; short: number };
   indicatorState: IndicatorState;
   score: ScoreBreakdown;
+  rangeInfo: RangeInfo;
   suggestion: {
     direction: Direction | 'none';
     entry: number;
@@ -87,6 +99,7 @@ export interface RapidAnalysis {
     score: number;
     sources: SignalSource[];
     reason: string;
+    mode: 'trend' | 'range';
   };
   recentSignals: RapidSignal[];
 }
@@ -117,8 +130,14 @@ export const RAPID_CONFIG = {
   volumeBreakoutMult: 1.5,  // 放量突破倍数
   divergenceLookback: 20,   // 背离回溯根数
   cooldownBars: 3,          // 同方向冷却 K 线数
-  scoreThreshold: 70,       // 出信号最低分数
+  scoreThreshold: 70,       // 趋势模式出信号最低分数
+  rangeScoreThreshold: 45, // 震荡模式出信号最低分数
   useTrendFilter: true,     // 是否启用趋势过滤
+  // v3 震荡区间参数
+  rangeLookback: 30,        // 震荡检测窗口
+  rangeMaxWidthPct: 3.0,    // 最大宽度百分比（超过则不算震荡）
+  rangeMinTouches: 3,       // 最少触及次数
+  rangeProximityPct: 0.3,   // 接近边界的百分比
 };
 
 // ==================== 指标计算 ====================
@@ -342,6 +361,75 @@ function detectMACDDivergence(
   }
 
   return 'none';
+}
+
+// ==================== v3 新增：震荡区间检测 ====================
+
+function detectRange(klines: KlineData[], atrVal: number): RangeInfo {
+  const n = klines.length;
+  const lookback = Math.min(RAPID_CONFIG.rangeLookback, n - 1);
+  if (lookback < 5) {
+    return { isRange: false, support: 0, resistance: 0, width: 0, widthPct: 0, position: 'middle', touches: 0, lookbackBars: lookback };
+  }
+
+  const start = n - lookback;
+  const window = klines.slice(start);
+
+  // 找区间最高点和最低点
+  let maxHigh = -Infinity, minLow = Infinity;
+  let maxHighIdx = 0, minLowIdx = 0;
+  for (let i = 0; i < window.length; i++) {
+    if (window[i].high > maxHigh) { maxHigh = window[i].high; maxHighIdx = i; }
+    if (window[i].low < minLow) { minLow = window[i].low; minLowIdx = i; }
+  }
+
+  const width = maxHigh - minLow;
+  const midPrice = (maxHigh + minLow) / 2;
+  const widthPct = midPrice > 0 ? (width / midPrice) * 100 : 0;
+
+  // 统计触及上沿和下沿的次数
+  const tolerance = Math.max(width * 0.05, atrVal * 0.3); // 容差：区间宽度5%或ATR的30%
+  let touches = 0;
+  let supportTouches = 0;
+  let resistanceTouches = 0;
+  for (let i = 0; i < window.length; i++) {
+    const nearSupport = Math.abs(window[i].low - minLow) < tolerance;
+    const nearResistance = Math.abs(window[i].high - maxHigh) < tolerance;
+    if (nearSupport) { touches++; supportTouches++; }
+    if (nearResistance) { touches++; resistanceTouches++; }
+  }
+
+  // 判定为震荡的条件：
+  // 1. 宽度百分比 < 3%（加密货币 30根K线内波动不大）
+  // 2. 至少触及边界3次（有来回）
+  // 3. 上下沿各有至少1次触及
+  const isRange = widthPct <= RAPID_CONFIG.rangeMaxWidthPct
+    && touches >= RAPID_CONFIG.rangeMinTouches
+    && supportTouches >= 1
+    && resistanceTouches >= 1;
+
+  // 当前价格在区间中的位置
+  const currentPrice = klines[n - 1].close;
+  const proximityThreshold = width * RAPID_CONFIG.rangeProximityPct;
+  let position: 'near-support' | 'near-resistance' | 'middle';
+  if (currentPrice - minLow < proximityThreshold) {
+    position = 'near-support';
+  } else if (maxHigh - currentPrice < proximityThreshold) {
+    position = 'near-resistance';
+  } else {
+    position = 'middle';
+  }
+
+  return {
+    isRange,
+    support: round(minLow, 2),
+    resistance: round(maxHigh, 2),
+    width: round(width, 2),
+    widthPct: round(widthPct, 2),
+    position,
+    touches,
+    lookbackBars: lookback,
+  };
 }
 
 // ==================== v2 新增：信号评分系统 ====================
@@ -705,6 +793,11 @@ export function analyzeRapid(
   const startIdx = Math.max(1, n - lookback);
   const allSignals: RapidSignal[] = [];
 
+  // v3：先检测震荡区间，用于信号过滤
+  const preATR = atr[n - 1];
+  const preRangeInfo = detectRange(klines, preATR);
+  const isRangeMode = preRangeInfo.isRange;
+
   for (let i = startIdx; i < n; i++) {
     // v2：背离检测（只检测当前根）
     const rsiDiv = i === n - 1 ? detectRSIDivergence(klines, rsi, RAPID_CONFIG.divergenceLookback, i) : 'none';
@@ -721,8 +814,8 @@ export function analyzeRapid(
     for (const sig of detectors) {
       if (!sig) continue;
 
-      // v2 优化1：趋势过滤（EMA50）
-      if (RAPID_CONFIG.useTrendFilter) {
+      // v2 优化1：趋势过滤（EMA50）— 震荡模式跳过趋势过滤
+      if (RAPID_CONFIG.useTrendFilter && !isRangeMode) {
         const isUptrend = klines[i].close > ema50[i];
         const isDowntrend = klines[i].close < ema50[i];
         if (sig.direction === 'long' && !isUptrend) continue;
@@ -736,6 +829,7 @@ export function analyzeRapid(
   const currentATR = atr[n - 1];
   const currentPrice = klines[n - 1].close;
   const latestBar = n - 1;
+  const rangeInfo = preRangeInfo;
 
   for (const sig of allSignals) {
     sig.atr = currentATR;
@@ -760,6 +854,8 @@ export function analyzeRapid(
   // v2 优化5：冷却期检测
   const cooldownActive = isInCooldown(allSignals, latestBar, RAPID_CONFIG.cooldownBars, score.direction as Direction);
 
+  const effectiveThreshold = isRangeMode ? RAPID_CONFIG.rangeScoreThreshold : RAPID_CONFIG.scoreThreshold;
+
   // 共振统计（用于显示）
   const recentWindow = allSignals.filter(s => s.barIndex >= latestBar - 1);
   const longSources = new Set<SignalSource>();
@@ -771,31 +867,86 @@ export function analyzeRapid(
 
   const merged = mergeConfluence(recentWindow, currentATR, currentPrice, latestBar, klines);
 
-  // v2：suggestion 基于评分
+  // v2：suggestion 基于评分 + v3 震荡模式
   const winningSources = score.direction === 'long' ? Array.from(longSources) : Array.from(shortSources);
-  const hasSignals = score.direction !== 'none' && score.total >= RAPID_CONFIG.scoreThreshold && !cooldownActive;
 
-  const suggestion = hasSignals
-    ? {
-        direction: score.direction as Direction,
-        entry: currentPrice,
-        stop: score.direction === 'long'
-          ? currentPrice - RAPID_CONFIG.stopATRMult * currentATR
-          : currentPrice + RAPID_CONFIG.stopATRMult * currentATR,
-        target: score.direction === 'long'
-          ? currentPrice + RAPID_CONFIG.confluenceTargetMult * currentATR
-          : currentPrice - RAPID_CONFIG.confluenceTargetMult * currentATR,
-        confidence: winningSources.length,
-        score: score.total,
-        sources: winningSources,
-        reason: buildScoreReason(score.direction as Direction, score, winningSources),
-      }
-    : {
-        direction: 'none' as const,
-        entry: 0, stop: 0, target: 0, confidence: 0, score: score.total,
-        sources: [], reason: score.total >= RAPID_CONFIG.scoreThreshold
-          ? '信号方向冷却中，等待冷却结束' : `评分 ${score.total} 分，未达 ${RAPID_CONFIG.scoreThreshold} 分阈值`,
+  let suggestion: RapidAnalysis['suggestion'];
+
+  if (isRangeMode) {
+    // ===== 震荡模式：支撑做多 / 阻力做空 =====
+    const rangeStopMult = 0.5; // 止损在区间外0.5倍ATR
+    if (rangeInfo.position === 'near-support' && score.direction !== 'short') {
+      // 接近支撑 → 做多
+      const entry = currentPrice;
+      const stop = rangeInfo.support - currentATR * rangeStopMult;
+      const target = rangeInfo.resistance;
+      const rangeScore = Math.max(score.total, 50); // 震荡模式最低给50分
+      suggestion = {
+        direction: 'long',
+        entry: round(entry, 2),
+        stop: round(stop, 2),
+        target: round(target, 2),
+        confidence: Math.max(winningSources.length, 1),
+        score: rangeScore,
+        sources: winningSources.length > 0 ? winningSources : ['bollinger'],
+        reason: `震荡区间：支撑${rangeInfo.support}做多，目标阻力${rangeInfo.resistance}（区间${rangeInfo.widthPct}%）`,
+        mode: 'range',
       };
+    } else if (rangeInfo.position === 'near-resistance' && score.direction !== 'long') {
+      // 接近阻力 → 做空
+      const entry = currentPrice;
+      const stop = rangeInfo.resistance + currentATR * rangeStopMult;
+      const target = rangeInfo.support;
+      const rangeScore = Math.max(score.total, 50);
+      suggestion = {
+        direction: 'short',
+        entry: round(entry, 2),
+        stop: round(stop, 2),
+        target: round(target, 2),
+        confidence: Math.max(winningSources.length, 1),
+        score: rangeScore,
+        sources: winningSources.length > 0 ? winningSources : ['bollinger'],
+        reason: `震荡区间：阻力${rangeInfo.resistance}做空，目标支撑${rangeInfo.support}（区间${rangeInfo.widthPct}%）`,
+        mode: 'range',
+      };
+    } else {
+      // 在区间中间，不开仓
+      suggestion = {
+        direction: 'none',
+        entry: 0, stop: 0, target: 0, confidence: 0, score: score.total,
+        sources: [],
+        reason: `震荡区间${rangeInfo.support}~${rangeInfo.resistance}，当前在区间中部，等待接近边界`,
+        mode: 'range',
+      };
+    }
+  } else if (score.direction !== 'none' && score.total >= effectiveThreshold && !cooldownActive) {
+    // ===== 趋势模式：评分达标 =====
+    suggestion = {
+      direction: score.direction as Direction,
+      entry: currentPrice,
+      stop: score.direction === 'long'
+        ? currentPrice - RAPID_CONFIG.stopATRMult * currentATR
+        : currentPrice + RAPID_CONFIG.stopATRMult * currentATR,
+      target: score.direction === 'long'
+        ? currentPrice + RAPID_CONFIG.confluenceTargetMult * currentATR
+        : currentPrice - RAPID_CONFIG.confluenceTargetMult * currentATR,
+      confidence: winningSources.length,
+      score: score.total,
+      sources: winningSources,
+      reason: buildScoreReason(score.direction as Direction, score, winningSources),
+      mode: 'trend',
+    };
+  } else {
+    // 无信号
+    suggestion = {
+      direction: 'none' as const,
+      entry: 0, stop: 0, target: 0, confidence: 0, score: score.total,
+      sources: [],
+      reason: score.total >= effectiveThreshold
+        ? '信号方向冷却中，等待冷却结束' : `评分 ${score.total} 分，未达 ${effectiveThreshold} 分阈值`,
+      mode: isRangeMode ? 'range' : 'trend',
+    };
+  }
 
   const indicatorState: IndicatorState = {
     ema9: round(ema9[n - 1], 2),
@@ -830,6 +981,7 @@ export function analyzeRapid(
     confluence: { long: longSources.size, short: shortSources.size },
     indicatorState,
     score,
+    rangeInfo,
     suggestion,
     recentSignals: allSignals.slice(-10),
   };
@@ -939,7 +1091,8 @@ function emptyResult(symbol: string, klines: KlineData[], now: number): RapidAna
       rsiDivergence: 'none', macdDivergence: 'none',
     },
     score: { trend: 0, momentum: 0, bollinger: 0, divergence: 0, volume: 0, total: 0, direction: 'none' },
-    suggestion: { direction: 'none', entry: 0, stop: 0, target: 0, confidence: 0, score: 0, sources: [], reason: 'K 线数据不足' },
+    rangeInfo: { isRange: false, support: 0, resistance: 0, width: 0, widthPct: 0, position: 'middle', touches: 0, lookbackBars: 0 },
+    suggestion: { direction: 'none', entry: 0, stop: 0, target: 0, confidence: 0, score: 0, sources: [], reason: 'K 线数据不足', mode: 'trend' },
     recentSignals: [],
   };
 }

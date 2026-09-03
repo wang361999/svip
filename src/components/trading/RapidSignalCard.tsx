@@ -57,6 +57,17 @@ interface IndicatorState {
   macdDivergence: 'bull' | 'bear' | 'none';
 }
 
+interface RangeInfo {
+  isRange: boolean;
+  support: number;
+  resistance: number;
+  width: number;
+  widthPct: number;
+  position: 'near-support' | 'near-resistance' | 'middle';
+  touches: number;
+  lookbackBars: number;
+}
+
 interface RapidAnalysis {
   symbol: string;
   currentPrice: number;
@@ -65,6 +76,7 @@ interface RapidAnalysis {
   confluence: { long: number; short: number };
   indicatorState: IndicatorState;
   score: ScoreBreakdown;
+  rangeInfo: RangeInfo;
   suggestion: {
     direction: 'long' | 'short' | 'none';
     entry: number;
@@ -74,6 +86,7 @@ interface RapidAnalysis {
     score: number;
     sources: string[];
     reason: string;
+    mode: 'trend' | 'range';
   };
   recentSignals: RapidSignal[];
   cached: boolean;
@@ -88,6 +101,7 @@ const SOURCE_NAMES: Record<string, string> = {
 };
 
 const SCORE_THRESHOLD = 70;
+const RANGE_SCORE_THRESHOLD = 45;
 
 export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: string }) {
   const [data, setData] = useState<RapidAnalysis | null>(null);
@@ -141,16 +155,19 @@ export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: strin
 
   const s = data.suggestion;
   const sc = data.score;
+  const ri = data.rangeInfo;
   const isLong = s.direction === 'long';
   const isShort = s.direction === 'short';
   const hasSignal = s.direction !== 'none';
   const ind = data.indicatorState;
   const scorePct = Math.min(100, sc.total);
+  const isRangeMode = s.mode === 'range' || ri.isRange;
 
-  // 评分进度条颜色
-  const scoreColor = sc.total >= SCORE_THRESHOLD
+  // 评分进度条颜色 — 震荡模式用更低阈值
+  const activeThreshold = isRangeMode ? RANGE_SCORE_THRESHOLD : SCORE_THRESHOLD;
+  const scoreColor = sc.total >= activeThreshold
     ? (sc.direction === 'long' ? 'bg-green-500' : 'bg-red-500')
-    : sc.total >= 50
+    : sc.total >= (isRangeMode ? 30 : 50)
     ? 'bg-amber-500'
     : 'bg-dark-600';
 
@@ -161,6 +178,9 @@ export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: strin
         <div className="flex items-center gap-2">
           <span className="text-sm font-bold text-white">⚡ 快速信号 v2</span>
           <span className="text-xs text-dark-500">{symbol} · {interval}</span>
+          {isRangeMode && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-900/50 text-purple-400 font-bold">震荡</span>
+          )}
           {data.cached && <span className="text-[10px] text-dark-600">缓存</span>}
         </div>
         <div className="flex items-center gap-3">
@@ -189,9 +209,9 @@ export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: strin
         <div className="flex items-center justify-between mb-1.5">
           <span className="text-xs text-dark-500">信号评分</span>
           <span className={`text-lg font-black tabular-nums ${
-            sc.total >= SCORE_THRESHOLD
+            sc.total >= activeThreshold
               ? (sc.direction === 'long' ? 'text-green-400' : 'text-red-400')
-              : sc.total >= 50 ? 'text-amber-400' : 'text-dark-500'
+              : sc.total >= (isRangeMode ? 30 : 50) ? 'text-amber-400' : 'text-dark-500'
           }`}>
             {sc.total}<span className="text-xs text-dark-600">/100</span>
           </span>
@@ -212,7 +232,7 @@ export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: strin
         </div>
         {/* 阈值线 */}
         <div className="mt-1 text-[10px] text-dark-600">
-          阈值 {SCORE_THRESHOLD} 分 {sc.total >= SCORE_THRESHOLD ? '✓ 已达标' : `差 ${SCORE_THRESHOLD - sc.total} 分`}
+          阈值 {activeThreshold} 分 {sc.total >= activeThreshold ? '✓ 已达标' : `差 ${activeThreshold - sc.total} 分`}{isRangeMode ? ' · 震荡模式' : ''}
         </div>
       </div>
 
@@ -261,6 +281,44 @@ export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: strin
             <div className="text-[10px] text-dark-600">
               {(Math.abs(s.target - s.entry) / s.entry * 100).toFixed(2)}%
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 震荡区间信息 */}
+      {ri.isRange && (
+        <div className="px-4 py-2 border-b border-dark-800 bg-purple-950/10">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-purple-400 font-bold">震荡区间</span>
+            <span className="text-dark-500">触及{ri.touches}次 · {ri.widthPct}%</span>
+          </div>
+          <div className="mt-1 flex items-center justify-between text-xs">
+            <div>
+              <span className="text-dark-500">支撑 </span>
+              <span className="font-bold text-green-400 tabular-nums">{ri.support.toFixed(2)}</span>
+            </div>
+            <div className="text-dark-600">←→</div>
+            <div>
+              <span className="text-dark-500">阻力 </span>
+              <span className="font-bold text-red-400 tabular-nums">{ri.resistance.toFixed(2)}</span>
+            </div>
+          </div>
+          {/* 价格位置指示器 */}
+          <div className="mt-1.5 relative h-1.5 bg-dark-800 rounded-full">
+            <div className="absolute h-full bg-purple-600/50 rounded-full"
+              style={{ left: '5%', right: '5%' }} />
+            <div className="absolute w-2 h-2 rounded-full bg-white -mt-0.25"
+              style={{
+                left: `calc(${Math.min(95, Math.max(5,
+                  ri.width > 0 ? ((data.currentPrice - ri.support) / ri.width) * 100 : 50
+                ))}% - 4px)`,
+                top: '-1px',
+              }} />
+          </div>
+          <div className="mt-1 text-[10px] text-center text-purple-400">
+            {ri.position === 'near-support' && '⚡ 接近支撑 — 关注做多'}
+            {ri.position === 'near-resistance' && '⚡ 接近阻力 — 关注做空'}
+            {ri.position === 'middle' && '○ 区间中部 — 等待接近边界'}
           </div>
         </div>
       )}

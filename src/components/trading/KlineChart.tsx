@@ -183,6 +183,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const signalCanvasRef = useRef<HTMLCanvasElement>(null);
   const signalDataRef = useRef<RapidAnalysis | null>(null);
   const drawSignalsRef = useRef<() => void>(() => {});
+  // 震荡区间价格线
+  const rangePriceLinesRef = useRef<any[]>([]);
 
   const allKlinesRef = useRef<KlineData[]>([]);
   const pendingTickRef = useRef<number | null>(null);
@@ -445,6 +447,35 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     // 多空信号：基于当前K线计算快速策略信号
     try {
       signalDataRef.current = analyzeRapid(symbol, klines);
+
+      // 震荡区间支撑/阻力线
+      const ri = signalDataRef.current?.rangeInfo;
+      for (const pl of rangePriceLinesRef.current) {
+        try { candleSeries.current?.removePriceLine(pl); } catch {}
+      }
+      rangePriceLinesRef.current = [];
+
+      if (ri?.isRange && candleSeries.current) {
+        try {
+          const supportLine = candleSeries.current.createPriceLine({
+            price: ri.support,
+            color: 'rgba(34, 197, 94, 0.7)',
+            lineWidth: 1,
+            lineStyle: 2,
+            axisLabelVisible: true,
+            title: ' 支撑',
+          });
+          const resistanceLine = candleSeries.current.createPriceLine({
+            price: ri.resistance,
+            color: 'rgba(246, 70, 93, 0.7)',
+            lineWidth: 1,
+            lineStyle: 2,
+            axisLabelVisible: true,
+            title: ' 阻力',
+          });
+          rangePriceLinesRef.current = [supportLine, resistanceLine];
+        } catch {}
+      }
     } catch (e) {
       console.warn('[Signals] analyze error:', e);
     }
