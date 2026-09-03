@@ -1,11 +1,11 @@
 /**
  * 快速信号 API
  *
- * GET /api/rapid-signals?symbol=ETHUSDT
+ * GET /api/rapid-signals?symbol=ETHUSDT&timeframe=15m
  *
- * 流程：拉 15m K 线（200 根）→ 快速策略引擎扫描 4 路信号 → 返回
- * 前端每 15 秒轮询（15m 周期，15 秒够用）
- * 缓存：15 秒（数字层实时性 + 保护上游 K 线接口）
+ * 流程：拉指定周期 K 线（200 根）→ 快速策略引擎扫描 4 路信号 → 返回
+ * 前端每 15 秒轮询
+ * 缓存：15 秒（按 symbol+timeframe 分别缓存）
  */
 import { createHandler } from '@/shared/api/handler';
 import { apiSuccess, apiError } from '@/shared/api/response';
@@ -23,13 +23,15 @@ const KLINES_HOSTS = [
   'https://api1.binance.com',
 ];
 
-async function fetchKlines15m(symbol: string, limit: number = 200): Promise<KlineData[]> {
+const VALID_INTERVALS = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'];
+
+async function fetchKlines(symbol: string, interval: string, limit: number = 200): Promise<KlineData[]> {
   for (const host of KLINES_HOSTS) {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 8000);
       const res = await fetch(
-        `${host}/api/v3/klines?symbol=${symbol}&interval=15m&limit=${limit}`,
+        `${host}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,
         { signal: controller.signal, headers: { Accept: 'application/json' } },
       );
       clearTimeout(timer);
@@ -63,15 +65,18 @@ export const GET = createHandler(async ({ req }) => {
 
   const url = new URL(req.url);
   const symbol = (url.searchParams.get('symbol') || 'ETHUSDT').toUpperCase();
+  const timeframeParam = url.searchParams.get('timeframe') || '15m';
+  const interval = VALID_INTERVALS.includes(timeframeParam) ? timeframeParam : '15m';
+  const cacheKey = `${symbol}:${interval}`;
 
   // 缓存命中
-  const hit = cache.get(symbol);
+  const hit = cache.get(cacheKey);
   if (hit && Date.now() < hit.expiresAt) {
     return apiSuccess({ ...hit.data, cached: true });
   }
 
-  // 拉 15m K 线
-  const klines = await fetchKlines15m(symbol, 200);
+  // 拉指定周期 K 线
+  const klines = await fetchKlines(symbol, interval, 200);
 
   if (klines.length < 60) {
     return apiError('KLINE_UNAVAILABLE', '行情数据源暂不可用，请稍后重试', 502);
@@ -81,7 +86,7 @@ export const GET = createHandler(async ({ req }) => {
   const analysis = analyzeRapid(symbol, klines);
 
   // 写缓存
-  cache.set(symbol, { data: analysis, expiresAt: Date.now() + CACHE_TTL_MS });
+  cache.set(cacheKey, { data: analysis, expiresAt: Date.now() + CACHE_TTL_MS });
 
   return apiSuccess({ ...analysis, cached: false });
 });

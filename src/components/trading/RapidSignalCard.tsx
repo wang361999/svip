@@ -8,6 +8,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { apiGet } from '@/shared/api/client';
+import useChartStore from '@/store/chartStore';
 
 interface ScoreBreakdown {
   trend: number;
@@ -93,10 +94,11 @@ export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: strin
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const interval = useChartStore((s) => s.interval);
 
   const fetchSignal = useCallback(async () => {
     try {
-      const json = await apiGet<RapidAnalysis>(`/api/rapid-signals?symbol=${symbol}`);
+      const json = await apiGet<RapidAnalysis>(`/api/rapid-signals?symbol=${symbol}&timeframe=${interval}`);
       setData(json);
       setError(null);
     } catch (err) {
@@ -104,7 +106,7 @@ export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: strin
     } finally {
       setLoading(false);
     }
-  }, [symbol]);
+  }, [symbol, interval]);
 
   useEffect(() => {
     fetchSignal();
@@ -158,7 +160,7 @@ export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: strin
       <div className="flex items-center justify-between px-4 py-3 border-b border-dark-800">
         <div className="flex items-center gap-2">
           <span className="text-sm font-bold text-white">⚡ 快速信号 v2</span>
-          <span className="text-xs text-dark-500">{symbol} · 15m</span>
+          <span className="text-xs text-dark-500">{symbol} · {interval}</span>
           {data.cached && <span className="text-[10px] text-dark-600">缓存</span>}
         </div>
         <div className="flex items-center gap-3">
