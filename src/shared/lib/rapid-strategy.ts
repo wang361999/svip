@@ -135,8 +135,8 @@ export const RAPID_CONFIG = {
   useTrendFilter: true,     // 是否启用趋势过滤
   // v3 震荡区间参数
   rangeLookback: 30,        // 震荡检测窗口
-  rangeMaxWidthPct: 3.0,    // 最大宽度百分比（超过则不算震荡）
-  rangeMinTouches: 3,       // 最少触及次数
+  rangeMaxWidthPct: 4.0,    // 最大宽度百分比（超过则不算震荡）
+  rangeMinTouches: 2,       // 最少触及次数
   rangeProximityPct: 0.3,   // 接近边界的百分比
 };
 
@@ -372,8 +372,10 @@ function detectRange(klines: KlineData[], atrVal: number): RangeInfo {
     return { isRange: false, support: 0, resistance: 0, width: 0, widthPct: 0, position: 'middle', touches: 0, lookbackBars: lookback };
   }
 
+  // 排除最后一根未完成K线，只用已完成的K线检测区间
+  const endIdx = n - 1;
   const start = n - lookback;
-  const window = klines.slice(start);
+  const window = klines.slice(start, endIdx);
 
   // 找区间最高点和最低点
   let maxHigh = -Infinity, minLow = Infinity;
@@ -388,7 +390,7 @@ function detectRange(klines: KlineData[], atrVal: number): RangeInfo {
   const widthPct = midPrice > 0 ? (width / midPrice) * 100 : 0;
 
   // 统计触及上沿和下沿的次数
-  const tolerance = Math.max(width * 0.05, atrVal * 0.3); // 容差：区间宽度5%或ATR的30%
+  const tolerance = Math.max(width * 0.1, atrVal * 0.5); // 容差：区间宽度10%或ATR的50%
   let touches = 0;
   let supportTouches = 0;
   let resistanceTouches = 0;

@@ -448,30 +448,31 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     try {
       signalDataRef.current = analyzeRapid(symbol, klines);
 
-      // 震荡区间支撑/阻力线
+      // 支撑/阻力线（始终显示）
       const ri = signalDataRef.current?.rangeInfo;
       for (const pl of rangePriceLinesRef.current) {
         try { candleSeries.current?.removePriceLine(pl); } catch {}
       }
       rangePriceLinesRef.current = [];
 
-      if (ri?.isRange && candleSeries.current) {
+      if (ri && ri.support > 0 && ri.resistance > 0 && candleSeries.current) {
         try {
+          const isRange = ri.isRange;
           const supportLine = candleSeries.current.createPriceLine({
             price: ri.support,
-            color: 'rgba(34, 197, 94, 0.7)',
+            color: isRange ? 'rgba(34, 197, 94, 0.8)' : 'rgba(34, 197, 94, 0.5)',
             lineWidth: 1,
             lineStyle: 2,
             axisLabelVisible: true,
-            title: ' 支撑',
+            title: isRange ? ' 支撑' : ' 近端支撑',
           });
           const resistanceLine = candleSeries.current.createPriceLine({
             price: ri.resistance,
-            color: 'rgba(246, 70, 93, 0.7)',
+            color: isRange ? 'rgba(246, 70, 93, 0.8)' : 'rgba(246, 70, 93, 0.5)',
             lineWidth: 1,
             lineStyle: 2,
             axisLabelVisible: true,
-            title: ' 阻力',
+            title: isRange ? ' 阻力' : ' 近端阻力',
           });
           rangePriceLinesRef.current = [supportLine, resistanceLine];
         } catch {}
