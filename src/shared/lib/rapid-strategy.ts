@@ -875,8 +875,8 @@ export function analyzeRapid(
   if (isRangeMode) {
     // ===== 震荡模式：支撑做多 / 阻力做空 =====
     const rangeStopMult = 0.5; // 止损在区间外0.5倍ATR
-    if (rangeInfo.position === 'near-support' && score.direction !== 'short') {
-      // 接近支撑 → 做多
+    if (rangeInfo.position === 'near-support') {
+      // 接近支撑 → 做多（震荡模式由位置决定方向，不受趋势评分干扰）
       const entry = currentPrice;
       const stop = rangeInfo.support - currentATR * rangeStopMult;
       const target = rangeInfo.resistance;
@@ -892,8 +892,8 @@ export function analyzeRapid(
         reason: `震荡区间：支撑${rangeInfo.support}做多，目标阻力${rangeInfo.resistance}（区间${rangeInfo.widthPct}%）`,
         mode: 'range',
       };
-    } else if (rangeInfo.position === 'near-resistance' && score.direction !== 'long') {
-      // 接近阻力 → 做空
+    } else if (rangeInfo.position === 'near-resistance') {
+      // 接近阻力 → 做空（震荡模式由位置决定方向，不受趋势评分干扰）
       const entry = currentPrice;
       const stop = rangeInfo.resistance + currentATR * rangeStopMult;
       const target = rangeInfo.support;
