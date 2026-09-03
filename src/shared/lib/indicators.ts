@@ -135,6 +135,36 @@ export function calcRSIArray(klines: KlineData[], period: number = 14): (number 
   return result;
 }
 
+// ========== 江恩八分位（Gann Eighths）支撑压力线 ==========
+
+export interface GannLevel {
+  price: number;
+  label: string;   // 1/8, 2/8, ... 7/8
+  isMajor: boolean; // 3/8, 4/8, 5/8 为主要位
+}
+
+export function calcGannEighths(klines: KlineData[]): GannLevel[] {
+  if (!klines || klines.length < 10) return [];
+  // 取最近 120 根 K 线的高低点（跟随当前周期）
+  const seg = klines.slice(-120);
+  const hi = Math.max(...seg.map((k) => k.high));
+  const lo = Math.min(...seg.map((k) => k.low));
+  const range = hi - lo;
+  if (range <= 0) return [];
+
+  const names = ['1/8', '2/8', '3/8', '4/8', '5/8', '6/8', '7/8'];
+  const majorIndices = [2, 3, 4]; // 3/8, 4/8, 5/8 为主要位
+  const out: GannLevel[] = [];
+  for (let i = 1; i <= 7; i++) {
+    out.push({
+      price: lo + (range * i) / 8,
+      label: names[i - 1],
+      isMajor: majorIndices.includes(i),
+    });
+  }
+  return out;
+}
+
 // ATR 数组（用于图表绘制）
 export function calcATRArray(klines: KlineData[], period: number = 14): (number | null)[] {
   const result: (number | null)[] = [];
