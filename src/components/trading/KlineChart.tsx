@@ -1388,10 +1388,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           const targetY = candleSeries.current.priceToCoordinate(sig.target);
           if (entryY === null || stopY === null || targetY === null) continue;
 
-          // 盈利区颜色：做多=绿，做空=红
-          const profitColor = isLong ? '22, 199, 94' : '246, 70, 93';
-          // 风险区颜色：始终用淡红
+          // 止盈区：始终绿色透明框
+          const profitColor = '22, 199, 94';
+          // 止损区：始终红色透明框
           const riskColor = '246, 70, 93';
+          // 方向标签颜色：做多=绿，做空=红
+          const dirColor = isLong ? '22, 199, 94' : '246, 70, 93';
 
           // 框宽度
           const boxW = 70;
@@ -1458,17 +1460,17 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           const labelText = `${dirText} ${confText}`;
           const labelW = ctx.measureText(labelText).width + 16;
           const labelX = boxX + boxW / 2 - labelW / 2;
-          ctx.fillStyle = `rgba(${profitColor}, 0.15)`;
+          ctx.fillStyle = `rgba(${dirColor}, 0.15)`;
           ctx.beginPath();
           ctx.roundRect(labelX, labelY - 7, labelW, 16, 8);
           ctx.fill();
-          ctx.strokeStyle = `rgba(${profitColor}, 0.6)`;
+          ctx.strokeStyle = `rgba(${dirColor}, 0.6)`;
           ctx.lineWidth = 1;
           ctx.beginPath();
           ctx.roundRect(labelX, labelY - 7, labelW, 16, 8);
           ctx.stroke();
           // 文字
-          ctx.fillStyle = `rgba(${profitColor}, 1)`;
+          ctx.fillStyle = `rgba(${dirColor}, 1)`;
           ctx.font = 'bold 10px -apple-system, sans-serif';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
