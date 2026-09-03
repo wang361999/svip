@@ -340,15 +340,31 @@ function buildZhongshu(bis: ChanBi[]): ChanZhongshu[] {
     if (overlapLow < overlapHigh) {
       const last = zhongshus[zhongshus.length - 1];
       if (last && b1.startTime <= last.endTime) {
-        // 延伸已有中枢
-        last.endTime = b3.endTime;
-        last.high = Math.min(last.high, overlapHigh);
-        last.low = Math.max(last.low, overlapLow);
-        last.biCount += 1;
-        // 延伸判断：超过6笔标记延伸
-        last.isExtended = last.biCount >= 6;
-        // 升级判断：超过9笔级别+1
-        if (last.biCount >= 9) last.level = 2;
+        // 延伸已有中枢前，检查新边界是否仍然有效
+        const newHigh = Math.min(last.high, overlapHigh);
+        const newLow = Math.max(last.low, overlapLow);
+        if (newHigh > newLow) {
+          // 边界仍然有效，延伸中枢
+          last.endTime = b3.endTime;
+          last.high = newHigh;
+          last.low = newLow;
+          last.biCount += 1;
+          // 延伸判断：超过6笔标记延伸
+          last.isExtended = last.biCount >= 6;
+          // 升级判断：超过9笔级别+1
+          if (last.biCount >= 9) last.level = 2;
+        } else {
+          // 边界交叉，中枢被破坏，创建新中枢
+          zhongshus.push({
+            startTime: b1.startTime,
+            endTime: b3.endTime,
+            high: overlapHigh,
+            low: overlapLow,
+            biCount: 3,
+            level: 1,
+            isExtended: false,
+          });
+        }
       } else {
         zhongshus.push({
           startTime: b1.startTime,
