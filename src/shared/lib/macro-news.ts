@@ -104,8 +104,8 @@ export const NFP_2026: NfpReport[] = [
   { releaseDate: '2026-06-05', label: '2026年5月', actual: 21.8, forecast: 20.0, previous: 19.5, unemploymentRate: 4.1, status: 'released' },
   { releaseDate: '2026-07-02', label: '2026年6月', actual: 23.4, forecast: 21.5, previous: 21.8, unemploymentRate: 4.0, status: 'released' },
   { releaseDate: '2026-08-07', label: '2026年7月', actual: 17.2, forecast: 22.0, previous: 23.4, unemploymentRate: 4.2, status: 'released' },
-  { releaseDate: '2026-09-04', label: '2026年8月', actual: null, forecast: 19.0, previous: 17.2, unemploymentRate: null, status: 'upcoming' },
-  { releaseDate: '2026-10-02', label: '2026年9月', actual: null, forecast: null, previous: null, unemploymentRate: null, status: 'upcoming' },
+  { releaseDate: '2026-09-04', label: '2026年8月', actual: 16.2, forecast: 19.0, previous: 17.2, unemploymentRate: 4.1, status: 'released' },
+  { releaseDate: '2026-10-02', label: '2026年9月', actual: null, forecast: null, previous: 16.2, unemploymentRate: null, status: 'upcoming' },
   { releaseDate: '2026-11-06', label: '2026年10月', actual: null, forecast: null, previous: null, unemploymentRate: null, status: 'upcoming' },
   { releaseDate: '2026-12-04', label: '2026年11月', actual: null, forecast: null, previous: null, unemploymentRate: null, status: 'upcoming' },
 ];
