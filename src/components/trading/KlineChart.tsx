@@ -781,64 +781,19 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     }
 
     // ---- 安德鲁音叉 ----
+    // 音叉通过 Canvas 叠层绘制（drawChan 内），不使用 LineSeries。
+    // LineSeries 要求时间严格递增，但音叉延伸端点 (medianEnd.time = lastKline + totalTimeSpan*0.5)
+    // 通常远超 projTime (lastKline + 8*interval)，导致数据非单调、线段不渲染。
+    // Canvas 的 timeToX 支持未来时间外推，且附带 A/B/C 标注和连线，功能更完整。
     if (showPitchforkRef.current && isMember) {
       if (!pitchforkRef.current) {
         pitchforkRef.current = calcPitchfork(klines, 80);
       }
-      const pf = pitchforkRef.current;
-      if (!pf) { removePfSeries(); }
-      else {
-      const lastKlineTime = klines[klines.length - 1].time;
-      const projTime = (lastKlineTime + interval * projBars) as Time;
-
-      const ensurePfSeries = (ref: keyof typeof pfSeriesRef.current, color: string, style: LineStyle) => {
-        if (!pfSeriesRef.current[ref]) {
-          pfSeriesRef.current[ref] = mainChart.current!.addLineSeries({
-            color, lineWidth: 1 as 1, lineStyle: style,
-            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-          });
-        }
-        return pfSeriesRef.current[ref]!;
-      };
-
-      // 计算延伸方向（用中轨斜率）
-      const dx = pf.medianEnd.time - pf.medianStart.time;
-      const dy = pf.medianEnd.price - pf.medianStart.price;
-      const slope = dx !== 0 ? dy / dx : 0;
-
-      // 中轨（含延伸）
-      ensurePfSeries('median', 'rgba(168, 85, 247, 0.7)', LineStyle.Solid).setData([
-        { time: pf.medianStart.time as Time, value: pf.medianStart.price },
-        { time: pf.medianEnd.time as Time, value: pf.medianEnd.price },
-        { time: projTime, value: +(pf.medianEnd.price + slope * interval * projBars).toFixed(4) },
-      ]);
-      // 上轨
-      ensurePfSeries('upper', 'rgba(59, 130, 246, 0.55)', LineStyle.Dashed).setData([
-        { time: pf.upperStart.time as Time, value: pf.upperStart.price },
-        { time: pf.upperEnd.time as Time, value: pf.upperEnd.price },
-        { time: projTime, value: +(pf.upperEnd.price + slope * interval * projBars).toFixed(4) },
-      ]);
-      // 下轨
-      ensurePfSeries('lower', 'rgba(239, 68, 68, 0.55)', LineStyle.Dashed).setData([
-        { time: pf.lowerStart.time as Time, value: pf.lowerStart.price },
-        { time: pf.lowerEnd.time as Time, value: pf.lowerEnd.price },
-        { time: projTime, value: +(pf.lowerEnd.price + slope * interval * projBars).toFixed(4) },
-      ]);
-      // 警告线（更浅）
-      ensurePfSeries('upperWarn', 'rgba(59, 130, 246, 0.25)', LineStyle.Dotted).setData([
-        { time: pf.upperWarningStart.time as Time, value: pf.upperWarningStart.price },
-        { time: pf.upperWarningEnd.time as Time, value: pf.upperWarningEnd.price },
-        { time: projTime, value: +(pf.upperWarningEnd.price + slope * interval * projBars).toFixed(4) },
-      ]);
-      ensurePfSeries('lowerWarn', 'rgba(239, 68, 68, 0.25)', LineStyle.Dotted).setData([
-        { time: pf.lowerWarningStart.time as Time, value: pf.lowerWarningStart.price },
-        { time: pf.lowerWarningEnd.time as Time, value: pf.lowerWarningEnd.price },
-        { time: projTime, value: +(pf.lowerWarningEnd.price + slope * interval * projBars).toFixed(4) },
-      ]);
-      }
     } else {
-      removePfSeries();
+      pitchforkRef.current = null;
     }
+    // 清理可能残留的旧 LineSeries（从旧版本迁移后可能存在）
+    removePfSeries();
 
     // ---- 自动趋势线（摆动点连线 + 预测投影）----
     if (showPredictionRef.current && isMember) {
@@ -1438,19 +1393,38 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         const timeToX = (t: number): number | null => {
           const x = timeScale.timeToCoordinate(t as Time);
           if (x !== null) return x;
-          // 未命中数据时间：按未来时间外推
+          // 未命中数据时间：外推
           if (ksForX.length < 2) return null;
           const lastK = ksForX[ksForX.length - 1];
           const prevK = ksForX[ksForX.length - 2];
           const interval = lastK.time - prevK.time;
-          if (interval <= 0 || t <= lastK.time) return null;
-          const xLast = timeScale.timeToCoordinate(lastK.time as Time);
-          const xPrev = timeScale.timeToCoordinate(prevK.time as Time);
-          if (xLast === null || xPrev === null) return null;
-          const spacing = xLast - xPrev; // 有符号：时间向右递增
-          if (spacing === 0) return null;
-          const barsAhead = (t - lastK.time) / interval;
-          return xLast + barsAhead * spacing;
+          if (interval <= 0) return null;
+
+          // 未来时间外推（通道/音叉右端点延伸到最后一根K线之后）
+          if (t > lastK.time) {
+            const xLast = timeScale.timeToCoordinate(lastK.time as Time);
+            const xPrev = timeScale.timeToCoordinate(prevK.time as Time);
+            if (xLast === null || xPrev === null) return null;
+            const spacing = xLast - xPrev;
+            if (spacing === 0) return null;
+            const barsAhead = (t - lastK.time) / interval;
+            return xLast + barsAhead * spacing;
+          }
+
+          // 过去时间外推（音叉 A 点可能滚动到视野左侧之外）
+          const firstK = ksForX[0];
+          if (t < firstK.time) {
+            const secondK = ksForX[1];
+            const xFirst = timeScale.timeToCoordinate(firstK.time as Time);
+            const xSecond = timeScale.timeToCoordinate(secondK.time as Time);
+            if (xFirst === null || xSecond === null) return null;
+            const spacing = xSecond - xFirst;
+            if (spacing === 0) return null;
+            const barsBehind = (firstK.time - t) / interval;
+            return xFirst - barsBehind * spacing;
+          }
+
+          return null;
         };
 
         // 缠论绘制（仅当有缠论数据时）
