@@ -483,13 +483,48 @@ async function fetchFredCsv(id: string): Promise<FredPoint[]> {
   return pts; // 按日期升序
 }
 
+/** FRED API key（可选，环境变量配置；有 key 时用 JSON API 绕过 Akamai 对 CSV 端点的封锁） */
+const FRED_API_KEY = process.env.FRED_API_KEY || '';
+
+/**
+ * 通过 FRED JSON API 拉取序列（需要 API key）
+ * 端点 api.stlouisfed.org 走 JSON REST API，与 CSV 端点 fred.stlouisfed.org/graph/ 不同源，
+ * 不受 Akamai 对 Vercel 出口 IP 的 TCP 级别封锁影响
+ * 申请地址：https://fredaccount.stlouisfed.org/apikeys
+ */
+async function fetchFredJson(id: string): Promise<FredPoint[]> {
+  if (!FRED_API_KEY) return [];
+  try {
+    const url = `https://api.stlouisfed.org/fred/series/observations?series_id=${id}&api_key=${FRED_API_KEY}&file_type=json&observation_start=2024-01-01`;
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(6000),
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) return [];
+    const j = await res.json();
+    const obs = j?.observations as { date: string; value: string }[] | undefined;
+    if (!Array.isArray(obs)) return [];
+    const pts: FredPoint[] = [];
+    for (const o of obs) {
+      const value = Number(o.value);
+      if (!o.date || o.value === '.' || !Number.isFinite(value)) continue;
+      pts.push({ date: o.date, value });
+    }
+    return pts;
+  } catch {
+    return [];
+  }
+}
+
 /** 拉取全部 FRED 序列（并行，缓存 2h），全部失败返回 null */
 export async function fetchFredSeries(): Promise<FredData | null> {
   const now = Date.now();
   if (fredCache && now - fredCache.at < FRED_CACHE_MS) return fredCache.data;
   try {
     const keys = Object.keys(FRED_IDS) as FredKey[];
-    const results = await Promise.all(keys.map(async (k) => [k, await fetchFredCsv(FRED_IDS[k])] as const));
+    // 有 API key 时用 JSON API（绕过 Akamai 对 CSV 端点的封锁）；无 key 时用 CSV（Vercel 上大概率超时）
+    const fetchFn = FRED_API_KEY ? fetchFredJson : fetchFredCsv;
+    const results = await Promise.all(keys.map(async (k) => [k, await fetchFn(FRED_IDS[k])] as const));
     const data = Object.fromEntries(results) as FredData;
     const nonEmpty = Object.values(data).filter((v) => v && v.length > 0).length;
     if (nonEmpty === 0) return null;
@@ -799,14 +834,18 @@ export interface MacroNewsResult {
   fearGreed: FearGreedData;
   /** BTC 实时行情 */
   btc: BtcTicker | null;
-  /** 数据源标记：live = 实时 API / static = 内置估算（降级） */
+  /** 数据源标记：live = 运行时直连 / bundled = GH Actions 快照 / static = 内置估算（降级） */
   source: {
-    fearGreed: 'live' | 'static';
-    nfp: 'live' | 'static';
-    cpi: 'live' | 'static';
-    pce: 'live' | 'static';
-    jobless: 'live' | 'static';
-    btc: 'live' | 'static';
+    fearGreed: 'live' | 'bundled' | 'static';
+    nfp: 'live' | 'bundled' | 'static';
+    cpi: 'live' | 'bundled' | 'static';
+    pce: 'live' | 'bundled' | 'static';
+    jobless: 'live' | 'bundled' | 'static';
+    btc: 'live' | 'bundled' | 'static';
+    /** bundled 快照抓取时间（ISO），null = 非快照源 */
+    bundledAt: string | null;
+    /** 运行时数据抓取时间（ISO），null = 非运行时源 */
+    runtimeAt: string | null;
   };
   /** 宏观·加息降息新闻 */
   macroNews: MacroNewsItem[];
@@ -816,9 +855,9 @@ export interface MacroNewsResult {
 
 /**
  * 获取消息面全量数据（优先实时 API，失败降级 bundled 快照，再降级内置数据）
- * 数据源：
+ * 数据源优先级：
  * - 恐慌贪婪指数：alternative.me 官方 API（实时）
- * - 非农/CPI/PCE/失业率/初请：FRED 运行时直连 → bundled 快照（GitHub Actions 每日提交）
+ * - 非农/CPI/PCE/失业率/初请：FRED 运行时直连（需 API key）→ bundled 快照（GitHub Actions 定时更新）→ 内置估算
  * - BTC 行情：Binance（实时，与 K 线同源）
  */
 export async function fetchMacroNews(): Promise<MacroNewsResult> {
@@ -830,8 +869,15 @@ export async function fetchMacroNews(): Promise<MacroNewsResult> {
     fetchBtcTicker(),
   ]);
 
-  // 数据优先级：运行时 FRED > bundled 快照（GH Actions 每日更新）> null（用内置静态）
-  const fred = fredRuntime ?? bundledFred();
+  // 数据优先级：运行时 FRED（直连）> bundled 快照（GH Actions 定时更新）> null（用内置静态）
+  const fredBundled = !fredRuntime ? bundledFred() : null;
+  const fred = fredRuntime ?? fredBundled;
+  // 区分三种数据源：live = 运行时直连 / bundled = GH Actions 快照 / static = 内置估算
+  const fredSource: 'live' | 'bundled' | 'static' = fredRuntime
+    ? 'live'
+    : fredBundled
+      ? 'bundled'
+      : 'static';
 
   // 内置降级值
   const nfpFallback = nextNfp();
@@ -840,19 +886,23 @@ export async function fetchMacroNews(): Promise<MacroNewsResult> {
   const joblessFallback = getJoblessClaims();
   const fgFallback = getFearGreedIndex();
 
-  // FRED 实时数据合并（拉不到则用内置）
+  // FRED 数据合并（拉不到则用内置）
   const nfp = fred ? parseNfpFromFred(fred, nfpFallback) : nfpFallback;
   const cpi = fred ? parseCpiFromFred(fred, cpiFallback) : cpiFallback;
   const pce = fred ? parsePceFromFred(fred, pceFallback) : pceFallback;
   const jobless = fred ? parseClaimsFromFred(fred, joblessFallback) : joblessFallback;
 
+  const hasFred = (key: FredKey) => !!(fred && fred[key] && fred[key]!.length > 0);
+
   const source = {
-    fearGreed: (fgLive ? 'live' : 'static') as 'live' | 'static',
-    nfp: (fred && fred.payroll && fred.payroll.length > 0 ? 'live' : 'static') as 'live' | 'static',
-    cpi: (fred && fred.cpi && fred.cpi.length > 0 ? 'live' : 'static') as 'live' | 'static',
-    pce: (fred && fred.corePce && fred.corePce.length > 0 ? 'live' : 'static') as 'live' | 'static',
-    jobless: (fred && fred.claims && fred.claims.length > 0 ? 'live' : 'static') as 'live' | 'static',
-    btc: (btcLive ? 'live' : 'static') as 'live' | 'static',
+    fearGreed: (fgLive ? 'live' : 'static') as 'live' | 'bundled' | 'static',
+    nfp: (hasFred('payroll') ? fredSource : 'static') as 'live' | 'bundled' | 'static',
+    cpi: (hasFred('cpi') ? fredSource : 'static') as 'live' | 'bundled' | 'static',
+    pce: (hasFred('corePce') ? fredSource : 'static') as 'live' | 'bundled' | 'static',
+    jobless: (hasFred('claims') ? fredSource : 'static') as 'live' | 'bundled' | 'static',
+    btc: (btcLive ? 'live' : 'static') as 'live' | 'bundled' | 'static',
+    bundledAt: fredBundled ? macroLive.fetchedAt : null,
+    runtimeAt: fredRuntime ? new Date().toISOString() : null,
   };
 
   return {

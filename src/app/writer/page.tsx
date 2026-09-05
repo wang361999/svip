@@ -98,26 +98,51 @@ interface MacroNewsData {
   fearGreed: FearGreedData;
   btc: BtcTicker | null;
   source: {
-    fearGreed: 'live' | 'static';
-    nfp: 'live' | 'static';
-    cpi: 'live' | 'static';
-    pce: 'live' | 'static';
-    jobless: 'live' | 'static';
-    btc: 'live' | 'static';
+    fearGreed: 'live' | 'bundled' | 'static';
+    nfp: 'live' | 'bundled' | 'static';
+    cpi: 'live' | 'bundled' | 'static';
+    pce: 'live' | 'bundled' | 'static';
+    jobless: 'live' | 'bundled' | 'static';
+    btc: 'live' | 'bundled' | 'static';
+    bundledAt: string | null;
+    runtimeAt: string | null;
   };
   macroNews: NewsItem[];
   cryptoNews: NewsItem[];
   digest: string;
 }
 
-/** 实时数据源徽章 */
-function LiveBadge({ isLive }: { isLive: boolean }) {
-  return isLive ? (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium border text-green-400 bg-green-500/10 border-green-500/30">
-      <span className="w-1 h-1 rounded-full bg-green-400 animate-pulse" />
-      实时
-    </span>
-  ) : (
+/** 数据源类型 */
+type DataSource = 'live' | 'bundled' | 'static';
+
+/** 格式化 ISO 时间戳为 "xm/xh/xd 前" */
+function formatAge(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  if (diff < 3_600_000) return `${Math.max(1, Math.floor(diff / 60_000))}m`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`;
+  return `${Math.floor(diff / 86_400_000)}d`;
+}
+
+/** 数据源徽章：live = 运行时直连 / bundled = 定时快照 / static = 内置估算 */
+function LiveBadge({ source, bundledAt }: { source: DataSource; bundledAt?: string | null }) {
+  if (source === 'live') {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium border text-green-400 bg-green-500/10 border-green-500/30">
+        <span className="w-1 h-1 rounded-full bg-green-400 animate-pulse" />
+        实时
+      </span>
+    );
+  }
+  if (source === 'bundled') {
+    const age = bundledAt ? formatAge(bundledAt) : '';
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium border text-amber-400 bg-amber-500/10 border-amber-500/30" title={`定时快照，更新于 ${bundledAt ?? '未知'}`}>
+        <span className="w-1 h-1 rounded-full bg-amber-400" />
+        快照{age ? `·${age}` : ''}
+      </span>
+    );
+  }
+  return (
     <span className="px-1.5 py-0.5 rounded text-[9px] font-medium border text-dark-500 bg-dark-800/60 border-dark-700">
       离线参考
     </span>
@@ -214,7 +239,12 @@ export default function MacroNewsPage() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-xl font-bold text-white">消息面</h1>
-            <p className="text-xs text-dark-500 mt-1">实时宏观数据 · 加密情绪 · 每 60 秒自动刷新</p>
+            <p className="text-xs text-dark-500 mt-1">
+              宏观数据 · 加密情绪 · 每 60 秒自动刷新
+              {data?.source.bundledAt && (
+                <span className="text-amber-500/60"> · 快照更新于 {new Date(data.source.bundledAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+              )}
+            </p>
           </div>
           <div className="flex items-center gap-3">
             <button onClick={load} disabled={loading} className="text-xs text-dark-400 hover:text-white transition-colors">
@@ -290,14 +320,14 @@ export default function MacroNewsPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* 非农就业 */}
             {data && data.nfp.previous && (() => {
-              const nfpLive = data.source.nfp === 'live';
+              const nfpLive = data.source.nfp !== 'static';
               const nfpRef = nfpLive ? data.nfp.previous.previous : data.nfp.previous.forecast;
               return (
               <div className="glass-card p-4">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-1.5">
                     <span className="text-dark-500 text-xs">非农就业（NFP）</span>
-                    <LiveBadge isLive={nfpLive} />
+                    <LiveBadge source={data.source.nfp} bundledAt={data.source.bundledAt} />
                   </div>
                   {data.nfp.previous.actual !== null && nfpRef !== null && (
                     <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
@@ -340,14 +370,14 @@ export default function MacroNewsPage() {
 
             {/* CPI 通胀 */}
             {data && data.cpi.previous && (() => {
-              const cpiLive = data.source.cpi === 'live';
+              const cpiLive = data.source.cpi !== 'static';
               const cpiRef = cpiLive ? data.cpi.previous.previousYoy : data.cpi.previous.forecastYoy;
               return (
               <div className="glass-card p-4">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-1.5">
                     <span className="text-dark-500 text-xs">CPI 消费者物价指数</span>
-                    <LiveBadge isLive={cpiLive} />
+                    <LiveBadge source={data.source.cpi} bundledAt={data.source.bundledAt} />
                   </div>
                   {data.cpi.previous.yoy !== null && cpiRef !== null && (
                     <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
@@ -401,14 +431,14 @@ export default function MacroNewsPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* PCE 物价指数 */}
             {data && data.pce.previous && (() => {
-              const pceLive = data.source.pce === 'live';
+              const pceLive = data.source.pce !== 'static';
               const pceRef = pceLive ? data.pce.previous.previousCoreYoy : data.pce.previous.forecastCoreYoy;
               return (
               <div className="glass-card p-4">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-1.5">
                     <span className="text-dark-500 text-xs">核心 PCE<span className="text-dark-600 ml-1">· 美联储首选</span></span>
-                    <LiveBadge isLive={pceLive} />
+                    <LiveBadge source={data.source.pce} bundledAt={data.source.bundledAt} />
                   </div>
                   {data.pce.previous.coreYoy !== null && pceRef !== null && (
                     <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
@@ -452,14 +482,14 @@ export default function MacroNewsPage() {
 
             {/* 初请失业金 */}
             {data && data.jobless.latest && (() => {
-              const jobLive = data.source.jobless === 'live';
+              const jobLive = data.source.jobless !== 'static';
               const jobRef = jobLive ? data.jobless.latest.previous : data.jobless.latest.forecast;
               return (
               <div className="glass-card p-4">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-1.5">
                     <span className="text-dark-500 text-xs">初请失业金<span className="text-dark-600 ml-1">· 每周</span></span>
-                    <LiveBadge isLive={jobLive} />
+                    <LiveBadge source={data.source.jobless} bundledAt={data.source.bundledAt} />
                   </div>
                   {data.jobless.latest.actual !== null && jobRef !== null && (
                     <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
@@ -513,7 +543,7 @@ export default function MacroNewsPage() {
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-1.5">
                     <span className="text-dark-500 text-xs">恐慌贪婪指数</span>
-                    <LiveBadge isLive={data.source.fearGreed === 'live'} />
+                    <LiveBadge source={data.source.fearGreed} />
                   </div>
                   <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
                     data.fearGreed.value >= 75
@@ -572,7 +602,7 @@ export default function MacroNewsPage() {
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-1.5">
                     <span className="text-dark-500 text-xs">BTC / USDT</span>
-                    <LiveBadge isLive={data.source.btc === 'live'} />
+                    <LiveBadge source={data.source.btc} />
                   </div>
                   <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
                     data.btc.change24h > 0
@@ -697,7 +727,13 @@ export default function MacroNewsPage() {
               {copied ? '✓ 已复制今日要闻' : '📋 一键复制今日要闻'}
             </button>
             <p className="text-center text-[11px] text-dark-600 mt-3">
-              非农/CPI/PCE/初请来自美联储 FRED 数据库 · 恐慌贪婪来自 alternative.me · BTC 行情来自 Binance · 每次公布后自动更新
+              非农/CPI/PCE/初请来自美联储 FRED 数据库 · 恐慌贪婪来自 alternative.me · BTC 行情来自 Binance
+              <br />
+              {data?.source.runtimeAt
+                ? '运行时直连 FRED API · 数据准实时'
+                : data?.source.bundledAt
+                  ? `定时快照模式 · GitHub Actions 每 30 分钟更新（当前快照 ${formatAge(data.source.bundledAt)}前）`
+                  : '内置估算模式 · 建议配置 FRED_API_KEY 获取实时数据'}
             </p>
           </div>
         )}
