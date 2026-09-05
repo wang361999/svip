@@ -1366,8 +1366,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         const chanData = chanDataRef.current;
         if (!canvas || !chartAPI) return;
         if (!candleSeries.current) return;
-        // 至少要有一种数据才绘制（缠论/通道/音叉任一即可）
-        if (!chanData && !trendChannelRef.current && !pitchforkRef.current) return;
 
         const dpr = window.devicePixelRatio || 1;
         const rect = canvas.getBoundingClientRect();
@@ -1378,7 +1376,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         }
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
+        // 先清空画布——即使所有叠层都已关闭，也要清除残留的旧绘制
         ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // 没有任何叠层数据时，清空后直接返回
+        if (!chanData && !trendChannelRef.current && !pitchforkRef.current) return;
+
         ctx.save();
         ctx.scale(dpr, dpr);
 
