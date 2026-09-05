@@ -62,6 +62,9 @@ export interface IndicatorState {
   rsiState: 'oversold' | 'overbought' | 'neutral';
   macdHist: number;
   macdHistTrend: 'rising' | 'falling' | 'flat';
+  macdDif: number;
+  macdDea: number;
+  macdCross: 'golden' | 'death' | 'none';
   atr: number;
   price: number;
   volumeAvg: number;
@@ -442,7 +445,7 @@ function calcSignalScore(
   ctx: {
     ema50: number[]; ema9: number[]; ema21: number[];
     bb: { upper: number[]; middle: number[]; lower: number[] };
-    rsi: number[]; macd: { hist: number[] }; atr: number[];
+    rsi: number[]; macd: { hist: number[]; dif?: number[]; signal?: number[] }; atr: number[];
     volAvg: number[]; rsiDiv: 'bull' | 'bear' | 'none'; macdDiv: 'bull' | 'bear' | 'none';
   },
 ): ScoreBreakdown {
@@ -456,6 +459,9 @@ function calcSignalScore(
   const rsiVal = ctx.rsi[i];
   const histVal = ctx.macd.hist[i];
   const prevHist = ctx.macd.hist[i - 1] || 0;
+  const prev2Hist = ctx.macd.hist[i - 2] || 0;
+  const difVal = ctx.macd.dif?.[i];
+  const deaVal = ctx.macd.signal?.[i];
   const vol = klines[i].volume;
   const vAvg = ctx.volAvg[i] || vol;
   const atrVal = ctx.atr[i] || 0;
@@ -470,15 +476,29 @@ function calcSignalScore(
     shortScore += 25;
   }
 
-  // 2. 动量分 (20分)：MACD 柱状图方向和强度
+  // 2. 动量分 (20分)：MACD 柱状图方向、强度 + DIF/DEA 零轴上下文
   if (histVal > 0 && histVal >= prevHist) {
-    longScore += 20;  // 正且增大
+    longScore += 15;  // 正且增大
+    // 零轴上方加分：DIF 和 DEA 都为正 → 强势多头
+    if (difVal !== undefined && deaVal !== undefined && difVal > 0 && deaVal > 0) {
+      longScore += 5;
+    }
   } else if (histVal < 0 && histVal <= prevHist) {
-    shortScore += 20; // 负且减小
+    shortScore += 15; // 负且减小
+    if (difVal !== undefined && deaVal !== undefined && difVal < 0 && deaVal < 0) {
+      shortScore += 5;
+    }
   } else if (histVal > 0 && histVal < prevHist) {
-    longScore += 10;  // 正但减弱
+    longScore += 8;   // 正但减弱
   } else if (histVal < 0 && histVal > prevHist) {
-    shortScore += 10; // 负但减弱
+    shortScore += 8;  // 负但减弱
+  }
+  // 柱状图加速度（二阶动量）：持续放大或缩小
+  const accel = (histVal - prevHist) - (prevHist - prev2Hist);
+  if (histVal > 0 && accel > 0) {
+    longScore += 2;   // 多头加速放大
+  } else if (histVal < 0 && accel < 0) {
+    shortScore += 2;  // 空头加速放大
   }
 
   // 3. 波动分 (20分)：布林带位置
@@ -671,38 +691,128 @@ function detectMACDFlip(
   klines: KlineData[],
   i: number,
   hist: number[],
+  dif?: number[],
+  signal?: number[],
 ): RapidSignal | null {
-  if (i < 1) return null;
+  if (i < 3) return null;
 
-  if (hist[i - 1] <= 0 && hist[i] > 0) {
+  const prevHist = hist[i - 1];
+  const currHist = hist[i];
+  const prev2Hist = hist[i - 2] || 0;
+  const prev3Hist = hist[i - 3] || 0;
+  const price = klines[i].close || 1;
+
+  // 噪声过滤：柱状图绝对值相对价格过小时跳过（零线附近来回穿越的假信号）
+  const histMag = Math.abs(currHist) / price;
+  if (histMag < 0.00001) return null;
+
+  // —— 金叉：柱状图从负转正（DIF 上穿 DEA） ——
+  if (prevHist <= 0 && currHist > 0) {
+    let confidence = 1;
+    const reasonParts: string[] = ['MACD金叉'];
+
+    // 1. 多根确认：前两根也在负值区域 → 更可靠的反转信号
+    if (prev2Hist < 0 && prev3Hist < 0) {
+      confidence = 2;
+      reasonParts.push('柱状图连续负值后转正');
+    } else if (prev2Hist > 0) {
+      // 前一根的前一根也在正值 → 来回穿越，降低可信度
+      confidence = 1;
+      reasonParts.push('近期反复穿越零轴');
+    }
+
+    // 2. 动量分析：当前柱状图变化幅度
+    const momentum = currHist - prevHist;
+    const avgAbsHist = (Math.abs(prevHist) + Math.abs(prev2Hist) + Math.abs(currHist)) / 3 + 1e-10;
+    const relMomentum = Math.abs(momentum) / avgAbsHist;
+    if (relMomentum > 0.6) {
+      confidence = Math.max(confidence, 2);
+      reasonParts.push('穿越动量强劲');
+    } else if (relMomentum < 0.2) {
+      reasonParts.push('穿越动量偏弱');
+    }
+
+    // 3. 零轴上下文：DIF 和 DEA 都为正 → 零轴上方金叉（强势）
+    if (dif && signal) {
+      const difVal = dif[i];
+      const deaVal = signal[i];
+      if (difVal > 0 && deaVal > 0) {
+        confidence = Math.min(confidence + 1, 3);
+        reasonParts.push('零轴上方（强势）');
+      } else if (difVal < 0 && deaVal < 0) {
+        reasonParts.push('零轴下方（弱势）');
+      } else {
+        reasonParts.push('零轴附近');
+      }
+    }
+
     return {
       id: `macd-flip-long-${klines[i].time}`,
       source: 'macd-flip',
       direction: 'long',
       entry: klines[i].close,
       stop: 0, target: 0, atr: 0,
-      confidence: 1,
+      confidence,
       confluenceSources: ['macd-flip'],
       time: klines[i].time,
-      reason: 'MACD 柱状图从负转正',
+      reason: reasonParts.join('，'),
       barIndex: i,
     };
   }
 
-  if (hist[i - 1] >= 0 && hist[i] < 0) {
+  // —— 死叉：柱状图从正转负（DIF 下穿 DEA） ——
+  if (prevHist >= 0 && currHist < 0) {
+    let confidence = 1;
+    const reasonParts: string[] = ['MACD死叉'];
+
+    // 1. 多根确认
+    if (prev2Hist > 0 && prev3Hist > 0) {
+      confidence = 2;
+      reasonParts.push('柱状图连续正值后转负');
+    } else if (prev2Hist < 0) {
+      confidence = 1;
+      reasonParts.push('近期反复穿越零轴');
+    }
+
+    // 2. 动量分析
+    const momentum = currHist - prevHist;
+    const avgAbsHist = (Math.abs(prevHist) + Math.abs(prev2Hist) + Math.abs(currHist)) / 3 + 1e-10;
+    const relMomentum = Math.abs(momentum) / avgAbsHist;
+    if (relMomentum > 0.6) {
+      confidence = Math.max(confidence, 2);
+      reasonParts.push('穿越动量强劲');
+    } else if (relMomentum < 0.2) {
+      reasonParts.push('穿越动量偏弱');
+    }
+
+    // 3. 零轴上下文
+    if (dif && signal) {
+      const difVal = dif[i];
+      const deaVal = signal[i];
+      if (difVal < 0 && deaVal < 0) {
+        confidence = Math.min(confidence + 1, 3);
+        reasonParts.push('零轴下方（强势）');
+      } else if (difVal > 0 && deaVal > 0) {
+        reasonParts.push('零轴上方（弱势）');
+      } else {
+        reasonParts.push('零轴附近');
+      }
+    }
+
     return {
       id: `macd-flip-short-${klines[i].time}`,
       source: 'macd-flip',
       direction: 'short',
       entry: klines[i].close,
       stop: 0, target: 0, atr: 0,
-      confidence: 1,
+      confidence,
       confluenceSources: ['macd-flip'],
       time: klines[i].time,
-      reason: 'MACD 柱状图从正转负',
+      reason: reasonParts.join('，'),
       barIndex: i,
     };
   }
+
   return null;
 }
 
@@ -809,7 +919,7 @@ export function analyzeRapid(
       detectEMACross(klines, i, ema9, ema21),
       detectBollingerWithVolume(klines, i, bb, volAvg),
       detectRSI(klines, i, rsi),
-      detectMACDFlip(klines, i, macd.hist),
+      detectMACDFlip(klines, i, macd.hist, macd.dif, macd.signal),
       detectDivergenceSignal(klines, i, rsiDiv, macdDiv),
     ];
 
@@ -967,6 +1077,10 @@ export function analyzeRapid(
     macdHist: round(macd.hist[n - 1], 4),
     macdHistTrend: macd.hist[n - 1] > macd.hist[n - 2] ? 'rising'
       : macd.hist[n - 1] < macd.hist[n - 2] ? 'falling' : 'flat',
+    macdDif: round(macd.dif[n - 1], 4),
+    macdDea: round(macd.signal[n - 1], 4),
+    macdCross: macd.hist[n - 2] <= 0 && macd.hist[n - 1] > 0 ? 'golden'
+      : macd.hist[n - 2] >= 0 && macd.hist[n - 1] < 0 ? 'death' : 'none',
     atr: round(currentATR, 2),
     price: currentPrice,
     volumeAvg: round(volAvg[n - 1] || 0, 2),
@@ -1088,6 +1202,7 @@ function emptyResult(symbol: string, klines: KlineData[], now: number): RapidAna
       bollingerUpper: 0, bollingerMiddle: 0, bollingerLower: 0, bollingerPosition: 'middle',
       rsi: 50, rsiState: 'neutral',
       macdHist: 0, macdHistTrend: 'flat',
+      macdDif: 0, macdDea: 0, macdCross: 'none',
       atr: 0, price,
       volumeAvg: 0, currentVolume: 0,
       rsiDivergence: 'none', macdDivergence: 'none',

@@ -139,6 +139,9 @@ interface IndicatorState {
   rsiState: 'oversold' | 'overbought' | 'neutral';
   macdHist: number;
   macdHistTrend: 'rising' | 'falling' | 'flat';
+  macdDif: number;
+  macdDea: number;
+  macdCross: 'golden' | 'death' | 'none';
   atr: number;
   price: number;
   volumeAvg: number;
@@ -546,8 +549,16 @@ export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: strin
           </div>
           <div className="flex items-center justify-between">
             <span className="text-dark-500">MACD</span>
-            <span className={`font-mono ${ind.macdHist > 0 ? 'text-green-400' : 'text-red-400'}`}>
-              {ind.macdHist.toFixed(4)} {ind.macdHistTrend === 'rising' ? '↑' : ind.macdHistTrend === 'falling' ? '↓' : '─'}
+            <span className="flex items-center gap-1.5">
+              {ind.macdCross === 'golden' && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-900/50 text-green-400 font-bold">金叉</span>
+              )}
+              {ind.macdCross === 'death' && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-900/50 text-red-400 font-bold">死叉</span>
+              )}
+              <span className={`font-mono ${ind.macdHist > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {ind.macdHist.toFixed(4)} {ind.macdHistTrend === 'rising' ? '↑' : ind.macdHistTrend === 'falling' ? '↓' : '─'}
+              </span>
             </span>
           </div>
           <div className="flex items-center justify-between">
