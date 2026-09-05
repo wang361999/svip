@@ -722,8 +722,14 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     const projBars = 8; // 预测延伸 8 根 K 线（避免过度延伸导致视觉异常）
 
     // ---- 趋势通道 ----
-    if (showTrendChannelRef.current && isMember && trendChannelRef.current) {
+    if (showTrendChannelRef.current && isMember) {
+      // 开关刚打开时 ref 可能为 null（上次关闭时被 updateIndicators 清空），按需补算
+      if (!trendChannelRef.current) {
+        trendChannelRef.current = calcTrendChannel(klines, 60);
+      }
       const tc = trendChannelRef.current;
+      if (!tc) { removeTcSeries(); }
+      else {
       // calcTrendChannel 内部已延伸 5 根，需还原到最后一根实际 K 线的位置
       const lastKlineTime = klines[klines.length - 1].time;
       const totalSpan = Math.round((tc.upperEnd.time - tc.upperStart.time) / interval);
@@ -769,13 +775,19 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         { time: tc.midStart.time as Time, value: tc.midStart.price },
         { time: lastKlineTime as Time, value: +midAtLast.toFixed(4) },
       ]);
+      }
     } else {
       removeTcSeries();
     }
 
     // ---- 安德鲁音叉 ----
-    if (showPitchforkRef.current && isMember && pitchforkRef.current) {
+    if (showPitchforkRef.current && isMember) {
+      if (!pitchforkRef.current) {
+        pitchforkRef.current = calcPitchfork(klines, 80);
+      }
       const pf = pitchforkRef.current;
+      if (!pf) { removePfSeries(); }
+      else {
       const lastKlineTime = klines[klines.length - 1].time;
       const projTime = (lastKlineTime + interval * projBars) as Time;
 
@@ -823,6 +835,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         { time: pf.lowerWarningEnd.time as Time, value: pf.lowerWarningEnd.price },
         { time: projTime, value: +(pf.lowerWarningEnd.price + slope * interval * projBars).toFixed(4) },
       ]);
+      }
     } else {
       removePfSeries();
     }
