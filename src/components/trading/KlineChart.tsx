@@ -719,12 +719,19 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     trendLineSeriesRef.current = [];
 
     const interval = klines[1].time - klines[0].time;
-    const projBars = 15; // 预测延伸 15 根 K 线
+    const projBars = 8; // 预测延伸 8 根 K 线（避免过度延伸导致视觉异常）
 
     // ---- 趋势通道 ----
     if (showTrendChannelRef.current && isMember && trendChannelRef.current) {
       const tc = trendChannelRef.current;
-      const projTime = (tc.upperEnd.time + interval * projBars) as Time;
+      // calcTrendChannel 内部已延伸 5 根，需还原到最后一根实际 K 线的位置
+      const lastKlineTime = klines[klines.length - 1].time;
+      const totalSpan = Math.round((tc.upperEnd.time - tc.upperStart.time) / interval);
+      const actualBars = Math.max(0, totalSpan - 5); // 最后实际 K 线在窗口中的 index
+      const upperAtLast = tc.upperStart.price + tc.slope * actualBars;
+      const lowerAtLast = tc.lowerStart.price + tc.slope * actualBars;
+      const midAtLast = tc.midStart.price + tc.slope * actualBars;
+      const projTime = (lastKlineTime + interval * projBars) as Time;
 
       // 辅助：创建或复用 LineSeries
       const ensureSeries = (ref: keyof typeof tcSeriesRef.current, color: string, width: number, style: LineStyle) => {
@@ -737,30 +744,30 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         return tcSeriesRef.current[ref]!;
       };
 
-      // 上轨（实线 + 虚线延伸）
+      // 上轨（实线到最后一根K线 + 虚线预测延伸）
       ensureSeries('upper', 'rgba(34, 197, 94, 0.65)', 1, LineStyle.Solid).setData([
         { time: tc.upperStart.time as Time, value: tc.upperStart.price },
-        { time: tc.upperEnd.time as Time, value: tc.upperEnd.price },
+        { time: lastKlineTime as Time, value: +upperAtLast.toFixed(4) },
       ]);
       ensureSeries('upperProj', 'rgba(34, 197, 94, 0.35)', 1, LineStyle.Dashed).setData([
-        { time: tc.upperEnd.time as Time, value: tc.upperEnd.price },
-        { time: projTime, value: +(tc.upperEnd.price + tc.slope * projBars).toFixed(4) },
+        { time: lastKlineTime as Time, value: +upperAtLast.toFixed(4) },
+        { time: projTime, value: +(upperAtLast + tc.slope * projBars).toFixed(4) },
       ]);
 
       // 下轨
       ensureSeries('lower', 'rgba(246, 70, 93, 0.65)', 1, LineStyle.Solid).setData([
         { time: tc.lowerStart.time as Time, value: tc.lowerStart.price },
-        { time: tc.lowerEnd.time as Time, value: tc.lowerEnd.price },
+        { time: lastKlineTime as Time, value: +lowerAtLast.toFixed(4) },
       ]);
       ensureSeries('lowerProj', 'rgba(246, 70, 93, 0.35)', 1, LineStyle.Dashed).setData([
-        { time: tc.lowerEnd.time as Time, value: tc.lowerEnd.price },
-        { time: projTime, value: +(tc.lowerEnd.price + tc.slope * projBars).toFixed(4) },
+        { time: lastKlineTime as Time, value: +lowerAtLast.toFixed(4) },
+        { time: projTime, value: +(lowerAtLast + tc.slope * projBars).toFixed(4) },
       ]);
 
       // 中轨
       ensureSeries('mid', 'rgba(148, 163, 184, 0.5)', 1, LineStyle.Dotted).setData([
         { time: tc.midStart.time as Time, value: tc.midStart.price },
-        { time: tc.midEnd.time as Time, value: tc.midEnd.price },
+        { time: lastKlineTime as Time, value: +midAtLast.toFixed(4) },
       ]);
     } else {
       removeTcSeries();
@@ -769,7 +776,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     // ---- 安德鲁音叉 ----
     if (showPitchforkRef.current && isMember && pitchforkRef.current) {
       const pf = pitchforkRef.current;
-      const projTime = (pf.medianEnd.time + interval * projBars) as Time;
+      const lastKlineTime = klines[klines.length - 1].time;
+      const projTime = (lastKlineTime + interval * projBars) as Time;
 
       const ensurePfSeries = (ref: keyof typeof pfSeriesRef.current, color: string, style: LineStyle) => {
         if (!pfSeriesRef.current[ref]) {
@@ -838,7 +846,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         return { highs, lows };
       };
       const { highs, lows } = findRecentSwings();
-      const projTime = (klines[klines.length - 1].time + interval * projBars) as Time;
+      const lastKlineTime = klines[klines.length - 1].time;
+      const projTime = (lastKlineTime + interval * projBars) as Time;
 
       // 下降趋势线：连接最近 2 个摆动高点，向右延伸
       if (highs.length >= 2) {
@@ -855,7 +864,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         series.setData([
           { time: p0.time as Time, value: p0.price },
           { time: p1.time as Time, value: p1.price },
-          { time: projTime, value: projPrice },
         ]);
         trendLineSeriesRef.current.push(series);
 
@@ -886,7 +894,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         series.setData([
           { time: p0.time as Time, value: p0.price },
           { time: p1.time as Time, value: p1.price },
-          { time: projTime, value: projPrice },
         ]);
         trendLineSeriesRef.current.push(series);
 
