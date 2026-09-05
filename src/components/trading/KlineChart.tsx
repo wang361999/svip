@@ -722,63 +722,17 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     const projBars = 8; // 预测延伸 8 根 K 线（避免过度延伸导致视觉异常）
 
     // ---- 趋势通道 ----
+    // 趋势通道通过 Canvas 叠层绘制（drawChan 内），不使用 LineSeries。
+    // Canvas 绘制附带通道填充、方向感知配色和触点标签，功能更完整。
     if (showTrendChannelRef.current && isMember) {
-      // 开关刚打开时 ref 可能为 null（上次关闭时被 updateIndicators 清空），按需补算
       if (!trendChannelRef.current) {
         trendChannelRef.current = calcTrendChannel(klines, 60);
       }
-      const tc = trendChannelRef.current;
-      if (!tc) { removeTcSeries(); }
-      else {
-      // calcTrendChannel 内部已延伸 5 根，需还原到最后一根实际 K 线的位置
-      const lastKlineTime = klines[klines.length - 1].time;
-      const totalSpan = Math.round((tc.upperEnd.time - tc.upperStart.time) / interval);
-      const actualBars = Math.max(0, totalSpan - 5); // 最后实际 K 线在窗口中的 index
-      const upperAtLast = tc.upperStart.price + tc.slope * actualBars;
-      const lowerAtLast = tc.lowerStart.price + tc.slope * actualBars;
-      const midAtLast = tc.midStart.price + tc.slope * actualBars;
-      const projTime = (lastKlineTime + interval * projBars) as Time;
-
-      // 辅助：创建或复用 LineSeries
-      const ensureSeries = (ref: keyof typeof tcSeriesRef.current, color: string, width: number, style: LineStyle) => {
-        if (!tcSeriesRef.current[ref]) {
-          tcSeriesRef.current[ref] = mainChart.current!.addLineSeries({
-            color, lineWidth: width as 1 | 2 | 3 | 4, lineStyle: style,
-            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-          });
-        }
-        return tcSeriesRef.current[ref]!;
-      };
-
-      // 上轨（实线到最后一根K线 + 虚线预测延伸）
-      ensureSeries('upper', 'rgba(34, 197, 94, 0.65)', 1, LineStyle.Solid).setData([
-        { time: tc.upperStart.time as Time, value: tc.upperStart.price },
-        { time: lastKlineTime as Time, value: +upperAtLast.toFixed(4) },
-      ]);
-      ensureSeries('upperProj', 'rgba(34, 197, 94, 0.35)', 1, LineStyle.Dashed).setData([
-        { time: lastKlineTime as Time, value: +upperAtLast.toFixed(4) },
-        { time: projTime, value: +(upperAtLast + tc.slope * projBars).toFixed(4) },
-      ]);
-
-      // 下轨
-      ensureSeries('lower', 'rgba(246, 70, 93, 0.65)', 1, LineStyle.Solid).setData([
-        { time: tc.lowerStart.time as Time, value: tc.lowerStart.price },
-        { time: lastKlineTime as Time, value: +lowerAtLast.toFixed(4) },
-      ]);
-      ensureSeries('lowerProj', 'rgba(246, 70, 93, 0.35)', 1, LineStyle.Dashed).setData([
-        { time: lastKlineTime as Time, value: +lowerAtLast.toFixed(4) },
-        { time: projTime, value: +(lowerAtLast + tc.slope * projBars).toFixed(4) },
-      ]);
-
-      // 中轨
-      ensureSeries('mid', 'rgba(148, 163, 184, 0.5)', 1, LineStyle.Dotted).setData([
-        { time: tc.midStart.time as Time, value: tc.midStart.price },
-        { time: lastKlineTime as Time, value: +midAtLast.toFixed(4) },
-      ]);
-      }
     } else {
-      removeTcSeries();
+      trendChannelRef.current = null;
     }
+    // 清理可能残留的旧 LineSeries
+    removeTcSeries();
 
     // ---- 安德鲁音叉 ----
     // 音叉通过 Canvas 叠层绘制（drawChan 内），不使用 LineSeries。
@@ -1277,8 +1231,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       const chartAPI = mainChart.current;
       const nineData = nineTurnDataRef.current;
       const klines = allKlinesRef.current;
-      if (!canvas || !chartAPI || !nineData || nineData.length === 0 || klines.length === 0) return;
-      if (!candleSeries.current) return;
+      if (!canvas || !chartAPI || !candleSeries.current) return;
+      if (klines.length === 0) return;
 
       const dpr = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
@@ -1290,7 +1244,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       }
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
+      // 先清空画布——即使九转已关闭或数据为空，也要清除残留的旧绘制
       ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // 没有九转数据时，清空后直接返回
+      if (!nineData || nineData.length === 0) return;
+
       ctx.save();
       ctx.scale(dpr, dpr);
       ctx.font = 'bold 11px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
