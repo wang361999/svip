@@ -76,8 +76,9 @@ interface KlineChartProps {
 // ========== 指标显示开关：前台徽章直接管控 ==========
 // 开关状态仅存于浏览器本地（localStorage），后台/数据库不再有任何指标开关，
 // 徽章点击即生效并持久化，刷新/换币种/换周期后保持用户的选择。
-const INDICATOR_PREFS_KEY = 'kline-indicator-prefs';
-const DEFAULT_INDICATORS = { EMA: true, BOLL: false, MACD: true, RSI: false, VWAP: false, KDJ: false, ATR: false, NINE: false, CHAN: true };
+// 版本号：默认值变更时递增，旧 localStorage 自动失效
+  const INDICATOR_PREFS_KEY = 'kline-indicator-prefs-v2';
+const DEFAULT_INDICATORS = { EMA: false, BOLL: false, MACD: false, RSI: false, VWAP: false, KDJ: false, ATR: false, NINE: false, CHAN: false };
 
 function loadIndicatorPrefs(): typeof DEFAULT_INDICATORS {
   if (typeof window === 'undefined') return { ...DEFAULT_INDICATORS };
@@ -110,8 +111,9 @@ function saveIndicatorPrefs(next: typeof DEFAULT_INDICATORS) {
 // ========== 画线开关持久化（AB9 / 斐波那契） ==========
 // 同样存于浏览器本地，刷新/换币种/换周期后保持用户的选择
 // 会员用户额外同步到后端（跨设备），非会员仅本地
-const OVERLAY_PREFS_KEY = 'kline-overlay-prefs';
-const DEFAULT_OVERLAY = { AB9: true, FIB: false, CHANNEL: true, PITCHFORK: true, PREDICTION: false };
+// 版本号：默认值变更时递增，旧 localStorage 自动失效
+  const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v2';
+const DEFAULT_OVERLAY = { AB9: false, FIB: false, CHANNEL: false, PITCHFORK: false, PREDICTION: false };
 
 function loadOverlayPrefs() {
   if (typeof window === 'undefined') return { ...DEFAULT_OVERLAY };
