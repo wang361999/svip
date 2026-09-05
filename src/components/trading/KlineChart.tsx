@@ -111,7 +111,7 @@ function saveIndicatorPrefs(next: typeof DEFAULT_INDICATORS) {
 // 同样存于浏览器本地，刷新/换币种/换周期后保持用户的选择
 // 会员用户额外同步到后端（跨设备），非会员仅本地
 const OVERLAY_PREFS_KEY = 'kline-overlay-prefs';
-const DEFAULT_OVERLAY = { AB9: true, FIB: false, CHANNEL: true, PITCHFORK: true };
+const DEFAULT_OVERLAY = { AB9: true, FIB: false, CHANNEL: true, PITCHFORK: true, PREDICTION: false };
 
 function loadOverlayPrefs() {
   if (typeof window === 'undefined') return { ...DEFAULT_OVERLAY };
@@ -124,6 +124,7 @@ function loadOverlayPrefs() {
       FIB: parsed.FIB !== undefined ? !!parsed.FIB : DEFAULT_OVERLAY.FIB,
       CHANNEL: parsed.CHANNEL !== undefined ? !!parsed.CHANNEL : DEFAULT_OVERLAY.CHANNEL,
       PITCHFORK: parsed.PITCHFORK !== undefined ? !!parsed.PITCHFORK : DEFAULT_OVERLAY.PITCHFORK,
+      PREDICTION: parsed.PREDICTION !== undefined ? !!parsed.PREDICTION : DEFAULT_OVERLAY.PREDICTION,
     };
   } catch {
     return { ...DEFAULT_OVERLAY };
@@ -205,12 +206,15 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const [showFibonacci, setShowFibonacci] = useState(overlayPrefsInit.FIB);
   const [showTrendChannel, setShowTrendChannel] = useState(overlayPrefsInit.CHANNEL);
   const [showPitchfork, setShowPitchfork] = useState(overlayPrefsInit.PITCHFORK);
+  const [showPrediction, setShowPrediction] = useState(overlayPrefsInit.PREDICTION ?? false);
   // ref 镜像：updateIndicators 的 useCallback 依赖里没有这两个开关，
   // 切换币种/周期重载数据时闭包里是旧值，会出现"关了又冒出来/开了不出来"的状态错乱
   const showTrendChannelRef = useRef(showTrendChannel);
   showTrendChannelRef.current = showTrendChannel;
   const showPitchforkRef = useRef(showPitchfork);
   showPitchforkRef.current = showPitchfork;
+  const showPredictionRef = useRef(showPrediction);
+  showPredictionRef.current = showPrediction;
   // 左上角 OHLC 图例：随十字线联动（悬停读历史K线，离开回落到最新一根，tick 实时刷新）
   interface LegendInfo { o: number; h: number; l: number; c: number; pct: number }
   const [legend, setLegend] = useState<LegendInfo | null>(null);
@@ -221,6 +225,18 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const autoPriceLinesRef = useRef<any[]>([]);
   // 斐波那契线 ref（原生价格线）
   const fibPriceLinesRef = useRef<any[]>([]);
+  // 趋势通道 LineSeries refs（上轨/下轨/中轨 + 预测延伸线）
+  const tcSeriesRef = useRef<{
+    upper?: ISeriesApi<'Line'>; lower?: ISeriesApi<'Line'>; mid?: ISeriesApi<'Line'>;
+    upperProj?: ISeriesApi<'Line'>; lowerProj?: ISeriesApi<'Line'>;
+  }>({});
+  // 音叉 LineSeries refs（中轨/上轨/下轨/上下警告线）
+  const pfSeriesRef = useRef<{
+    median?: ISeriesApi<'Line'>; upper?: ISeriesApi<'Line'>; lower?: ISeriesApi<'Line'>;
+    upperWarn?: ISeriesApi<'Line'>; lowerWarn?: ISeriesApi<'Line'>;
+  }>({});
+  // 自动趋势线 LineSeries refs
+  const trendLineSeriesRef = useRef<ISeriesApi<'Line'>[]>([]);
 
   // 指标显示开关：前台徽章直接管控（localStorage 持久化，后台不再干预）
   const [indicators, setIndicators] = useState(loadIndicatorPrefs);
@@ -678,6 +694,214 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     }
   }, [showAutoAB9, showFibonacci, isMember, symbol]);
 
+  // ====== 趋势通道 + 预测延伸线 + 音叉 ====== 画线 ======
+  // 在 redrawOverlayLines 之后独立执行，依赖 showTrendChannel/showPitchfork
+  const drawTrendOverlays = useCallback(() => {
+    const klines = allKlinesRef.current;
+    if (!mainChart.current || klines.length < 2) return;
+
+    // ---- 清除旧的 LineSeries ----
+    const removeTcSeries = () => {
+      const r = tcSeriesRef.current;
+      for (const key of ['upper', 'lower', 'mid', 'upperProj', 'lowerProj'] as const) {
+        if (r[key]) { try { mainChart.current?.removeSeries(r[key]!); } catch {} r[key] = undefined; }
+      }
+    };
+    const removePfSeries = () => {
+      const r = pfSeriesRef.current;
+      for (const key of ['median', 'upper', 'lower', 'upperWarn', 'lowerWarn'] as const) {
+        if (r[key]) { try { mainChart.current?.removeSeries(r[key]!); } catch {} r[key] = undefined; }
+      }
+    };
+    for (const s of trendLineSeriesRef.current) { try { mainChart.current?.removeSeries(s); } catch {} }
+    trendLineSeriesRef.current = [];
+
+    const interval = klines[1].time - klines[0].time;
+    const projBars = 15; // 预测延伸 15 根 K 线
+
+    // ---- 趋势通道 ----
+    if (showTrendChannelRef.current && isMember && trendChannelRef.current) {
+      const tc = trendChannelRef.current;
+      const projTime = (tc.upperEnd.time + interval * projBars) as Time;
+
+      // 辅助：创建或复用 LineSeries
+      const ensureSeries = (ref: keyof typeof tcSeriesRef.current, color: string, width: number, style: LineStyle) => {
+        if (!tcSeriesRef.current[ref]) {
+          tcSeriesRef.current[ref] = mainChart.current!.addLineSeries({
+            color, lineWidth: width as 1 | 2 | 3 | 4, lineStyle: style,
+            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+          });
+        }
+        return tcSeriesRef.current[ref]!;
+      };
+
+      // 上轨（实线 + 虚线延伸）
+      ensureSeries('upper', 'rgba(34, 197, 94, 0.65)', 1, LineStyle.Solid).setData([
+        { time: tc.upperStart.time as Time, value: tc.upperStart.price },
+        { time: tc.upperEnd.time as Time, value: tc.upperEnd.price },
+      ]);
+      ensureSeries('upperProj', 'rgba(34, 197, 94, 0.35)', 1, LineStyle.Dashed).setData([
+        { time: tc.upperEnd.time as Time, value: tc.upperEnd.price },
+        { time: projTime, value: +(tc.upperEnd.price + tc.slope * projBars).toFixed(4) },
+      ]);
+
+      // 下轨
+      ensureSeries('lower', 'rgba(246, 70, 93, 0.65)', 1, LineStyle.Solid).setData([
+        { time: tc.lowerStart.time as Time, value: tc.lowerStart.price },
+        { time: tc.lowerEnd.time as Time, value: tc.lowerEnd.price },
+      ]);
+      ensureSeries('lowerProj', 'rgba(246, 70, 93, 0.35)', 1, LineStyle.Dashed).setData([
+        { time: tc.lowerEnd.time as Time, value: tc.lowerEnd.price },
+        { time: projTime, value: +(tc.lowerEnd.price + tc.slope * projBars).toFixed(4) },
+      ]);
+
+      // 中轨
+      ensureSeries('mid', 'rgba(148, 163, 184, 0.5)', 1, LineStyle.Dotted).setData([
+        { time: tc.midStart.time as Time, value: tc.midStart.price },
+        { time: tc.midEnd.time as Time, value: tc.midEnd.price },
+      ]);
+    } else {
+      removeTcSeries();
+    }
+
+    // ---- 安德鲁音叉 ----
+    if (showPitchforkRef.current && isMember && pitchforkRef.current) {
+      const pf = pitchforkRef.current;
+      const projTime = (pf.medianEnd.time + interval * projBars) as Time;
+
+      const ensurePfSeries = (ref: keyof typeof pfSeriesRef.current, color: string, style: LineStyle) => {
+        if (!pfSeriesRef.current[ref]) {
+          pfSeriesRef.current[ref] = mainChart.current!.addLineSeries({
+            color, lineWidth: 1 as 1, lineStyle: style,
+            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+          });
+        }
+        return pfSeriesRef.current[ref]!;
+      };
+
+      // 计算延伸方向（用中轨斜率）
+      const dx = pf.medianEnd.time - pf.medianStart.time;
+      const dy = pf.medianEnd.price - pf.medianStart.price;
+      const slope = dx !== 0 ? dy / dx : 0;
+
+      // 中轨（含延伸）
+      ensurePfSeries('median', 'rgba(168, 85, 247, 0.7)', LineStyle.Solid).setData([
+        { time: pf.medianStart.time as Time, value: pf.medianStart.price },
+        { time: pf.medianEnd.time as Time, value: pf.medianEnd.price },
+        { time: projTime, value: +(pf.medianEnd.price + slope * interval * projBars).toFixed(4) },
+      ]);
+      // 上轨
+      ensurePfSeries('upper', 'rgba(59, 130, 246, 0.55)', LineStyle.Dashed).setData([
+        { time: pf.upperStart.time as Time, value: pf.upperStart.price },
+        { time: pf.upperEnd.time as Time, value: pf.upperEnd.price },
+        { time: projTime, value: +(pf.upperEnd.price + slope * interval * projBars).toFixed(4) },
+      ]);
+      // 下轨
+      ensurePfSeries('lower', 'rgba(239, 68, 68, 0.55)', LineStyle.Dashed).setData([
+        { time: pf.lowerStart.time as Time, value: pf.lowerStart.price },
+        { time: pf.lowerEnd.time as Time, value: pf.lowerEnd.price },
+        { time: projTime, value: +(pf.lowerEnd.price + slope * interval * projBars).toFixed(4) },
+      ]);
+      // 警告线（更浅）
+      ensurePfSeries('upperWarn', 'rgba(59, 130, 246, 0.25)', LineStyle.Dotted).setData([
+        { time: pf.upperWarningStart.time as Time, value: pf.upperWarningStart.price },
+        { time: pf.upperWarningEnd.time as Time, value: pf.upperWarningEnd.price },
+        { time: projTime, value: +(pf.upperWarningEnd.price + slope * interval * projBars).toFixed(4) },
+      ]);
+      ensurePfSeries('lowerWarn', 'rgba(239, 68, 68, 0.25)', LineStyle.Dotted).setData([
+        { time: pf.lowerWarningStart.time as Time, value: pf.lowerWarningStart.price },
+        { time: pf.lowerWarningEnd.time as Time, value: pf.lowerWarningEnd.price },
+        { time: projTime, value: +(pf.lowerWarningEnd.price + slope * interval * projBars).toFixed(4) },
+      ]);
+    } else {
+      removePfSeries();
+    }
+
+    // ---- 自动趋势线（摆动点连线 + 预测投影）----
+    if (showPredictionRef.current && isMember) {
+      // 找最近摆动高低点（分形：左右各 2 根确认）
+      const findRecentSwings = () => {
+        const highs: { idx: number; time: number; price: number }[] = [];
+        const lows: { idx: number; time: number; price: number }[] = [];
+        for (let i = 2; i < klines.length - 2; i++) {
+          if (klines[i].high >= klines[i-1].high && klines[i].high >= klines[i-2].high
+            && klines[i].high >= klines[i+1].high && klines[i].high >= klines[i+2].high) {
+            highs.push({ idx: i, time: klines[i].time, price: klines[i].high });
+          }
+          if (klines[i].low <= klines[i-1].low && klines[i].low <= klines[i-2].low
+            && klines[i].low <= klines[i+1].low && klines[i].low <= klines[i+2].low) {
+            lows.push({ idx: i, time: klines[i].time, price: klines[i].low });
+          }
+        }
+        return { highs, lows };
+      };
+      const { highs, lows } = findRecentSwings();
+      const projTime = (klines[klines.length - 1].time + interval * projBars) as Time;
+
+      // 下降趋势线：连接最近 2 个摆动高点，向右延伸
+      if (highs.length >= 2) {
+        const p0 = highs[highs.length - 2];
+        const p1 = highs[highs.length - 1];
+        const dx = p1.time - p0.time;
+        const dy = p1.price - p0.price;
+        const slope = dx !== 0 ? dy / dx : 0;
+        const projPrice = +(p1.price + slope * (projTime as number - p1.time)).toFixed(4);
+        const series = mainChart.current!.addLineSeries({
+          color: 'rgba(239, 68, 68, 0.7)', lineWidth: 1 as 1, lineStyle: LineStyle.Solid,
+          priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+        });
+        series.setData([
+          { time: p0.time as Time, value: p0.price },
+          { time: p1.time as Time, value: p1.price },
+          { time: projTime, value: projPrice },
+        ]);
+        trendLineSeriesRef.current.push(series);
+
+        // 虚线延伸部分
+        const projSeries = mainChart.current!.addLineSeries({
+          color: 'rgba(239, 68, 68, 0.3)', lineWidth: 1 as 1, lineStyle: LineStyle.Dashed,
+          priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+        });
+        projSeries.setData([
+          { time: p1.time as Time, value: p1.price },
+          { time: projTime, value: projPrice },
+        ]);
+        trendLineSeriesRef.current.push(projSeries);
+      }
+
+      // 上升趋势线：连接最近 2 个摆动低点，向右延伸
+      if (lows.length >= 2) {
+        const p0 = lows[lows.length - 2];
+        const p1 = lows[lows.length - 1];
+        const dx = p1.time - p0.time;
+        const dy = p1.price - p0.price;
+        const slope = dx !== 0 ? dy / dx : 0;
+        const projPrice = +(p1.price + slope * (projTime as number - p1.time)).toFixed(4);
+        const series = mainChart.current!.addLineSeries({
+          color: 'rgba(34, 197, 94, 0.7)', lineWidth: 1 as 1, lineStyle: LineStyle.Solid,
+          priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+        });
+        series.setData([
+          { time: p0.time as Time, value: p0.price },
+          { time: p1.time as Time, value: p1.price },
+          { time: projTime, value: projPrice },
+        ]);
+        trendLineSeriesRef.current.push(series);
+
+        // 虚线延伸部分
+        const projSeries = mainChart.current!.addLineSeries({
+          color: 'rgba(34, 197, 94, 0.3)', lineWidth: 1 as 1, lineStyle: LineStyle.Dashed,
+          priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+        });
+        projSeries.setData([
+          { time: p1.time as Time, value: p1.price },
+          { time: projTime, value: projPrice },
+        ]);
+        trendLineSeriesRef.current.push(projSeries);
+      }
+    }
+  }, [isMember, symbol]);
+
   // 更新K线数据
   const updateChart = useCallback((klines: KlineData[], intv?: string) => {
     allKlinesRef.current = klines;
@@ -703,6 +927,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
     // === AB9线 + 斐波那契回调线（各自独立控制）===
     redrawOverlayLines();
+
+    // === 趋势通道 + 预测延伸线 + 音叉 ===
+    drawTrendOverlays();
 
     if (candleSeries.current) {
       candleSeries.current.setMarkers([]);
@@ -730,12 +957,17 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       if (kdjChart.current) kdjChart.current.timeScale().setVisibleLogicalRange(range);
       if (atrChart.current) atrChart.current.timeScale().setVisibleLogicalRange(range);
     }
-  }, [updateIndicators, redrawOverlayLines, legendOf]);
+  }, [updateIndicators, redrawOverlayLines, drawTrendOverlays, legendOf]);
 
   // 切换画线开关时仅重画线（不再整图重载、不重置视图）
   useEffect(() => {
     redrawOverlayLines();
   }, [redrawOverlayLines]);
+
+  // 趋势通道/音叉开关切换时重画
+  useEffect(() => {
+    drawTrendOverlays();
+  }, [drawTrendOverlays, showTrendChannel, showPitchfork, showPrediction]);
 
   // Tick 实时更新（rAF + 50ms 节流，和 v24 一致）
   const flushTick = useCallback(() => {
@@ -1852,32 +2084,39 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             <>
               <div className="w-px h-4 bg-dark-700" />
               <button
-                onClick={() => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ AB9: v, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork }); saveUserPref('prefAB9', v); }}
+                onClick={() => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ AB9: v, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction }); saveUserPref('prefAB9', v); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showAutoAB9 ? 'text-cyan-400' : 'text-dark-600'}`}
                 title="AB9线"
               >
                 AB9
               </button>
               <button
-                onClick={() => { const v = !showFibonacci; setShowFibonacci(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: v, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork }); saveUserPref('prefFibonacci', v); }}
+                onClick={() => { const v = !showFibonacci; setShowFibonacci(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: v, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction }); saveUserPref('prefFibonacci', v); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showFibonacci ? 'text-cyan-400' : 'text-dark-600'}`}
                 title="斐波那契回调线"
               >
                 FIB
               </button>
               <button
-                onClick={() => { const v = !showTrendChannel; setShowTrendChannel(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: v, PITCHFORK: showPitchfork }); }}
+                onClick={() => { const v = !showTrendChannel; setShowTrendChannel(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: v, PITCHFORK: showPitchfork, PREDICTION: showPrediction }); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showTrendChannel ? 'text-green-400' : 'text-dark-600'}`}
-                title="趋势通道"
+                title="趋势通道+预测延伸"
               >
                 通道
               </button>
               <button
-                onClick={() => { const v = !showPitchfork; setShowPitchfork(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: v }); }}
+                onClick={() => { const v = !showPitchfork; setShowPitchfork(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: v, PREDICTION: showPrediction }); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showPitchfork ? 'text-amber-400' : 'text-dark-600'}`}
-                title="安德鲁音叉"
+                title="安德鲁音叉+延伸线"
               >
                 音叉
+              </button>
+              <button
+                onClick={() => { const v = !showPrediction; setShowPrediction(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: v }); }}
+                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showPrediction ? 'text-purple-400' : 'text-dark-600'}`}
+                title="自动趋势线+预测投影"
+              >
+                预测
               </button>
             </>
           )}
