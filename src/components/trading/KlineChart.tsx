@@ -14,9 +14,11 @@ import {
   calcChan,
   calcTrendChannel,
   calcPitchfork,
+  calcFourierExtrapolation,
   type ChanResult,
   type TrendChannel,
   type Pitchfork,
+  type FourierProjection,
 } from '@/shared/lib/indicators';
 import { analyzeRapid, type RapidAnalysis } from '@/shared/lib/rapid-strategy';
 
@@ -112,8 +114,8 @@ function saveIndicatorPrefs(next: typeof DEFAULT_INDICATORS) {
 // 同样存于浏览器本地，刷新/换币种/换周期后保持用户的选择
 // 会员用户额外同步到后端（跨设备），非会员仅本地
 // 版本号：默认值变更时递增，旧 localStorage 自动失效
-  const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v2';
-const DEFAULT_OVERLAY = { AB9: false, FIB: false, CHANNEL: false, PITCHFORK: false, PREDICTION: false };
+  const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v3';
+const DEFAULT_OVERLAY = { AB9: false, FIB: false, CHANNEL: false, PITCHFORK: false, PREDICTION: false, FOURIER: false };
 
 function loadOverlayPrefs() {
   if (typeof window === 'undefined') return { ...DEFAULT_OVERLAY };
@@ -127,6 +129,7 @@ function loadOverlayPrefs() {
       CHANNEL: parsed.CHANNEL !== undefined ? !!parsed.CHANNEL : DEFAULT_OVERLAY.CHANNEL,
       PITCHFORK: parsed.PITCHFORK !== undefined ? !!parsed.PITCHFORK : DEFAULT_OVERLAY.PITCHFORK,
       PREDICTION: parsed.PREDICTION !== undefined ? !!parsed.PREDICTION : DEFAULT_OVERLAY.PREDICTION,
+      FOURIER: parsed.FOURIER !== undefined ? !!parsed.FOURIER : DEFAULT_OVERLAY.FOURIER,
     };
   } catch {
     return { ...DEFAULT_OVERLAY };
@@ -188,6 +191,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const chanDataRef = useRef<ChanResult | null>(null);
   const trendChannelRef = useRef<TrendChannel | null>(null);
   const pitchforkRef = useRef<Pitchfork | null>(null);
+  const fourierRef = useRef<FourierProjection | null>(null);
   const drawChanRef = useRef<() => void>(() => {});
 
   // 多空信号箭头画布
@@ -209,6 +213,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const [showTrendChannel, setShowTrendChannel] = useState(overlayPrefsInit.CHANNEL);
   const [showPitchfork, setShowPitchfork] = useState(overlayPrefsInit.PITCHFORK);
   const [showPrediction, setShowPrediction] = useState(overlayPrefsInit.PREDICTION ?? false);
+  const [showFourier, setShowFourier] = useState(overlayPrefsInit.FOURIER ?? false);
   // ref 镜像：updateIndicators 的 useCallback 依赖里没有这两个开关，
   // 切换币种/周期重载数据时闭包里是旧值，会出现"关了又冒出来/开了不出来"的状态错乱
   const showTrendChannelRef = useRef(showTrendChannel);
@@ -217,6 +222,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   showPitchforkRef.current = showPitchfork;
   const showPredictionRef = useRef(showPrediction);
   showPredictionRef.current = showPrediction;
+  const showFourierRef = useRef(showFourier);
+  showFourierRef.current = showFourier;
   // 左上角 OHLC 图例：随十字线联动（悬停读历史K线，离开回落到最新一根，tick 实时刷新）
   interface LegendInfo { o: number; h: number; l: number; c: number; pct: number }
   const [legend, setLegend] = useState<LegendInfo | null>(null);
@@ -236,6 +243,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const pfSeriesRef = useRef<{
     median?: ISeriesApi<'Line'>; upper?: ISeriesApi<'Line'>; lower?: ISeriesApi<'Line'>;
     upperWarn?: ISeriesApi<'Line'>; lowerWarn?: ISeriesApi<'Line'>;
+  }>({});
+  // Fourier Extrapolator LineSeries refs（拟合曲线 + 预测投影）
+  const fourierSeriesRef = useRef<{
+    fit?: ISeriesApi<'Line'>; proj?: ISeriesApi<'Line'>;
   }>({});
   // 自动趋势线 LineSeries refs
   const trendLineSeriesRef = useRef<ISeriesApi<'Line'>[]>([]);
@@ -489,6 +500,13 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       pitchforkRef.current = null;
     }
 
+    // Fourier 外推预测
+    if (showFourierRef.current) {
+      fourierRef.current = calcFourierExtrapolation(klines, 128, 8, 24);
+    } else {
+      fourierRef.current = null;
+    }
+
     requestAnimationFrame(() => {
       try { drawChanRef.current(); } catch (e) { console.warn('[Chan] raf error:', e); }
     });
@@ -601,7 +619,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     }
   }, [indicators, updateIndicators]);
 
-  // 趋势通道/音叉开关切换时立即重算
+  // 趋势通道/音叉/Fourier 开关切换时立即重算
   useEffect(() => {
     if (allKlinesRef.current.length > 0 && mainChart.current) {
       const klines = allKlinesRef.current;
@@ -617,11 +635,17 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       } else {
         pitchforkRef.current = null;
       }
+      // Fourier 外推
+      if (showFourier) {
+        fourierRef.current = calcFourierExtrapolation(klines, 128, 8, 24);
+      } else {
+        fourierRef.current = null;
+      }
       requestAnimationFrame(() => {
         try { drawChanRef.current(); } catch (e) { console.warn('[Overlay] raf error:', e); }
       });
     }
-  }, [showTrendChannel, showPitchfork]);
+  }, [showTrendChannel, showPitchfork, showFourier]);
 
   // === AB9线 + 斐波那契回调线重绘 ===
   // 数据加载、开关切换、K线收盘（isFinal）时调用，统一走这一个入口
@@ -714,6 +738,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       for (const key of ['median', 'upper', 'lower', 'upperWarn', 'lowerWarn'] as const) {
         if (r[key]) { try { mainChart.current?.removeSeries(r[key]!); } catch {} r[key] = undefined; }
       }
+    };
+    const removeFourierSeries = () => {
+      const r = fourierSeriesRef.current;
+      if (r.fit) { try { mainChart.current?.removeSeries(r.fit); } catch {} r.fit = undefined; }
+      if (r.proj) { try { mainChart.current?.removeSeries(r.proj); } catch {} r.proj = undefined; }
     };
     for (const s of trendLineSeriesRef.current) { try { mainChart.current?.removeSeries(s); } catch {} }
     trendLineSeriesRef.current = [];
@@ -831,6 +860,50 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         trendLineSeriesRef.current.push(projSeries);
       }
     }
+
+    // ---- Fourier Extrapolator（傅里叶外推预测） ----
+    // 使用 FFT 分解价格主导周期，外推未来价格走势
+    if (showFourierRef.current && isMember) {
+      if (!fourierRef.current) {
+        fourierRef.current = calcFourierExtrapolation(klines, 128, 8, 24);
+      }
+      const fp = fourierRef.current;
+      if (fp) {
+        // 拟合曲线（历史区间内的重构值，半透明实线）
+        const fitData = fp.reconstructed.map(p => ({ time: p.time as Time, value: p.price }));
+        if (fitData.length > 1) {
+          if (!fourierSeriesRef.current.fit) {
+            fourierSeriesRef.current.fit = mainChart.current!.addLineSeries({
+              color: 'rgba(168, 85, 247, 0.45)', lineWidth: 1 as 1, lineStyle: LineStyle.Solid,
+              priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+            });
+          }
+          fourierSeriesRef.current.fit.setData(fitData);
+        }
+
+        // 预测投影线（未来 K 线，虚线）
+        // 衔接：从最后一个拟合点延伸到第一个投影点
+        const lastFit = fp.reconstructed[fp.reconstructed.length - 1];
+        const projData: { time: Time; value: number }[] = [];
+        if (lastFit) {
+          projData.push({ time: lastFit.time as Time, value: lastFit.price });
+        }
+        for (const p of fp.projection) {
+          projData.push({ time: p.time as Time, value: p.price });
+        }
+        if (projData.length > 1) {
+          if (!fourierSeriesRef.current.proj) {
+            fourierSeriesRef.current.proj = mainChart.current!.addLineSeries({
+              color: 'rgba(168, 85, 247, 0.8)', lineWidth: 2 as 2, lineStyle: LineStyle.Dashed,
+              priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false,
+            });
+          }
+          fourierSeriesRef.current.proj.setData(projData);
+        }
+      }
+    } else {
+      removeFourierSeries();
+    }
   }, [isMember, symbol]);
 
   // 更新K线数据
@@ -895,10 +968,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     redrawOverlayLines();
   }, [redrawOverlayLines]);
 
-  // 趋势通道/音叉开关切换时重画
+  // 趋势通道/音叉/Fourier 开关切换时重画
   useEffect(() => {
     drawTrendOverlays();
-  }, [drawTrendOverlays, showTrendChannel, showPitchfork, showPrediction]);
+  }, [drawTrendOverlays, showTrendChannel, showPitchfork, showPrediction, showFourier]);
 
   // Tick 实时更新（rAF + 50ms 节流，和 v24 一致）
   const flushTick = useCallback(() => {
@@ -2042,39 +2115,46 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             <>
               <div className="w-px h-4 bg-dark-700" />
               <button
-                onClick={() => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ AB9: v, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction }); saveUserPref('prefAB9', v); }}
+                onClick={() => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ AB9: v, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier }); saveUserPref('prefAB9', v); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showAutoAB9 ? 'text-cyan-400' : 'text-dark-600'}`}
                 title="AB9线"
               >
                 AB9
               </button>
               <button
-                onClick={() => { const v = !showFibonacci; setShowFibonacci(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: v, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction }); saveUserPref('prefFibonacci', v); }}
+                onClick={() => { const v = !showFibonacci; setShowFibonacci(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: v, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier }); saveUserPref('prefFibonacci', v); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showFibonacci ? 'text-cyan-400' : 'text-dark-600'}`}
                 title="斐波那契回调线"
               >
                 FIB
               </button>
               <button
-                onClick={() => { const v = !showTrendChannel; setShowTrendChannel(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: v, PITCHFORK: showPitchfork, PREDICTION: showPrediction }); }}
+                onClick={() => { const v = !showTrendChannel; setShowTrendChannel(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: v, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier }); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showTrendChannel ? 'text-green-400' : 'text-dark-600'}`}
                 title="趋势通道+预测延伸"
               >
                 通道
               </button>
               <button
-                onClick={() => { const v = !showPitchfork; setShowPitchfork(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: v, PREDICTION: showPrediction }); }}
+                onClick={() => { const v = !showPitchfork; setShowPitchfork(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: v, PREDICTION: showPrediction, FOURIER: showFourier }); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showPitchfork ? 'text-amber-400' : 'text-dark-600'}`}
                 title="安德鲁音叉+延伸线"
               >
                 音叉
               </button>
               <button
-                onClick={() => { const v = !showPrediction; setShowPrediction(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: v }); }}
+                onClick={() => { const v = !showPrediction; setShowPrediction(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: v, FOURIER: showFourier }); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showPrediction ? 'text-purple-400' : 'text-dark-600'}`}
                 title="自动趋势线+预测投影"
               >
                 预测
+              </button>
+              <button
+                onClick={() => { const v = !showFourier; setShowFourier(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: v }); }}
+                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showFourier ? 'text-fuchsia-400' : 'text-dark-600'}`}
+                title="傅里叶外推预测（FFT周期投影）"
+              >
+                FFT
               </button>
             </>
           )}

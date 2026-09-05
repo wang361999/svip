@@ -135,6 +135,191 @@ export function calcRSIArray(klines: KlineData[], period: number = 14): (number 
   return result;
 }
 
+// ==================== Fourier Extrapolator（傅里叶外推器） ====================
+// 将价格分解为主导谐波周期，利用 FFT 外推未来价格走势
+
+export interface FourierPoint {
+  time: number;
+  price: number;
+}
+
+export interface FourierProjection {
+  /** 拟合区间内的重构值（验证拟合质量） */
+  reconstructed: FourierPoint[];
+  /** 未来投影点 */
+  projection: FourierPoint[];
+  /** 主导周期（以K线根数为单位） */
+  dominantCycles: number[];
+  /** 拟合度 R²（0~1） */
+  rSquared: number;
+}
+
+/**
+ * 迭代式 radix-2 Cooley-Tukey FFT
+ * 输入长度必须为 2 的幂
+ */
+function fftRadix2(input: number[]): { re: number[]; im: number[] } {
+  const n = input.length;
+  if (n <= 1) return { re: [...input], im: new Array(n).fill(0) };
+
+  const re = [...input];
+  const im = new Array(n).fill(0);
+
+  // Bit-reversal 置换
+  let j = 0;
+  for (let i = 1; i < n; i++) {
+    let bit = n >> 1;
+    while (j & bit) {
+      j ^= bit;
+      bit >>= 1;
+    }
+    j ^= bit;
+    if (i < j) {
+      [re[i], re[j]] = [re[j], re[i]];
+      [im[i], im[j]] = [im[j], im[i]];
+    }
+  }
+
+  // 蝶形运算
+  for (let len = 2; len <= n; len <<= 1) {
+    const angle = (-2 * Math.PI) / len;
+    const wlenRe = Math.cos(angle);
+    const wlenIm = Math.sin(angle);
+
+    for (let i = 0; i < n; i += len) {
+      let wRe = 1;
+      let wIm = 0;
+      for (let k = 0; k < len / 2; k++) {
+        const uRe = re[i + k];
+        const uIm = im[i + k];
+        const vRe = re[i + k + len / 2] * wRe - im[i + k + len / 2] * wIm;
+        const vIm = re[i + k + len / 2] * wIm + im[i + k + len / 2] * wRe;
+
+        re[i + k] = uRe + vRe;
+        im[i + k] = uIm + vIm;
+        re[i + k + len / 2] = uRe - vRe;
+        im[i + k + len / 2] = uIm - vIm;
+
+        const nextWRe = wRe * wlenRe - wIm * wlenIm;
+        wIm = wRe * wlenIm + wIm * wlenRe;
+        wRe = nextWRe;
+      }
+    }
+  }
+
+  return { re, im };
+}
+
+/**
+ * 傅里叶外推预测
+ *
+ * @param klines    K线数据
+ * @param lookback  回溯窗口（实际使用的最大K线数，会自动截取为2的幂）
+ * @param numHarmonics 保留的主导谐波数量（越多越拟合历史，但可能过拟合）
+ * @param projBars  向前投影的K线根数
+ */
+export function calcFourierExtrapolation(
+  klines: KlineData[],
+  lookback: number = 128,
+  numHarmonics: number = 8,
+  projBars: number = 24,
+): FourierProjection | null {
+  const n = klines.length;
+  if (n < 30) return null;
+
+  // 取最近 lookback 根K线的收盘价
+  const startIdx = Math.max(0, n - lookback);
+  const closes = klines.slice(startIdx).map((k) => k.close);
+  const m = closes.length;
+
+  // 找到 ≤ m 的最大 2 的幂
+  const fftSize = Math.pow(2, Math.floor(Math.log2(m)));
+  if (fftSize < 16) return null;
+
+  // 截取最后 fftSize 个数据点
+  const data = closes.slice(-fftSize);
+
+  // 去均值（消除直流分量）
+  const mean = data.reduce((s, v) => s + v, 0) / fftSize;
+  const detrended = data.map((v) => v - mean);
+
+  // FFT
+  const { re, im } = fftRadix2(detrended);
+
+  // 计算每个频率的振幅，按强度排序
+  const harmonics: { idx: number; amp: number }[] = [];
+  for (let k = 1; k < fftSize / 2; k++) {
+    const amp = Math.sqrt(re[k] * re[k] + im[k] * im[k]);
+    harmonics.push({ idx: k, amp });
+  }
+  harmonics.sort((a, b) => b.amp - a.amp);
+
+  // 取前 numHarmonics 个主导谐波
+  const topK = harmonics.slice(0, numHarmonics);
+  const harmonicIdxs = new Set(topK.map((h) => h.idx));
+
+  // 重构函数：给定 t（0~fftSize-1 为历史，fftSize~ 为未来）
+  const reconstruct = (t: number): number => {
+    let val = mean; // 加回均值（直流分量）
+    for (let k = 1; k < fftSize / 2; k++) {
+      if (!harmonicIdxs.has(k)) continue;
+      const angle = (2 * Math.PI * k * t) / fftSize;
+      val += (2 * (re[k] * Math.cos(angle) - im[k] * Math.sin(angle))) / fftSize;
+    }
+    // Nyquist 频率（k = fftSize/2）只有余弦项
+    if (harmonicIdxs.has(fftSize / 2)) {
+      const k = fftSize / 2;
+      val += (re[k] * Math.cos(Math.PI * t)) / fftSize;
+    }
+    return val;
+  };
+
+  // 时间间隔
+  const lastTime = klines[n - 1].time;
+  const interval = n >= 2 ? klines[n - 1].time - klines[n - 2].time : 3600;
+  const dataStartIdx = n - fftSize; // data[0] 对应的 kline index
+
+  // 构建重构值（历史拟合曲线）
+  const reconstructed: FourierPoint[] = [];
+  for (let t = 0; t < fftSize; t++) {
+    const klineIdx = dataStartIdx + t;
+    if (klineIdx >= 0 && klineIdx < n) {
+      reconstructed.push({
+        time: klines[klineIdx].time,
+        price: +reconstruct(t).toFixed(4),
+      });
+    }
+  }
+
+  // 构建投影值（未来预测线）
+  const projection: FourierPoint[] = [];
+  for (let t = fftSize; t < fftSize + projBars; t++) {
+    projection.push({
+      time: (lastTime + interval * (t - fftSize + 1)) as number,
+      price: +reconstruct(t).toFixed(4),
+    });
+  }
+
+  // 计算 R² 拟合度
+  const predicted = data.map((_, t) => reconstruct(t));
+  const ssRes = data.reduce((s, v, t) => s + Math.pow(v - predicted[t], 2), 0);
+  const ssTot = data.reduce((s, v) => s + Math.pow(v - mean, 2), 0);
+  const rSquared = ssTot > 0 ? 1 - ssRes / ssTot : 0;
+
+  // 主导周期（以K线根数为单位）
+  const dominantCycles = topK
+    .filter((h) => h.idx > 0)
+    .map((h) => Math.round(fftSize / h.idx))
+    .filter((c) => c > 0 && c < fftSize);
+
+  return {
+    reconstructed,
+    projection,
+    dominantCycles,
+    rSquared,
+  };
+}
+
 // ==================== 趋势通道（Trend Channel） ====================
 
 export interface TrendChannel {
