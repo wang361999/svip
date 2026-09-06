@@ -229,6 +229,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const [showValueArea, setShowValueArea] = useState(overlayPrefsInit.VALUEAREA ?? false);
   const [showIchimoku, setShowIchimoku] = useState(overlayPrefsInit.ICHIMOKU ?? false);
   const [showSynth, setShowSynth] = useState(overlayPrefsInit.SYNTH ?? false);
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
   // ref 镜像：updateIndicators 的 useCallback 依赖里没有这两个开关，
   // 切换币种/周期重载数据时闭包里是旧值，会出现"关了又冒出来/开了不出来"的状态错乱
   const showTrendChannelRef = useRef(showTrendChannel);
@@ -2398,165 +2399,174 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     return () => ws.disconnect();
   }, [interval, symbol, okxId, loadKlines, updateTick]);
 
+  // 菜单点击外部时关闭（避免用 fixed 遮罩被玻璃卡裁剪）
+  useEffect(() => {
+    if (!openMenu) return;
+    const handler = () => setOpenMenu(null);
+    document.addEventListener('mousedown', handler);
+    document.addEventListener('touchstart', handler);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      document.removeEventListener('touchstart', handler);
+    };
+  }, [openMenu, isFullscreen]);
+
+  // 绘图/叠加图层菜单项（会员）
+  const layerMenu = [
+    {
+      key: 'AB9', label: 'AB9 均线带', active: showAutoAB9,
+      on: () => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ AB9: v, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); saveUserPref('prefAB9', v); setOpenMenu(null); },
+    },
+    {
+      key: 'FIB', label: '斐波那契', active: showFibonacci,
+      on: () => { const v = !showFibonacci; setShowFibonacci(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: v, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); saveUserPref('prefFibonacci', v); setOpenMenu(null); },
+    },
+    {
+      key: 'CHANNEL', label: '趋势通道', active: showTrendChannel,
+      on: () => { const v = !showTrendChannel; setShowTrendChannel(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: v, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); setOpenMenu(null); },
+    },
+    {
+      key: 'PITCHFORK', label: '安德鲁音叉', active: showPitchfork,
+      on: () => { const v = !showPitchfork; setShowPitchfork(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: v, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); setOpenMenu(null); },
+    },
+    {
+      key: 'PREDICTION', label: '趋势预测', active: showPrediction,
+      on: () => { const v = !showPrediction; setShowPrediction(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: v, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); setOpenMenu(null); },
+    },
+    {
+      key: 'FOURIER', label: '傅里叶 FFT', active: showFourier,
+      on: () => { const v = !showFourier; setShowFourier(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: v, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); setOpenMenu(null); },
+    },
+    {
+      key: 'VALUEAREA', label: '价值区域 VA', active: showValueArea,
+      on: () => { const v = !showValueArea; setShowValueArea(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: v, ICHIMOKU: showIchimoku, SYNTH: showSynth }); setOpenMenu(null); },
+    },
+    {
+      key: 'ICHIMOKU', label: '一目云图', active: showIchimoku,
+      on: () => { const v = !showIchimoku; setShowIchimoku(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: v, SYNTH: showSynth }); setOpenMenu(null); },
+    },
+    {
+      key: 'SYNTH', label: '预测合成器', active: showSynth,
+      on: () => { const v = !showSynth; setShowSynth(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: v }); setOpenMenu(null); },
+    },
+  ];
+
   return (
     <div className="glass-card overflow-hidden">
       {/* 工具栏 */}
-      <div className="flex flex-wrap items-center justify-between gap-2 p-3 border-b border-dark-700/50">
-        <div className="flex items-center space-x-2">
-          {/* 币种选择器 */}
+      <div className="flex flex-wrap items-center justify-between gap-y-2 gap-x-3 px-3 py-2 border-b border-dark-700/50">
+        {/* 左：币种 + 周期 */}
+        <div className="flex items-center gap-2 min-w-0">
           <SymbolSelector
             symbol={symbol}
             symbolLabel={symbolLabel}
             symbolList={symbolList}
             onChange={(value) => setSymbol(value)}
           />
-          <div className="w-px h-4 bg-dark-700" />
-          {INTERVALS.map((item) => (
-            <button
-              key={item.value}
-              onClick={() => setIntervalState(item.value)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
-                interval === item.value
-                  ? 'bg-blue-600 text-white'
-                  : 'text-dark-400 hover:text-white hover:bg-dark-700/50'
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
+          <div className="w-px h-4 bg-dark-700 shrink-0" />
+          <div className="flex items-center gap-1 overflow-x-auto scrollbar-none">
+            {INTERVALS.map((item) => (
+              <button
+                key={item.value}
+                onClick={() => setIntervalState(item.value)}
+                className={`shrink-0 px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
+                  interval === item.value
+                    ? 'bg-blue-600 text-white'
+                    : 'text-dark-400 hover:text-white hover:bg-dark-700/50'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
         </div>
 
-        <div className="flex items-center justify-end gap-1.5 flex-1 min-w-0 flex-wrap">
-          <span className={`text-xs px-2 py-0.5 rounded whitespace-nowrap ${
+        {/* 右：状态 + 指标菜单 + 图层菜单 + 全屏 */}
+        <div className="flex items-center gap-1.5">
+          <span className={`hidden sm:inline text-xs px-2 py-0.5 rounded whitespace-nowrap ${
             dataStatus === '实时' ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'
           }`}>
             {dataStatus}
           </span>
 
-          {/* 副图指标组 */}
-          <div className="flex items-center gap-0.5 px-1.5 py-1 rounded-md bg-dark-800/40 border border-dark-700/40">
-            <span className="text-[10px] text-dark-500 mr-0.5 select-none">副图</span>
-            {(['EMA', 'BOLL', 'MACD', 'RSI', 'VWAP', 'KDJ', 'ATR'] as const).map((ind) => (
-              <button
-                key={ind}
-                onClick={() => {
-                  // 前台徽章直接管控：点击即切换并持久化到浏览器本地
-                  setIndicators((prev) => {
-                    const next = { ...prev, [ind]: !prev[ind] };
-                    saveIndicatorPrefs(next);
-                    return next;
-                  });
-                }}
-                className={`px-2 py-0.5 text-xs font-medium cursor-pointer select-none rounded transition-all ${
-                  indicators[ind]
-                    ? 'bg-blue-500/15 text-blue-300'
-                    : 'text-dark-600 line-through hover:text-dark-400'
-                }`}
-                title={`点击切换${ind}显示`}
-              >
-                {ind}
-              </button>
-            ))}
+          {/* 指标菜单（副图 + 主图，收纳到下拉减少占用） */}
+          <div className="relative" onMouseDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}>
+            <button
+              onClick={() => setOpenMenu(openMenu === 'ind' ? null : 'ind')}
+              className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md transition-all ${
+                openMenu === 'ind' ? 'bg-dark-700/80 text-white' : 'text-dark-400 hover:text-white hover:bg-dark-700/50'
+              }`}
+              title="指标"
+            >
+              指标
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+            </button>
+            {openMenu === 'ind' && (
+              <div className="absolute right-0 top-full mt-1 z-40 w-44 rounded-lg bg-dark-800 border border-dark-700 p-1.5 shadow-2xl">
+                <div className="px-2 pt-1 pb-0.5 text-[10px] uppercase tracking-wider text-dark-500">副图</div>
+                {(['EMA', 'BOLL', 'MACD', 'RSI', 'VWAP', 'KDJ', 'ATR'] as const).map((ind) => (
+                  <button
+                    key={ind}
+                    onClick={() => {
+                      setIndicators((prev) => { const next = { ...prev, [ind]: !prev[ind] }; saveIndicatorPrefs(next); return next; });
+                    }}
+                    className="w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs hover:bg-dark-700/40 transition-all"
+                  >
+                    <span className={indicators[ind] ? 'text-blue-300' : 'text-dark-300'}>{ind}</span>
+                    <span className={`text-[10px] ${indicators[ind] ? 'text-blue-400' : 'text-dark-600'}`}>{indicators[ind] ? '开' : '关'}</span>
+                  </button>
+                ))}
+                <div className="px-2 pt-2 pb-0.5 text-[10px] uppercase tracking-wider text-dark-500">主图</div>
+                {(['NINE', 'CHAN'] as const).map((ind) => (
+                  <button
+                    key={ind}
+                    onClick={() => {
+                      setIndicators((prev) => { const next = { ...prev, [ind]: !prev[ind] }; saveIndicatorPrefs(next); return next; });
+                    }}
+                    className="w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs hover:bg-dark-700/40 transition-all"
+                  >
+                    <span className={indicators[ind] ? 'text-blue-300' : 'text-dark-300'}>{ind === 'NINE' ? '九转' : '缠论'}</span>
+                    <span className={`text-[10px] ${indicators[ind] ? 'text-blue-400' : 'text-dark-600'}`}>{indicators[ind] ? '开' : '关'}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-
-          {/* 主图/高级组 */}
-          <div className="flex items-center gap-0.5 px-1.5 py-1 rounded-md bg-dark-800/40 border border-dark-700/40">
-            <span className="text-[10px] text-dark-500 mr-0.5 select-none">主图</span>
-            {(['NINE', 'CHAN'] as const).map((ind) => (
-              <button
-                key={ind}
-                onClick={() => {
-                  setIndicators((prev) => {
-                    const next = { ...prev, [ind]: !prev[ind] };
-                    saveIndicatorPrefs(next);
-                    return next;
-                  });
-                }}
-                className={`px-2 py-0.5 text-xs font-medium cursor-pointer select-none rounded transition-all ${
-                  indicators[ind]
-                    ? 'bg-blue-500/15 text-blue-300'
-                    : 'text-dark-600 line-through hover:text-dark-400'
-                }`}
-                title={`点击切换${ind}显示`}
-              >
-                {ind === 'NINE' ? '九转' : '缠论'}
-              </button>
-            ))}
-          </div>
-          {/* 会员叠加图层组（AB9/斐波那契/通道/音叉/预测/FFT/VA/云图/合成） */}
+          {/* 图层菜单（会员叠加层） */}
           {isMember && (
-            <div className="flex items-center gap-0.5 px-1.5 py-1 rounded-md bg-dark-800/40 border border-dark-700/40">
-              <span className="text-[10px] text-dark-500 mr-0.5 select-none">图层</span>
+            <div className="relative" onMouseDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}>
               <button
-                onClick={() => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ AB9: v, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); saveUserPref('prefAB9', v); }}
-                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showAutoAB9 ? 'text-cyan-400' : 'text-dark-600'}`}
-                title="AB9线"
+                onClick={() => setOpenMenu(openMenu === 'layer' ? null : 'layer')}
+                className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md transition-all ${
+                  openMenu === 'layer' ? 'bg-dark-700/80 text-white' : 'text-dark-400 hover:text-white hover:bg-dark-700/50'
+                }`}
+                title="绘图/叠加图层"
               >
-                AB9
+                图层
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
               </button>
-              <button
-                onClick={() => { const v = !showFibonacci; setShowFibonacci(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: v, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); saveUserPref('prefFibonacci', v); }}
-                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showFibonacci ? 'text-cyan-400' : 'text-dark-600'}`}
-                title="斐波那契回调线"
-              >
-                FIB
-              </button>
-              <button
-                onClick={() => { const v = !showTrendChannel; setShowTrendChannel(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: v, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); }}
-                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showTrendChannel ? 'text-green-400' : 'text-dark-600'}`}
-                title="趋势通道+预测延伸"
-              >
-                通道
-              </button>
-              <button
-                onClick={() => { const v = !showPitchfork; setShowPitchfork(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: v, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); }}
-                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showPitchfork ? 'text-amber-400' : 'text-dark-600'}`}
-                title="安德鲁音叉+延伸线"
-              >
-                音叉
-              </button>
-              <button
-                onClick={() => { const v = !showPrediction; setShowPrediction(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: v, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); }}
-                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showPrediction ? 'text-purple-400' : 'text-dark-600'}`}
-                title="自动趋势线+预测投影"
-              >
-                预测
-              </button>
-              <button
-                onClick={() => { const v = !showFourier; setShowFourier(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: v, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); }}
-                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showFourier ? 'text-fuchsia-400' : 'text-dark-600'}`}
-                title="傅里叶外推预测（FFT周期投影）"
-              >
-                FFT
-              </button>
-              <button
-                onClick={() => { const v = !showValueArea; setShowValueArea(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: v, ICHIMOKU: showIchimoku, SYNTH: showSynth }); }}
-                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showValueArea ? 'text-sky-400' : 'text-dark-600'}`}
-                title="价值区域（VAH/POC/VAL 成交量密度）"
-              >
-                VA
-              </button>
-              <button
-                onClick={() => { const v = !showIchimoku; setShowIchimoku(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: v, SYNTH: showSynth }); }}
-                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showIchimoku ? 'text-indigo-400' : 'text-dark-600'}`}
-                title="一目均衡表云图（未来支撑阻力带）"
-              >
-                云图
-              </button>
-              <button
-                onClick={() => { const v = !showSynth; setShowSynth(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: v }); }}
-                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showSynth ? 'text-emerald-400' : 'text-dark-600'}`}
-                title="预测信号合成器（方向+置信度+目标+拐点）"
-              >
-                合成
-              </button>
+              {openMenu === 'layer' && (
+                <div className="absolute right-0 top-full mt-1 z-40 w-52 rounded-lg bg-dark-800 border border-dark-700 p-1.5 shadow-2xl max-h-80 overflow-y-auto">
+                  <div className="px-2 pt-1 pb-0.5 text-[10px] uppercase tracking-wider text-dark-500">叠加图层</div>
+                  {layerMenu.map((item) => (
+                    <button
+                      key={item.key}
+                      onClick={item.on}
+                      className="w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs hover:bg-dark-700/40 transition-all"
+                    >
+                      <span className={item.active ? 'text-blue-300' : 'text-dark-300'}>{item.label}</span>
+                      <span className={`text-[10px] ${item.active ? 'text-blue-400' : 'text-dark-600'}`}>{item.active ? '开' : '关'}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
           {/* 全屏按钮 */}
           <button
             onClick={onToggleFullscreen}
-            className="px-2.5 py-1 text-xs font-medium rounded text-dark-400 hover:text-white hover:bg-dark-700/50 transition-all"
+            className="px-2 py-1.5 rounded-md text-dark-400 hover:text-white hover:bg-dark-700/50 transition-all"
             title={isFullscreen ? '退出全屏' : '全屏'}
           >
             {isFullscreen ? (
