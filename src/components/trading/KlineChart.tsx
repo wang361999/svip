@@ -16,11 +16,15 @@ import {
   calcPitchfork,
   calcFourierExtrapolation,
   calcValueArea,
+  calcIchimoku,
+  calcPredictionSynth,
   type ChanResult,
   type TrendChannel,
   type Pitchfork,
   type FourierProjection,
   type ValueArea,
+  type IchimokuData,
+  type PredictionSynth,
 } from '@/shared/lib/indicators';
 import { analyzeRapid, type RapidAnalysis } from '@/shared/lib/rapid-strategy';
 
@@ -116,8 +120,8 @@ function saveIndicatorPrefs(next: typeof DEFAULT_INDICATORS) {
 // 同样存于浏览器本地，刷新/换币种/换周期后保持用户的选择
 // 会员用户额外同步到后端（跨设备），非会员仅本地
 // 版本号：默认值变更时递增，旧 localStorage 自动失效
-  const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v4';
-const DEFAULT_OVERLAY = { AB9: false, FIB: false, CHANNEL: false, PITCHFORK: false, PREDICTION: false, FOURIER: false, VALUEAREA: false };
+  const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v5';
+const DEFAULT_OVERLAY = { AB9: false, FIB: false, CHANNEL: false, PITCHFORK: false, PREDICTION: false, FOURIER: false, VALUEAREA: false, ICHIMOKU: false, SYNTH: false };
 
 function loadOverlayPrefs() {
   if (typeof window === 'undefined') return { ...DEFAULT_OVERLAY };
@@ -133,6 +137,8 @@ function loadOverlayPrefs() {
       PREDICTION: parsed.PREDICTION !== undefined ? !!parsed.PREDICTION : DEFAULT_OVERLAY.PREDICTION,
       FOURIER: parsed.FOURIER !== undefined ? !!parsed.FOURIER : DEFAULT_OVERLAY.FOURIER,
       VALUEAREA: parsed.VALUEAREA !== undefined ? !!parsed.VALUEAREA : DEFAULT_OVERLAY.VALUEAREA,
+      ICHIMOKU: parsed.ICHIMOKU !== undefined ? !!parsed.ICHIMOKU : DEFAULT_OVERLAY.ICHIMOKU,
+      SYNTH: parsed.SYNTH !== undefined ? !!parsed.SYNTH : DEFAULT_OVERLAY.SYNTH,
     };
   } catch {
     return { ...DEFAULT_OVERLAY };
@@ -196,6 +202,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const pitchforkRef = useRef<Pitchfork | null>(null);
   const fourierRef = useRef<FourierProjection | null>(null);
   const valueAreaRef = useRef<ValueArea | null>(null);
+  const ichimokuRef = useRef<IchimokuData | null>(null);
+  const synthRef = useRef<PredictionSynth | null>(null);
   const drawChanRef = useRef<() => void>(() => {});
 
   // 多空信号箭头画布
@@ -219,6 +227,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const [showPrediction, setShowPrediction] = useState(overlayPrefsInit.PREDICTION ?? false);
   const [showFourier, setShowFourier] = useState(overlayPrefsInit.FOURIER ?? false);
   const [showValueArea, setShowValueArea] = useState(overlayPrefsInit.VALUEAREA ?? false);
+  const [showIchimoku, setShowIchimoku] = useState(overlayPrefsInit.ICHIMOKU ?? false);
+  const [showSynth, setShowSynth] = useState(overlayPrefsInit.SYNTH ?? false);
   // ref 镜像：updateIndicators 的 useCallback 依赖里没有这两个开关，
   // 切换币种/周期重载数据时闭包里是旧值，会出现"关了又冒出来/开了不出来"的状态错乱
   const showTrendChannelRef = useRef(showTrendChannel);
@@ -231,6 +241,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   showFourierRef.current = showFourier;
   const showValueAreaRef = useRef(showValueArea);
   showValueAreaRef.current = showValueArea;
+  const showIchimokuRef = useRef(showIchimoku);
+  showIchimokuRef.current = showIchimoku;
+  const showSynthRef = useRef(showSynth);
+  showSynthRef.current = showSynth;
   // 左上角 OHLC 图例：随十字线联动（悬停读历史K线，离开回落到最新一根，tick 实时刷新）
   interface LegendInfo { o: number; h: number; l: number; c: number; pct: number }
   const [legend, setLegend] = useState<LegendInfo | null>(null);
@@ -521,6 +535,20 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       valueAreaRef.current = null;
     }
 
+    // 一目均衡表云图
+    if (showIchimokuRef.current) {
+      ichimokuRef.current = calcIchimoku(klines, 9, 26, 52, 26);
+    } else {
+      ichimokuRef.current = null;
+    }
+
+    // 预测信号合成器
+    if (showSynthRef.current) {
+      synthRef.current = calcPredictionSynth(klines);
+    } else {
+      synthRef.current = null;
+    }
+
     requestAnimationFrame(() => {
       try { drawChanRef.current(); } catch (e) { console.warn('[Chan] raf error:', e); }
     });
@@ -661,11 +689,23 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       } else {
         valueAreaRef.current = null;
       }
+      // 一目均衡表
+      if (showIchimoku) {
+        ichimokuRef.current = calcIchimoku(klines, 9, 26, 52, 26);
+      } else {
+        ichimokuRef.current = null;
+      }
+      // 预测合成
+      if (showSynth) {
+        synthRef.current = calcPredictionSynth(klines);
+      } else {
+        synthRef.current = null;
+      }
       requestAnimationFrame(() => {
         try { drawChanRef.current(); } catch (e) { console.warn('[Overlay] raf error:', e); }
       });
     }
-  }, [showTrendChannel, showPitchfork, showFourier, showValueArea]);
+  }, [showTrendChannel, showPitchfork, showFourier, showValueArea, showIchimoku, showSynth]);
 
   // === AB9线 + 斐波那契回调线重绘 ===
   // 数据加载、开关切换、K线收盘（isFinal）时调用，统一走这一个入口
@@ -988,10 +1028,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     redrawOverlayLines();
   }, [redrawOverlayLines]);
 
-  // 趋势通道/音叉/Fourier 开关切换时重画
+  // 趋势通道/音叉/Fourier/VA/云图/合成 开关切换时重画
   useEffect(() => {
     drawTrendOverlays();
-  }, [drawTrendOverlays, showTrendChannel, showPitchfork, showPrediction, showFourier, showValueArea]);
+  }, [drawTrendOverlays, showTrendChannel, showPitchfork, showPrediction, showFourier, showValueArea, showIchimoku, showSynth]);
 
   // Tick 实时更新（rAF + 50ms 节流，和 v24 一致）
   const flushTick = useCallback(() => {
@@ -1432,7 +1472,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
         // 没有任何叠层数据时，清空后直接返回
-        if (!chanData && !trendChannelRef.current && !pitchforkRef.current && !valueAreaRef.current) return;
+        if (!chanData && !trendChannelRef.current && !pitchforkRef.current && !valueAreaRef.current && !ichimokuRef.current && !synthRef.current) return;
 
         ctx.save();
         ctx.scale(dpr, dpr);
@@ -1983,6 +2023,206 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           }
         }
 
+        // ========== 一目均衡表（Ichimoku Cloud）绘制 ==========
+        const icm = ichimokuRef.current;
+        if (icm) {
+          const pt = (t: number, p: number): { x: number; y: number } | null => {
+            const x = timeToX(t);
+            const y = candleSeries.current?.priceToCoordinate(p) ?? null;
+            if (x === null || y === null) return null;
+            return { x, y };
+          };
+
+          // 1. 云带（先行区间，含外推未来）：top 与 bottom 之间的填充
+          const cloudPt: { x: number; yT: number; yB: number }[] = [];
+          for (const c of icm.cloud) {
+            const pT = pt(c.time, c.top);
+            const pB = pt(c.time, c.bottom);
+            if (!pT || !pB) continue;
+            cloudPt.push({ x: pT.x, yT: pT.y, yB: pB.y });
+          }
+          if (cloudPt.length > 1) {
+            ctx.beginPath();
+            ctx.moveTo(cloudPt[0].x, cloudPt[0].yT);
+            for (let i = 1; i < cloudPt.length; i++) ctx.lineTo(cloudPt[i].x, cloudPt[i].yT);
+            for (let i = cloudPt.length - 1; i >= 0; i--) ctx.lineTo(cloudPt[i].x, cloudPt[i].yB);
+            ctx.closePath();
+            ctx.fillStyle = 'rgba(76, 110, 245, 0.14)';
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(120, 144, 255, 0.35)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+          }
+
+          // 2. 转换线 tenkan（快，暖色）+ 基准线 kijun（慢，青色）
+          const drawPoly = (
+            arr: { time: number; price: number }[],
+            color: string,
+            width: number,
+            dash: number[] = [],
+          ) => {
+            ctx.strokeStyle = color;
+            ctx.lineWidth = width;
+            ctx.setLineDash(dash);
+            ctx.beginPath();
+            let started = false;
+            for (const p of arr) {
+              const c = pt(p.time, p.price);
+              if (!c) continue;
+              if (!started) { ctx.moveTo(c.x, c.y); started = true; }
+              else ctx.lineTo(c.x, c.y);
+            }
+            ctx.stroke();
+            ctx.setLineDash([]);
+          };
+          drawPoly(icm.tenkan, 'rgba(249, 115, 22, 0.75)', 1.3);
+          drawPoly(icm.kijun, 'rgba(34, 211, 238, 0.85)', 1.5);
+          // 3. 迟行线 chikou（最淡）
+          drawPoly(icm.chikou, 'rgba(240, 240, 240, 0.4)', 1, [2, 3]);
+        }
+
+        // ========== 预测信号合成器（方向 + 置信度 + 目标 + 拐点）绘制 ==========
+        const synth = synthRef.current;
+        if (synth) {
+          const toY = (p: number) => candleSeries.current?.priceToCoordinate(p) ?? null;
+          const toX = (t: number) => timeToX(t);
+
+          // 1. 快周期超趋势线（按方向着色）
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          let stStarted = false;
+          let lastC: { x: number; y: number } | null = null;
+          for (const p of synth.supertrendFast.line) {
+            const x = toX(p.time);
+            const y = toY(p.price);
+            if (x === null || y === null) { lastC = null; continue; }
+            ctx.strokeStyle = p.state === 'up' ? 'rgba(14, 203, 129, 0.85)' : 'rgba(246, 70, 93, 0.85)';
+            if (stStarted && lastC) {
+              ctx.beginPath();
+              ctx.moveTo(lastC.x, lastC.y);
+              ctx.lineTo(x, y);
+              ctx.stroke();
+            }
+            lastC = { x, y };
+            stStarted = true;
+          }
+
+          // 2. 翻转点标记（小圆圈）
+          for (const f of synth.supertrendFast.flips) {
+            const x = toX(f.time);
+            const y = toY(f.price);
+            if (x === null || y === null) continue;
+            ctx.fillStyle = f.direction === 'up' ? 'rgba(14, 203, 129, 1)' : 'rgba(246, 70, 93, 1)';
+            ctx.beginPath();
+            ctx.arc(x, y, 3, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // 3. ATR 目标区：上下目标水平虚线 + 概率标注（只画到右端）
+          if (synth.atrTarget && synth.atrTarget.atr > 0) {
+            const tgt = synth.atrTarget;
+            const baseY = toY(tgt.price);
+            if (baseY !== null) {
+              const lineX = Math.min(toX(tgt.price) ?? rect.width, rect.width);
+              // 上方目标
+              for (const u of tgt.upTargets) {
+                const y = toY(u.price);
+                if (y === null) continue;
+                ctx.strokeStyle = `rgba(14, 203, 129, ${0.25 + u.mult * 0.2})`;
+                ctx.lineWidth = 1;
+                ctx.setLineDash([3, 5]);
+                ctx.beginPath();
+                ctx.moveTo(lineX - 30, y);
+                ctx.lineTo(rect.width, y);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.font = '8px -apple-system, sans-serif';
+                ctx.fillStyle = 'rgba(14, 203, 129, 0.95)';
+                ctx.textAlign = 'right';
+                ctx.textBaseline = 'bottom';
+                ctx.fillText(`+${(u.mult).toFixed(1)}A ${u.price.toFixed(2)} (${u.prob}%)`, rect.width - 3, y - 1);
+              }
+              // 下方目标
+              for (const d of tgt.downTargets) {
+                const y = toY(d.price);
+                if (y === null) continue;
+                ctx.strokeStyle = `rgba(246, 70, 93, ${0.25 + d.mult * 0.2})`;
+                ctx.lineWidth = 1;
+                ctx.setLineDash([3, 5]);
+                ctx.beginPath();
+                ctx.moveTo(lineX - 30, y);
+                ctx.lineTo(rect.width, y);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.font = '8px -apple-system, sans-serif';
+                ctx.fillStyle = 'rgba(246, 70, 93, 0.95)';
+                ctx.textAlign = 'right';
+                ctx.textBaseline = 'top';
+                ctx.fillText(`-${(d.mult).toFixed(1)}A ${d.price.toFixed(2)} (${d.prob}%)`, rect.width - 3, y + 1);
+              }
+            }
+          }
+
+          // 4. RSI 背离标记（拐点预警）
+          for (const d of synth.divergences) {
+            const x = toX(d.time);
+            const y = toY(d.price);
+            if (x === null || y === null) continue;
+            const bullish = d.type === 'bullish';
+            const color = bullish ? 'rgba(14, 203, 129, 1)' : 'rgba(246, 70, 93, 1)';
+            ctx.fillStyle = color + '';
+            ctx.beginPath();
+            if (bullish) {
+              // 底部背离：向上的提示
+              ctx.moveTo(x, y - 8);
+              ctx.lineTo(x - 6, y);
+              ctx.lineTo(x + 6, y);
+              ctx.closePath();
+            } else {
+              ctx.moveTo(x, y + 8);
+              ctx.lineTo(x - 6, y);
+              ctx.lineTo(x + 6, y);
+              ctx.closePath();
+            }
+            ctx.fill();
+            ctx.font = 'bold 8px -apple-system, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = bullish ? 'bottom' : 'top';
+            ctx.fillText(bullish ? '底背离' : '顶背离', x, bullish ? y - 8 : y + 10);
+          }
+
+          // 5. 顶部置信度横幅（方向 + 置信度 + 主信号）
+          const dirColor =
+            synth.direction === 'up' ? 'rgba(14, 203, 129, ' :
+            synth.direction === 'down' ? 'rgba(246, 70, 93, ' : 'rgba(148, 163, 184, ';
+          const dirText = synth.direction === 'up' ? '偏多' : synth.direction === 'down' ? '偏空' : '震荡';
+          const bannerW = 168;
+          const bannerH = 24 + synth.signals.length * 13;
+          const bx = 64;
+          const by = 4;
+          ctx.fillStyle = 'rgba(15, 23, 42, 0.78)';
+          ctx.beginPath();
+          ctx.roundRect(bx, by, bannerW, bannerH, 6);
+          ctx.fill();
+          ctx.strokeStyle = dirColor + '0.5)';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          // 方向 + 置信度
+          ctx.font = 'bold 11px -apple-system, sans-serif';
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'top';
+          ctx.fillStyle = dirColor + '1)';
+          ctx.fillText(`预测 ${dirText} · 置信${synth.confidence}`, bx + 8, by + 6);
+          // 信号文本
+          ctx.font = '9px -apple-system, sans-serif';
+          ctx.fillStyle = 'rgba(226, 232, 240, 0.85)';
+          let ly = by + 22;
+          for (const s of synth.signals.slice(0, 5)) {
+            ctx.fillText(`· ${s.label} ${s.text}`, bx + 8, ly);
+            ly += 12;
+          }
+        }
+
         ctx.restore();
       } catch (e) {
         console.warn('[Chan] render error:', e);
@@ -2219,53 +2459,67 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             <>
               <div className="w-px h-4 bg-dark-700" />
               <button
-                onClick={() => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ AB9: v, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea }); saveUserPref('prefAB9', v); }}
+                onClick={() => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ AB9: v, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); saveUserPref('prefAB9', v); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showAutoAB9 ? 'text-cyan-400' : 'text-dark-600'}`}
                 title="AB9线"
               >
                 AB9
               </button>
               <button
-                onClick={() => { const v = !showFibonacci; setShowFibonacci(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: v, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea }); saveUserPref('prefFibonacci', v); }}
+                onClick={() => { const v = !showFibonacci; setShowFibonacci(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: v, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); saveUserPref('prefFibonacci', v); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showFibonacci ? 'text-cyan-400' : 'text-dark-600'}`}
                 title="斐波那契回调线"
               >
                 FIB
               </button>
               <button
-                onClick={() => { const v = !showTrendChannel; setShowTrendChannel(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: v, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea }); }}
+                onClick={() => { const v = !showTrendChannel; setShowTrendChannel(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: v, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showTrendChannel ? 'text-green-400' : 'text-dark-600'}`}
                 title="趋势通道+预测延伸"
               >
                 通道
               </button>
               <button
-                onClick={() => { const v = !showPitchfork; setShowPitchfork(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: v, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea }); }}
+                onClick={() => { const v = !showPitchfork; setShowPitchfork(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: v, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showPitchfork ? 'text-amber-400' : 'text-dark-600'}`}
                 title="安德鲁音叉+延伸线"
               >
                 音叉
               </button>
               <button
-                onClick={() => { const v = !showPrediction; setShowPrediction(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: v, FOURIER: showFourier, VALUEAREA: showValueArea }); }}
+                onClick={() => { const v = !showPrediction; setShowPrediction(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: v, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showPrediction ? 'text-purple-400' : 'text-dark-600'}`}
                 title="自动趋势线+预测投影"
               >
                 预测
               </button>
               <button
-                onClick={() => { const v = !showFourier; setShowFourier(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: v, VALUEAREA: showValueArea }); }}
+                onClick={() => { const v = !showFourier; setShowFourier(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: v, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showFourier ? 'text-fuchsia-400' : 'text-dark-600'}`}
                 title="傅里叶外推预测（FFT周期投影）"
               >
                 FFT
               </button>
               <button
-                onClick={() => { const v = !showValueArea; setShowValueArea(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: v }); }}
+                onClick={() => { const v = !showValueArea; setShowValueArea(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: v, ICHIMOKU: showIchimoku, SYNTH: showSynth }); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showValueArea ? 'text-sky-400' : 'text-dark-600'}`}
                 title="价值区域（VAH/POC/VAL 成交量密度）"
               >
                 VA
+              </button>
+              <button
+                onClick={() => { const v = !showIchimoku; setShowIchimoku(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: v, SYNTH: showSynth }); }}
+                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showIchimoku ? 'text-indigo-400' : 'text-dark-600'}`}
+                title="一目均衡表云图（未来支撑阻力带）"
+              >
+                云图
+              </button>
+              <button
+                onClick={() => { const v = !showSynth; setShowSynth(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: v }); }}
+                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showSynth ? 'text-emerald-400' : 'text-dark-600'}`}
+                title="预测信号合成器（方向+置信度+目标+拐点）"
+              >
+                合成
               </button>
             </>
           )}

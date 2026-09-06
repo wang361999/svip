@@ -2166,3 +2166,429 @@ export function calcNineTurn(klines: KlineData[]): NineTurnResult[] {
   return result;
 }
 
+// ==================== 一目均衡表（Ichimoku Cloud） ====================
+
+export interface IchimokuData {
+  // 转换线（快线）
+  tenkan: { time: number; price: number }[];
+  // 基准线（慢线）
+  kijun: { time: number; price: number }[];
+  // 迟行线（过去收盘价，后移显示）
+  chikou: { time: number; price: number }[];
+  // 云（先行带）：time 已外推到未来，top/bottom 为云上沿/下沿
+  cloud: { time: number; top: number; bottom: number }[];
+  // 云上穿/下穿状态（用于趋势提示）：每点的云方向
+}
+
+/**
+ * 一目均衡表（Ichimoku Kinko Hyo / Ichimoku Cloud）
+ * 五条线组成：
+ * - 转换线 tenkan = (9周期高+低)/2   —— 短中期动量
+ * - 基准线 kijun = (26周期高+低)/2   —— 中期趋势与反转线（价格站上/跌破为信号）
+ * - 迟行线 chikou = 当根收盘价前移26根后绘制 —— 用于二次确认
+ * - 先行云带A senkouA = (tenkan+kijun)/2 前移26根
+ * - 先行云带B senkouB = (52周期高+低)/2 前移26根
+ * A/B 之间的区域即"云"，价格在云上方=多头市场，下方=空头市场，云内=震荡。
+ * 云的未来部分（外推）天然是"提前看走势"的支撑/阻力带。
+ */
+export function calcIchimoku(
+  klines: KlineData[],
+  quick: number = 9,
+  base: number = 26,
+  spanB: number = 52,
+  disp: number = 26,
+): IchimokuData | null {
+  const n = klines.length;
+  if (n < spanB + 10) return null;
+
+  const mid = (end: number, len: number): number => {
+    let h = -Infinity;
+    let l = Infinity;
+    for (let j = Math.max(0, end - len + 1); j <= end; j++) {
+      if (klines[j].high > h) h = klines[j].high;
+      if (klines[j].low < l) l = klines[j].low;
+    }
+    return (h + l) / 2;
+  };
+
+  // 快速/基准线（按柱位置）
+  const tenkanPts: (number | null)[] = new Array(n).fill(null);
+  const kijunPts: (number | null)[] = new Array(n).fill(null);
+  for (let i = quick - 1; i < n; i++) tenkanPts[i] = mid(i, quick);
+  for (let i = base - 1; i < n; i++) kijunPts[i] = mid(i, base);
+
+  // 迟行线：当根收盘价，绘制在"当前时刻之前 disp 根"的位置，
+  // 即当前柱显示的是 disp 根之前的收盘价。数组里 chikou[i] = close[i+disp]
+  // 绘制时让它出现在当前值位置，等价于把过去收盘价后移。这里直接用 close 平移。
+  const chikou: { time: number; price: number }[] = [];
+  for (let i = 0; i < n - disp; i++) {
+    chikou.push({ time: klines[i].time, price: klines[i + disp].close });
+  }
+
+  const tenkan: { time: number; price: number }[] = [];
+  const kijun: { time: number; price: number }[] = [];
+  for (let i = 0; i < n; i++) {
+    if (tenkanPts[i] !== null) tenkan.push({ time: klines[i].time, price: tenkanPts[i]! });
+    if (kijunPts[i] !== null) kijun.push({ time: klines[i].time, price: kijunPts[i]! });
+  }
+
+  // 云带：先行跨度 = 基于"当前位 i 之前 disp 根"的数据计算，绘制在位置 i
+  // 因此云在图表右端可外推出未来（i 到 n-1+disp 使用还没走出的历史窗口价格）
+  const barInterval = n > 1 ? klines[n - 1].time - klines[n - 2].time : 60;
+  const lastTime = klines[n - 1].time;
+  const timeAt = (i: number): number =>
+    i <= n - 1 ? klines[i].time : lastTime + (i - (n - 1)) * barInterval;
+
+  const cloud: { time: number; top: number; bottom: number }[] = [];
+  const cloudStart = base - 1 + disp; // 云最早可用位置
+  const cloudEnd = n - 1 + disp; // 外推到未来 disp 根
+  for (let i = cloudStart; i <= cloudEnd; i++) {
+    const src = i - disp; // 云值取自 src 根的数据
+    if (src < quick - 1 || src < base - 1) continue;
+    const t = tenkanPts[src];
+    const k = kijunPts[src];
+    if (t === null || k === null) continue;
+    const spanA = (t + k) / 2;
+    const spanBVal = mid(src, spanB);
+    cloud.push({
+      time: timeAt(i),
+      top: Math.max(spanA, spanBVal),
+      bottom: Math.min(spanA, spanBVal),
+    });
+  }
+
+  return { tenkan, kijun, chikou, cloud };
+}
+
+// ==================== 超级趋势（Supertrend） ====================
+
+export interface SupertrendPoint {
+  time: number;
+  price: number;
+  state: 'up' | 'down';
+}
+export interface SupertrendFlip {
+  time: number;
+  price: number;
+  direction: 'up' | 'down'; // 翻转后进入的方向
+}
+export interface SupertrendData {
+  line: SupertrendPoint[];
+  flips: SupertrendFlip[];
+  atr: number;
+}
+
+/**
+ * 超级趋势（Supertrend）
+ * 基于 ATR 的动态追踪止损轨道，跟随趋势并给出明确的翻转点：
+ * - finalUpper = 若 basicUpper<prevUpper 或 prevClose>prevUpper 取 basicUpper，否则 prevUpper
+ * - finalLower 同理
+ * - 趋势向上（持有）当 close > finalLower；向下（空头）当 close < finalUpper
+ * 速度参数：短周期(10,3)灵敏、长周期(14,5)稳定；
+ * 两周期同时同向 = 双周期共振，方向可信度更高。
+ */
+export function calcSupertrend(
+  klines: KlineData[],
+  atrPeriod: number = 10,
+  multiplier: number = 3,
+  ema?: number[],
+): SupertrendData | null {
+  const n = klines.length;
+  if (n < atrPeriod + 5) return null;
+
+  const atr = ema ?? calcATRArray(klines, atrPeriod);
+  const hl2 = klines.map((k) => (k.high + k.low) / 2);
+
+  const basicUpper = new Array(n).fill(null!);
+  const basicLower = new Array(n).fill(null!);
+  const finalUpper = new Array(n).fill(null!);
+  const finalLower = new Array(n).fill(null!);
+  const state: ('up' | 'down')[] = new Array(n).fill('up');
+
+  for (let i = 0; i < n; i++) {
+    const a = atr[i] ?? 0;
+    basicUpper[i] = hl2[i] + multiplier * a;
+    basicLower[i] = hl2[i] - multiplier * a;
+    if (i === 0) {
+      finalUpper[i] = basicUpper[i];
+      finalLower[i] = basicLower[i];
+      state[i] = klines[i].close > finalLower[i] ? 'up' : 'down';
+      continue;
+    }
+    finalUpper[i] =
+      basicUpper[i] < finalUpper[i - 1] || klines[i - 1].close > finalUpper[i - 1]
+        ? basicUpper[i]
+        : finalUpper[i - 1];
+    finalLower[i] =
+      basicLower[i] > finalLower[i - 1] || klines[i - 1].close < finalLower[i - 1]
+        ? basicLower[i]
+        : finalLower[i - 1];
+
+    if (state[i - 1] === 'up') {
+      state[i] = klines[i].close > finalLower[i] ? 'up' : 'down';
+    } else {
+      state[i] = klines[i].close < finalUpper[i] ? 'down' : 'up';
+    }
+  }
+
+  const line: SupertrendPoint[] = [];
+  const flips: SupertrendFlip[] = [];
+  for (let i = 0; i < n; i++) {
+    const price = state[i] === 'up' ? finalLower[i] : finalUpper[i];
+    line.push({ time: klines[i].time, price, state: state[i] });
+    if (i > 0 && state[i] !== state[i - 1]) {
+      flips.push({ time: klines[i].time, price, direction: state[i] });
+    }
+  }
+
+  return { line, flips, atr: atr[n - 1] ?? 0 };
+}
+
+// ==================== ATR 目标区与到价概率 ====================
+
+export interface ATRTargetLevel {
+  mult: number; // ATR 倍数
+  price: number; // 目标价
+  prob: number; // 0~100，历史命中概率
+}
+export interface ATRTarget {
+  price: number; // 当前价
+  atr: number; // ATR 波动率
+  upTargets: ATRTargetLevel[]; // 上方目标
+  downTargets: ATRTargetLevel[]; // 下方目标
+}
+
+/**
+ * ATR 目标区：用波动率推算"大概率到达的目标价"，并基于历史统计给出到价概率。
+ * 不承诺必然到达——给出的是概率区间，用于盈亏比与止盈止损测算。
+ * 目标倍数常取 0.5 / 1 / 1.5 倍 ATR。
+ * 概率计算：在历史 lookback 根K线里，统计"未来 horizon 根内价格
+ * 自起点位移达到 ±k·ATR 的比例"，作为到价概率的近似估计。
+ */
+export function calcATRTargets(
+  klines: KlineData[],
+  atrPeriod: number = 14,
+  horizon: number = 12,
+  lookback: number = 150,
+  mults: number[] = [0.5, 1, 1.5],
+): ATRTarget | null {
+  const n = klines.length;
+  if (n < 60) return null;
+  const price = klines[n - 1].close;
+  const atrArr = calcATRArray(klines, atrPeriod);
+  const atr = atrArr[n - 1] ?? 0;
+  if (atr <= 0) return null;
+
+  // 历史命中率统计
+  const hitCount = new Map<number, { up: number; dn: number }>();
+  mults.forEach((m) => hitCount.set(m, { up: 0, dn: 0 }));
+  const start = Math.max(0, n - lookback);
+  const barAtMove = Math.min(horizon, n - start - 1);
+  for (let i = start; i < n - 1 && barAtMove > 0; i++) {
+    const a = atrArr[i] ?? atr;
+    if (a <= 0) continue;
+    const base = klines[i].close;
+    const maxUp = base + 1.5 * a;
+    const maxDn = base - 1.5 * a;
+    for (let j = 1; j <= barAtMove && i + j < n; j++) {
+      const k = klines[i + j];
+      for (const m of mults) {
+        const rec = hitCount.get(m)!;
+        if (rec.up === 0 && k.high >= base + m * a) rec.up = 1;
+        if (rec.dn === 0 && k.low <= base - m * a) rec.dn = 1;
+      }
+    }
+  }
+  const total = Math.max(barAtMove, 1);
+  const upTargets: ATRTargetLevel[] = [];
+  const downTargets: ATRTargetLevel[] = [];
+  mults.forEach((m) => {
+    const rec = hitCount.get(m)!;
+    upTargets.push({
+      mult: m,
+      price: price + m * atr,
+      prob: Math.min(100, Math.round((rec.up / total) * 100)),
+    });
+    downTargets.push({
+      mult: m,
+      price: price - m * atr,
+      prob: Math.min(100, Math.round((rec.dn / total) * 100)),
+    });
+  });
+
+  return { price, atr, upTargets, downTargets };
+}
+
+// ==================== 顶/底背离自动识别 ====================
+
+export interface DivergencePoint {
+  time: number;
+  price: number;
+  type: 'bullish' | 'bearish'; // 底部背离(看涨) / 顶部背离(看跌)
+  source: 'RSI';
+}
+
+/**
+ * RSI 与价格背离检测（拐点预警，不是信号，是有概率意义的反转提示）
+ * - 顶背离：价格创更高高点，而 RSI 未同步创新高（动量走弱）→ 潜在下跌
+ * - 底背离：价格创更低下低点，而 RSI 未同步创新低（动能衰竭）→ 潜在反弹
+ * 用窗宽 window 找价格 pivot 高低点，再对比相邻两个同向 pivot 的价格与 RSI 走势。
+ */
+export function calcDivergence(
+  klines: KlineData[],
+  rsiPeriod: number = 14,
+  window: number = 4,
+): DivergencePoint[] {
+  const n = klines.length;
+  if (n < rsiPeriod + window * 2 + 5) return [];
+  const rsiArr = calcRSIArray(klines, rsiPeriod);
+  const points: DivergencePoint[] = [];
+
+  // 收集 pivot 高点 / 低点（严格窗内极值）
+  const pivHighIdx: number[] = [];
+  const pivLowIdx: number[] = [];
+  for (let i = window; i < n - window; i++) {
+    let isPh = true;
+    let isPl = true;
+    for (let j = i - window; j <= i + window; j++) {
+      if (j === i) continue;
+      if (klines[j].high >= klines[i].high) isPh = false;
+      if (klines[j].low <= klines[i].low) isPl = false;
+    }
+    if (isPh) pivHighIdx.push(i);
+    if (isPl) pivLowIdx.push(i);
+  }
+
+  // 顶背离：相邻两个 pivot 高点，价格抬升但 RSI 走低
+  for (let k = 1; k < pivHighIdx.length; k++) {
+    const i1 = pivHighIdx[k - 1];
+    const i2 = pivHighIdx[k];
+    const r1 = rsiArr[i1];
+    const r2 = rsiArr[i2];
+    if (r1 === null || r2 === null) continue;
+    if (klines[i2].high > klines[i1].high * 1.0001 && r2 < r1) {
+      points.push({
+        time: klines[i2].time,
+        price: klines[i2].high,
+        type: 'bearish',
+        source: 'RSI',
+      });
+    }
+  }
+  // 底背离：相邻两个 pivot 低点，价格走低但 RSI 走高
+  for (let k = 1; k < pivLowIdx.length; k++) {
+    const i1 = pivLowIdx[k - 1];
+    const i2 = pivLowIdx[k];
+    const r1 = rsiArr[i1];
+    const r2 = rsiArr[i2];
+    if (r1 === null || r2 === null) continue;
+    if (klines[i2].low < klines[i1].low * 0.9999 && r2 > r1) {
+      points.push({
+        time: klines[i2].time,
+        price: klines[i2].low,
+        type: 'bullish',
+        source: 'RSI',
+      });
+    }
+  }
+
+  return points.slice(-12); // 只保留最近若干，避免图上杂乱
+}
+
+// ==================== 预测信号合成器 ====================
+
+export interface SynthSignal {
+  label: string; // 短标签
+  text: string; // 说明
+  tone: 'bullish' | 'bearish' | 'neutral';
+}
+export interface PredictionSynth {
+  direction: 'up' | 'down' | 'neutral'; // 合成方向
+  confidence: number; // 0~100 置信度
+  supertrendFast: SupertrendData;
+  supertrendSlow: SupertrendData;
+  atrTarget: ATRTarget | null;
+  divergences: DivergencePoint[];
+  signals: SynthSignal[]; // 人类可读的信号解释
+}
+
+/**
+ * 预测信号合成器
+ * 把多个独立信号糅合成"一条主线"，给用户直观的方向 + 置信度 + 目标位 + 拐点预警：
+ * 1. 双周期 Supertrend 共振（快 10/3 + 慢 14/5）：方向与翻转
+ * 2. ATR 目标区：大概率到价区间（含历史概率）
+ * 3. RSI 背离：反转拐点预警
+ * 方向置信度 = 50 + 共振偏置 + 动量微调，夹逼到 5~95，避免"确定性承诺"。
+ */
+export function calcPredictionSynth(
+  klines: KlineData[],
+): PredictionSynth | null {
+  const n = klines.length;
+  if (n < 70) return null;
+
+  const fastST = calcSupertrend(klines, 10, 3);
+  const slowST = calcSupertrend(klines, 14, 5);
+  if (!fastST || !slowST) return null;
+
+  const atrTarget = calcATRTargets(klines, 14, 12, 150);
+  const divergences = calcDivergence(klines, 14, 4);
+
+  // 共振方向
+  const fastUp = fastST.line[fastST.line.length - 1].state === 'up';
+  const slowUp = slowST.line[slowST.line.length - 1].state === 'up';
+
+  // RSI 动量微调
+  const rsiArr = calcRSIArray(klines, 14);
+  const lastRsi = rsiArr[n - 1];
+
+  let confidence = 50;
+  const signals: SynthSignal[] = [];
+
+  if (fastUp === slowUp) {
+    if (fastUp) {
+      confidence += 25;
+      signals.push({ label: '双周期共振', text: '快慢超趋势同向偏多', tone: 'bullish' });
+    } else {
+      confidence -= 25;
+      signals.push({ label: '双周期共振', text: '快慢超趋势同向偏空', tone: 'bearish' });
+    }
+  } else {
+    signals.push({ label: '方向分歧', text: '快慢超趋势取向不一，震荡概率大', tone: 'neutral' });
+  }
+
+  if (lastRsi !== null) {
+    if (lastRsi > 55) {
+      confidence += 8;
+      if (confidence >= 55) signals.push({ label: '动量', text: `RSI ${lastRsi.toFixed(0)} 偏多`, tone: 'bullish' });
+    } else if (lastRsi < 45) {
+      confidence -= 8;
+      if (confidence <= 45) signals.push({ label: '动量', text: `RSI ${lastRsi.toFixed(0)} 偏空`, tone: 'bearish' });
+    }
+  }
+
+  // 背离提示
+  const newestDiv = divergences[divergences.length - 1];
+  if (newestDiv) {
+    if (newestDiv.type === 'bearish') {
+      signals.push({ label: '顶背离', text: '近期出现顶部背离，注意回撤', tone: 'bearish' });
+      confidence -= 5;
+    } else {
+      signals.push({ label: '底背离', text: '近期出现底部背离，警惕反弹', tone: 'bullish' });
+      confidence += 5;
+    }
+  }
+
+  confidence = Math.max(5, Math.min(95, confidence));
+  const direction = confidence >= 55 ? 'up' : confidence <= 45 ? 'down' : 'neutral';
+
+  return {
+    direction,
+    confidence,
+    supertrendFast: fastST,
+    supertrendSlow: slowST,
+    atrTarget,
+    divergences,
+    signals,
+  };
+}
+
