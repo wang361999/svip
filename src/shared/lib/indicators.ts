@@ -436,6 +436,147 @@ export function calcTrendChannel(klines: KlineData[], lookback: number = 60): Tr
   };
 }
 
+// ==================== 价值区域（Value Area / Volume Profile） ====================
+
+export interface ValueArea {
+  // 分布窗口范围（时间戳）
+  windowStart: number;
+  windowEnd: number;
+  // 实际参与计算的K线数量
+  lookback: number;
+  // 价值区域上界 / 下界 / 控制点（POC）
+  vah: number;
+  val: number;
+  poc: number;
+  // POC 处成交量（最大密度桶）
+  pocVolume: number;
+  // 窗口总成交量
+  totalVolume: number;
+  // 价值区目标占比（默认 0.7）
+  targetRatio: number;
+  // 价格密度剖面：price 为桶中心价，volume 为归一化密度（0~1）
+  profile: { price: number; volume: number }[];
+  // VAH / VAL 处归一化密度（用于标注支撑/阻力强度）
+  vahStrength: number;
+  valStrength: number;
+}
+
+/**
+ * 价值区域（Value Area）计算
+ * 市场剖面（Market Profile）概念：
+ * 1. 对窗口内每根K线按其价格区间把成交量分配到对应价格桶（按重叠比例拆分）
+ * 2. POC（控制点）= 成交量密度最大的价格桶
+ * 3. 从 POC 向两侧逐桶扩展，直到累计成交量达到 targetRatio（默认70%）
+ *    覆盖区域内价格区间即价值区域：[VAL, VAH]
+ */
+export function calcValueArea(
+  klines: KlineData[],
+  lookback: number = 80,
+  valueRatio: number = 0.7,
+  binCount?: number,
+): ValueArea | null {
+  const n = klines.length;
+  if (n < 20) return null;
+
+  const window = klines.slice(Math.max(0, n - lookback));
+  const w = window.length;
+  if (w < 15) return null;
+
+  // 全窗口价格范围与总成交量
+  let minPrice = Infinity;
+  let maxPrice = -Infinity;
+  let totalVolume = 0;
+  for (const k of window) {
+    if (k.low < minPrice) minPrice = k.low;
+    if (k.high > maxPrice) maxPrice = k.high;
+    totalVolume += k.volume;
+  }
+  if (minPrice >= maxPrice || totalVolume <= 0) return null;
+
+  // 桶分辨率：默认跟随K线数量调节，保证剖面既平滑又不失细节
+  const range = maxPrice - minPrice;
+  const bins = binCount ?? Math.max(40, Math.min(160, Math.round(w * 2)));
+  const binSize = range / bins;
+  if (binSize <= 0) return null;
+
+  // 按价格区间分配成交量（K线与桶重叠比例）
+  const volumes = new Array<number>(bins).fill(0);
+  for (const k of window) {
+    if (k.volume <= 0) continue;
+    const startIdx = Math.max(Math.floor((k.low - minPrice) / binSize), 0);
+    const endIdxExcl = Math.min(Math.ceil((k.high - minPrice) / binSize), bins);
+    if (endIdxExcl <= startIdx) {
+      // K线极小，落在桶边界内：就近归入其收盘价所在桶
+      const idx = Math.min(Math.max(Math.floor((k.close - minPrice) / binSize), 0), bins - 1);
+      volumes[idx] += k.volume;
+      continue;
+    }
+    const kRange = Math.max(k.high - k.low, 1e-9);
+    for (let i = startIdx; i < endIdxExcl; i++) {
+      const binLow = minPrice + i * binSize;
+      const binHigh = binLow + binSize;
+      const overlap = Math.max(0, Math.min(k.high, binHigh) - Math.max(k.low, binLow));
+      volumes[i] += k.volume * (overlap / kRange);
+    }
+  }
+
+  // POC：成交量最大桶
+  let pocIdx = 0;
+  let pocVol = 0;
+  for (let i = 0; i < bins; i++) {
+    if (volumes[i] > pocVol) {
+      pocVol = volumes[i];
+      pocIdx = i;
+    }
+  }
+  const poc = minPrice + (pocIdx + 0.5) * binSize;
+
+  // 从 POC 双向扩展至累计成交量达到 targetRatio * 总成交量
+  const target = totalVolume * valueRatio;
+  let cumulative = volumes[pocIdx];
+  let lo = pocIdx;
+  let hi = pocIdx;
+  while (cumulative < target && (lo > 0 || hi < bins - 1)) {
+    const prevVol = lo > 0 ? volumes[lo - 1] : 0;
+    const nextVol = hi < bins - 1 ? volumes[hi + 1] : 0;
+    if (prevVol >= nextVol) {
+      lo--;
+      cumulative += prevVol;
+    } else {
+      hi++;
+      cumulative += nextVol;
+    }
+  }
+
+  const val = minPrice + lo * binSize;
+  const vah = minPrice + (hi + 1) * binSize;
+
+  // 归一化密度剖面
+  const maxVol = Math.max(...volumes, 1e-9);
+  const profile: { price: number; volume: number }[] = [];
+  for (let i = 0; i < bins; i++) {
+    profile.push({
+      price: minPrice + (i + 0.5) * binSize,
+      volume: volumes[i] / maxVol,
+    });
+  }
+
+  return {
+    windowStart: window[0].time,
+    windowEnd: window[w - 1].time,
+    lookback: w,
+    poc,
+    vah,
+    val,
+    pocVolume: pocVol,
+    totalVolume,
+    targetRatio: valueRatio,
+    profile,
+    vahStrength: hi >= 0 && hi < profile.length ? profile[hi].volume : 0,
+    valStrength: lo >= 0 && lo < profile.length ? profile[lo].volume : 0,
+  };
+}
+
 // ==================== 安德鲁音叉（Andrew's Pitchfork） ====================
 
 export interface Pitchfork {

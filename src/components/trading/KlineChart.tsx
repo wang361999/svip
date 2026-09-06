@@ -15,10 +15,12 @@ import {
   calcTrendChannel,
   calcPitchfork,
   calcFourierExtrapolation,
+  calcValueArea,
   type ChanResult,
   type TrendChannel,
   type Pitchfork,
   type FourierProjection,
+  type ValueArea,
 } from '@/shared/lib/indicators';
 import { analyzeRapid, type RapidAnalysis } from '@/shared/lib/rapid-strategy';
 
@@ -114,8 +116,8 @@ function saveIndicatorPrefs(next: typeof DEFAULT_INDICATORS) {
 // 同样存于浏览器本地，刷新/换币种/换周期后保持用户的选择
 // 会员用户额外同步到后端（跨设备），非会员仅本地
 // 版本号：默认值变更时递增，旧 localStorage 自动失效
-  const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v3';
-const DEFAULT_OVERLAY = { AB9: false, FIB: false, CHANNEL: false, PITCHFORK: false, PREDICTION: false, FOURIER: false };
+  const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v4';
+const DEFAULT_OVERLAY = { AB9: false, FIB: false, CHANNEL: false, PITCHFORK: false, PREDICTION: false, FOURIER: false, VALUEAREA: false };
 
 function loadOverlayPrefs() {
   if (typeof window === 'undefined') return { ...DEFAULT_OVERLAY };
@@ -130,6 +132,7 @@ function loadOverlayPrefs() {
       PITCHFORK: parsed.PITCHFORK !== undefined ? !!parsed.PITCHFORK : DEFAULT_OVERLAY.PITCHFORK,
       PREDICTION: parsed.PREDICTION !== undefined ? !!parsed.PREDICTION : DEFAULT_OVERLAY.PREDICTION,
       FOURIER: parsed.FOURIER !== undefined ? !!parsed.FOURIER : DEFAULT_OVERLAY.FOURIER,
+      VALUEAREA: parsed.VALUEAREA !== undefined ? !!parsed.VALUEAREA : DEFAULT_OVERLAY.VALUEAREA,
     };
   } catch {
     return { ...DEFAULT_OVERLAY };
@@ -192,6 +195,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const trendChannelRef = useRef<TrendChannel | null>(null);
   const pitchforkRef = useRef<Pitchfork | null>(null);
   const fourierRef = useRef<FourierProjection | null>(null);
+  const valueAreaRef = useRef<ValueArea | null>(null);
   const drawChanRef = useRef<() => void>(() => {});
 
   // 多空信号箭头画布
@@ -214,6 +218,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const [showPitchfork, setShowPitchfork] = useState(overlayPrefsInit.PITCHFORK);
   const [showPrediction, setShowPrediction] = useState(overlayPrefsInit.PREDICTION ?? false);
   const [showFourier, setShowFourier] = useState(overlayPrefsInit.FOURIER ?? false);
+  const [showValueArea, setShowValueArea] = useState(overlayPrefsInit.VALUEAREA ?? false);
   // ref 镜像：updateIndicators 的 useCallback 依赖里没有这两个开关，
   // 切换币种/周期重载数据时闭包里是旧值，会出现"关了又冒出来/开了不出来"的状态错乱
   const showTrendChannelRef = useRef(showTrendChannel);
@@ -224,6 +229,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   showPredictionRef.current = showPrediction;
   const showFourierRef = useRef(showFourier);
   showFourierRef.current = showFourier;
+  const showValueAreaRef = useRef(showValueArea);
+  showValueAreaRef.current = showValueArea;
   // 左上角 OHLC 图例：随十字线联动（悬停读历史K线，离开回落到最新一根，tick 实时刷新）
   interface LegendInfo { o: number; h: number; l: number; c: number; pct: number }
   const [legend, setLegend] = useState<LegendInfo | null>(null);
@@ -507,6 +514,13 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       fourierRef.current = null;
     }
 
+    // 价值区域（VAH/VAL/POC）
+    if (showValueAreaRef.current) {
+      valueAreaRef.current = calcValueArea(klines, 80);
+    } else {
+      valueAreaRef.current = null;
+    }
+
     requestAnimationFrame(() => {
       try { drawChanRef.current(); } catch (e) { console.warn('[Chan] raf error:', e); }
     });
@@ -641,11 +655,17 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       } else {
         fourierRef.current = null;
       }
+      // 价值区域
+      if (showValueArea) {
+        valueAreaRef.current = calcValueArea(klines, 80);
+      } else {
+        valueAreaRef.current = null;
+      }
       requestAnimationFrame(() => {
         try { drawChanRef.current(); } catch (e) { console.warn('[Overlay] raf error:', e); }
       });
     }
-  }, [showTrendChannel, showPitchfork, showFourier]);
+  }, [showTrendChannel, showPitchfork, showFourier, showValueArea]);
 
   // === AB9线 + 斐波那契回调线重绘 ===
   // 数据加载、开关切换、K线收盘（isFinal）时调用，统一走这一个入口
@@ -971,7 +991,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // 趋势通道/音叉/Fourier 开关切换时重画
   useEffect(() => {
     drawTrendOverlays();
-  }, [drawTrendOverlays, showTrendChannel, showPitchfork, showPrediction, showFourier]);
+  }, [drawTrendOverlays, showTrendChannel, showPitchfork, showPrediction, showFourier, showValueArea]);
 
   // Tick 实时更新（rAF + 50ms 节流，和 v24 一致）
   const flushTick = useCallback(() => {
@@ -1412,7 +1432,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
         // 没有任何叠层数据时，清空后直接返回
-        if (!chanData && !trendChannelRef.current && !pitchforkRef.current) return;
+        if (!chanData && !trendChannelRef.current && !pitchforkRef.current && !valueAreaRef.current) return;
 
         ctx.save();
         ctx.scale(dpr, dpr);
@@ -1879,6 +1899,90 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           }
         }
 
+        // ========== 价值区域（VAH / POC / VAL）绘制 ==========
+        const va = valueAreaRef.current;
+        if (va) {
+          const toYva = (p: number) => candleSeries.current?.priceToCoordinate(p) ?? null;
+          const yVah = toYva(va.vah);
+          const yPoc = toYva(va.poc);
+          const yVal = toYva(va.val);
+          if (yVah !== null && yPoc !== null && yVal !== null) {
+            // 左边界：从带开盘（窗口起点），右边界：延伸到最右端
+            const xStart = timeToX(va.windowStart);
+            const xStartSafe = xStart !== null ? xStart : 0;
+            const xEndSafe = rect.width;
+
+            // 价值区淡色填充带（VAH 与 VAL 之间）
+            ctx.fillStyle = 'rgba(56, 189, 248, 0.07)';
+            ctx.fillRect(xStartSafe, yVah, xEndSafe - xStartSafe, yVal - yVah);
+
+            // VAH 上轨（虚线）
+            ctx.strokeStyle = 'rgba(56, 189, 248, 0.8)';
+            ctx.lineWidth = 1.2;
+            ctx.setLineDash([5, 4]);
+            ctx.beginPath();
+            ctx.moveTo(xStartSafe, yVah);
+            ctx.lineTo(xEndSafe, yVah);
+            ctx.stroke();
+
+            // VAL 下轨（虚线）
+            ctx.strokeStyle = 'rgba(56, 189, 248, 0.8)';
+            ctx.beginPath();
+            ctx.moveTo(xStartSafe, yVal);
+            ctx.lineTo(xEndSafe, yVal);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // POC 实线（最显眼）
+            ctx.strokeStyle = 'rgba(56, 189, 248, 0.95)';
+            ctx.lineWidth = 1.6;
+            ctx.beginPath();
+            ctx.moveTo(xStartSafe, yPoc);
+            ctx.lineTo(xEndSafe, yPoc);
+            ctx.stroke();
+
+            // 右侧成交量密度剖面（直方图，按 POC 归一化）
+            const histW = Math.min(70, rect.width * 0.08);
+            const histX = xEndSafe - histW - 2;
+            for (const bar of va.profile) {
+              const yBar = candleSeries.current.priceToCoordinate(bar.price);
+              if (yBar === null) continue;
+              const binHalfH = yVah - yVal > 0
+                ? Math.max((yVah - yVal) / (va.profile.length) * 0.9, 1)
+                : 1;
+              const bw = Math.max(histW * bar.volume, 2);
+              // 价值区内的桶稍亮，价值区外更淡
+              const inside = bar.price >= va.val && bar.price <= va.vah;
+              ctx.fillStyle = 'rgba(56, 189, 248, ' + (inside ? 0.45 : 0.18) + ')';
+              ctx.fillRect(histX + (histW - bw), yBar - binHalfH / 2, bw, binHalfH);
+            }
+
+            // 标签
+            ctx.font = '9px -apple-system, sans-serif';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'bottom';
+            ctx.fillStyle = 'rgba(56, 189, 248, 0.9)';
+            ctx.fillText(`VAH ${va.vah.toFixed(2)}`, xStartSafe + 4, yVah - 2);
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = 'rgba(56, 189, 248, 1)';
+            ctx.fillText(`POC ${va.poc.toFixed(2)}`, xStartSafe + 4, yPoc + 2);
+            ctx.textBaseline = 'top';
+            ctx.fillStyle = 'rgba(56, 189, 248, 0.9)';
+            ctx.fillText(`VAL ${va.val.toFixed(2)}`, xStartSafe + 4, yVal + 3);
+
+            // 右上角概要
+            ctx.font = '9px -apple-system, sans-serif';
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'top';
+            ctx.fillStyle = 'rgba(56, 189, 248, 0.6)';
+            ctx.fillText(
+              `价值区 ${(va.targetRatio * 100).toFixed(0)}% · ${va.lookback}K`,
+              rect.width - 4, 2
+            );
+            ctx.textAlign = 'left';
+          }
+        }
+
         ctx.restore();
       } catch (e) {
         console.warn('[Chan] render error:', e);
@@ -2115,46 +2219,53 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             <>
               <div className="w-px h-4 bg-dark-700" />
               <button
-                onClick={() => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ AB9: v, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier }); saveUserPref('prefAB9', v); }}
+                onClick={() => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ AB9: v, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea }); saveUserPref('prefAB9', v); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showAutoAB9 ? 'text-cyan-400' : 'text-dark-600'}`}
                 title="AB9线"
               >
                 AB9
               </button>
               <button
-                onClick={() => { const v = !showFibonacci; setShowFibonacci(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: v, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier }); saveUserPref('prefFibonacci', v); }}
+                onClick={() => { const v = !showFibonacci; setShowFibonacci(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: v, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea }); saveUserPref('prefFibonacci', v); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showFibonacci ? 'text-cyan-400' : 'text-dark-600'}`}
                 title="斐波那契回调线"
               >
                 FIB
               </button>
               <button
-                onClick={() => { const v = !showTrendChannel; setShowTrendChannel(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: v, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier }); }}
+                onClick={() => { const v = !showTrendChannel; setShowTrendChannel(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: v, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea }); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showTrendChannel ? 'text-green-400' : 'text-dark-600'}`}
                 title="趋势通道+预测延伸"
               >
                 通道
               </button>
               <button
-                onClick={() => { const v = !showPitchfork; setShowPitchfork(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: v, PREDICTION: showPrediction, FOURIER: showFourier }); }}
+                onClick={() => { const v = !showPitchfork; setShowPitchfork(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: v, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea }); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showPitchfork ? 'text-amber-400' : 'text-dark-600'}`}
                 title="安德鲁音叉+延伸线"
               >
                 音叉
               </button>
               <button
-                onClick={() => { const v = !showPrediction; setShowPrediction(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: v, FOURIER: showFourier }); }}
+                onClick={() => { const v = !showPrediction; setShowPrediction(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: v, FOURIER: showFourier, VALUEAREA: showValueArea }); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showPrediction ? 'text-purple-400' : 'text-dark-600'}`}
                 title="自动趋势线+预测投影"
               >
                 预测
               </button>
               <button
-                onClick={() => { const v = !showFourier; setShowFourier(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: v }); }}
+                onClick={() => { const v = !showFourier; setShowFourier(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: v, VALUEAREA: showValueArea }); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showFourier ? 'text-fuchsia-400' : 'text-dark-600'}`}
                 title="傅里叶外推预测（FFT周期投影）"
               >
                 FFT
+              </button>
+              <button
+                onClick={() => { const v = !showValueArea; setShowValueArea(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: v }); }}
+                className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showValueArea ? 'text-sky-400' : 'text-dark-600'}`}
+                title="价值区域（VAH/POC/VAL 成交量密度）"
+              >
+                VA
               </button>
             </>
           )}
