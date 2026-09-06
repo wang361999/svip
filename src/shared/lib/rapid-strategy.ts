@@ -885,18 +885,75 @@ function isInCooldown(
 
 // ==================== v3 新增：大周期趋势判定 ====================
 
-// 用大周期 K 线算 EMA50 趋势，供 MTF 顺势过滤使用
+interface Swing {
+  index: number;
+  price: number;
+  type: 'top' | 'bottom';
+}
+
+// ZigZag 摆动点识别（阈值 = ATR × swingATR）
+function detectSwings(klines: KlineData[]): Swing[] {
+  const n = klines.length;
+  const atr = atrSeries(klines, 14);
+  const pivots: Swing[] = [];
+  if (n < 4) return pivots;
+  const swingATR = 1.2;
+  let state: 'up' | 'down' = 'up';
+  let run: { index: number; price: number } | null = null;
+  for (let i = 1; i < n; i++) {
+    const thr = (atr[i] || 0) * swingATR;
+    if (state === 'up') {
+      if (!run || klines[i].high >= run.price) run = { index: i, price: klines[i].high };
+      if (klines[i].low <= run.price - thr) {
+        pivots.push({ index: run.index, price: run.price, type: 'top' });
+        state = 'down';
+        run = { index: i, price: klines[i].low };
+      }
+    } else {
+      if (!run || klines[i].low <= run.price) run = { index: i, price: klines[i].low };
+      if (klines[i].high >= run.price + thr) {
+        pivots.push({ index: run.index, price: run.price, type: 'bottom' });
+        state = 'up';
+        run = { index: i, price: klines[i].high };
+      }
+    }
+  }
+  return pivots;
+}
+
+/**
+ * 用"结构"确认大周期多空：ZigZag 摆动点 + 抬高底/抬高顶。
+ * 多：最近两个相邻底抬高(HL) 且 相邻顶抬高(HH)；
+ * 空：最近两个相邻顶降低(LH) 且 相邻底降低(LL)；
+ * 其余为中性。
+ *
+ * 相比 EMA50 单点判断：不被大周期单根插针影响，抗抖、反映"结构是否仍完好"。
+ * 最后一根可能未收盘的 K 线产生的摆动点会被忽略，避免把未确认的摆动算进去。
+ */
 export function computeHigherTrend(klines: KlineData[]): Direction | 'neutral' {
-  if (!klines || klines.length < 60) return 'neutral';
-  const closes = klines.map(k => k.close);
-  const ema50 = emaSeries(closes, 50);
-  const price = closes[closes.length - 1];
-  const e50 = ema50[ema50.length - 1];
-  const atr = (atrSeries(klines, 14)[klines.length - 1] || 0);
-  // 距离阈值：价格明显偏离 EMA50 才算趋势，否则视为中性（震荡）
-  const thresh = Math.max(atr * 0.3, e50 * 0.001);
-  if (price > e50 && price - e50 > thresh) return 'long';
-  if (price < e50 && e50 - price > thresh) return 'short';
+  if (!klines || klines.length < 50) return 'neutral';
+  const n = klines.length;
+  const pivots = detectSwings(klines);
+  if (pivots.length < 4) return 'neutral';
+
+  // 忽略最后一根（可能未收盘）上的摆动点，只用已确认结构
+  const done = pivots.filter(p => p.index <= n - 2);
+  if (done.length < 4) return 'neutral';
+
+  // 取最近 4 个摆动点（交替：顶底/底顶），正好 2 顶 + 2 底
+  const seq = done.slice(-4);
+  const bottoms = seq.filter(p => p.type === 'bottom').map(p => p.price);
+  const tops = seq.filter(p => p.type === 'top').map(p => p.price);
+  if (bottoms.length !== 2 || tops.length !== 2) return 'neutral';
+
+  const hl = bottoms[1] > bottoms[0]; // 底抬高
+  const hh = tops[1] > tops[0];       // 顶抬高
+  if (hl && hh) return 'long';
+
+  const ll = bottoms[1] < bottoms[0]; // 底降低
+  const lh = tops[1] < tops[0];       // 顶降低
+  if (ll && lh) return 'short';
+
   return 'neutral';
 }
 
