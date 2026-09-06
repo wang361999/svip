@@ -2696,3 +2696,121 @@ export function calcCompositeLine(klines: KlineData[]): CompositeLine | null {
   };
 }
 
+// ==================== 动态统计回调带（回调线 / 深度回调线） ====================
+
+export interface PullbackBands {
+  direction: 'up' | 'down'; // 当前是上升(up)还是下降(down)语境
+  anchorTime: number;       // 最近确认摆动点的 K 线时间
+  anchorPrice: number;      // 锚点价格（上升=最近摆动顶，下降=最近摆动底）
+  typicalLevel: number;     // 回调线价格（典型回调深度）
+  deepLevel: number;        // 深度回调线价格（深度回调深度）
+  typicalATR: number;       // 典型回调深度（ATR 倍数）
+  deepATR: number;          // 深度回调深度（ATR 倍数）
+  currentATR: number;       // 最新 ATR（用于读写阅读）
+  samples: number;          // 实际使用的回调样本数
+}
+
+/** 分位数（sorted 升序数组） */
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.round(p * (sorted.length - 1))));
+  return sorted[idx];
+}
+
+/**
+ * 动态统计回调带：不画固定比例，而是统计最近 N 段实际回调的深度（用 ATR 归一化）。
+ *
+ * 步骤：
+ *  1) ZigZag 摆动点识别（阈值 = ATR × zigzagATR，行走量达到才记为一次摆动），得到顶/底摆动点；
+ *  2) 按当前语境（最近摆动点是顶→上升语境）收集对应的回调动程样本（顶→底 或 底→顶）深度 / ATR；
+ *  3) 回调线 = 样本中位数深度，深度回调线 = 样本 85 分位深度（值都是 ATR 倍数）；
+ *  4) 在最新摆动点处按当前 ATR 换算成价格水平：上升语境线在锚点下方，下降语境在锚点上方。
+ */
+export function calcPullbackBands(
+  klines: KlineData[],
+  atrPeriod = 14,
+  zigzagATR = 1.2,
+): PullbackBands | null {
+  const n = klines.length;
+  if (!klines || n < 40) return null;
+
+  const atr = calcATRArray(klines, atrPeriod);
+
+  // ---- 1) ZigZag 摆动点识别 ----
+  const pivots: { index: number; time: number; price: number; type: 'top' | 'bottom' }[] = [];
+  let state: 'up' | 'down' = 'up';
+  let runExtreme: { index: number; price: number } | null = null;
+
+  for (let i = 1; i < n; i++) {
+    const thr = (atr[i] || 0) * zigzagATR;
+    if (state === 'up') {
+      if (!runExtreme || klines[i].high >= runExtreme.price) {
+        runExtreme = { index: i, price: klines[i].high };
+      }
+      if (klines[i].low <= runExtreme.price - thr) {
+        pivots.push({ index: runExtreme.index, time: klines[runExtreme.index].time, price: runExtreme.price, type: 'top' });
+        state = 'down';
+        runExtreme = { index: i, price: klines[i].low };
+      }
+    } else {
+      if (!runExtreme || klines[i].low <= runExtreme.price) {
+        runExtreme = { index: i, price: klines[i].low };
+      }
+      if (klines[i].high >= runExtreme.price + thr) {
+        pivots.push({ index: runExtreme.index, time: klines[runExtreme.index].time, price: runExtreme.price, type: 'bottom' });
+        state = 'up';
+        runExtreme = { index: i, price: klines[i].high };
+      }
+    }
+  }
+
+  if (pivots.length < 2) return null;
+  const lastPivot = pivots[pivots.length - 1];
+  const direction: 'up' | 'down' = lastPivot.type === 'top' ? 'up' : 'down';
+
+  // ---- 2) 收集回调动程样本（与语境方向一致） ----
+  const samples: number[] = [];
+  for (let p = 0; p + 1 < pivots.length; p++) {
+    const a = pivots[p];
+    const b = pivots[p + 1];
+    const av = atr[a.index] || 0;
+    if (av <= 0) continue;
+    if (direction === 'up' && a.type === 'top' && b.type === 'bottom') {
+      samples.push((a.price - b.price) / av);
+    } else if (direction === 'down' && a.type === 'bottom' && b.type === 'top') {
+      samples.push((b.price - a.price) / av);
+    }
+  }
+
+  // ---- 3) 深度分位数（样本不足时回退到合理默认值，仍能出图） ----
+  let typical: number;
+  let deep: number;
+  if (samples.length >= 3) {
+    const sorted = [...samples].sort((x, y) => x - y);
+    typical = percentile(sorted, 0.5);
+    deep = percentile(sorted, 0.85);
+  } else {
+    typical = 0.8;
+    deep = 1.6;
+  }
+  // 保证深线至少比典型线更深
+  deep = Math.max(deep, typical + 0.3);
+
+  const currentATR = atr[n - 1] || atr[n - 2] || typical * (klines[n - 1].high - klines[n - 1].low) || 0;
+  const anchorPrice = lastPivot.price;
+  const typicalLevel = direction === 'up' ? anchorPrice - typical * currentATR : anchorPrice + typical * currentATR;
+  const deepLevel = direction === 'up' ? anchorPrice - deep * currentATR : anchorPrice + deep * currentATR;
+
+  return {
+    direction,
+    anchorTime: lastPivot.time,
+    anchorPrice,
+    typicalLevel: Math.round(typicalLevel * 100) / 100,
+    deepLevel: Math.round(deepLevel * 100) / 100,
+    typicalATR: Math.round(typical * 100) / 100,
+    deepATR: Math.round(deep * 100) / 100,
+    currentATR: Math.round(currentATR * 100) / 100,
+    samples: samples.length,
+  };
+}
+

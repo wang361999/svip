@@ -19,6 +19,7 @@ import {
   calcIchimoku,
   calcPredictionSynth,
   calcCompositeLine,
+  calcPullbackBands,
   type ChanResult,
   type TrendChannel,
   type Pitchfork,
@@ -27,6 +28,7 @@ import {
   type IchimokuData,
   type PredictionSynth,
   type CompositeLine,
+  type PullbackBands,
 } from '@/shared/lib/indicators';
 import { analyzeRapid, type RapidAnalysis } from '@/shared/lib/rapid-strategy';
 
@@ -123,7 +125,7 @@ function saveIndicatorPrefs(next: typeof DEFAULT_INDICATORS) {
 // 会员用户额外同步到后端（跨设备），非会员仅本地
 // 版本号：默认值变更时递增，旧 localStorage 自动失效
   const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v5';
-const DEFAULT_OVERLAY = { AB9: false, FIB: false, CHANNEL: false, PITCHFORK: false, PREDICTION: false, FOURIER: false, VALUEAREA: false, ICHIMOKU: false, SYNTH: false, COMPOSITE: false };
+const DEFAULT_OVERLAY = { AB9: false, FIB: false, CHANNEL: false, PITCHFORK: false, PREDICTION: false, FOURIER: false, VALUEAREA: false, ICHIMOKU: false, SYNTH: false, COMPOSITE: false, PULLBACK: false, DEEPPB: false };
 
 function loadOverlayPrefs() {
   if (typeof window === 'undefined') return { ...DEFAULT_OVERLAY };
@@ -142,6 +144,8 @@ function loadOverlayPrefs() {
       ICHIMOKU: parsed.ICHIMOKU !== undefined ? !!parsed.ICHIMOKU : DEFAULT_OVERLAY.ICHIMOKU,
       SYNTH: parsed.SYNTH !== undefined ? !!parsed.SYNTH : DEFAULT_OVERLAY.SYNTH,
       COMPOSITE: parsed.COMPOSITE !== undefined ? !!parsed.COMPOSITE : DEFAULT_OVERLAY.COMPOSITE,
+      PULLBACK: parsed.PULLBACK !== undefined ? !!parsed.PULLBACK : DEFAULT_OVERLAY.PULLBACK,
+      DEEPPB: parsed.DEEPPB !== undefined ? !!parsed.DEEPPB : DEFAULT_OVERLAY.DEEPPB,
     };
   } catch {
     return { ...DEFAULT_OVERLAY };
@@ -238,6 +242,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const [showIchimoku, setShowIchimoku] = useState(overlayPrefsInit.ICHIMOKU ?? false);
   const [showSynth, setShowSynth] = useState(overlayPrefsInit.SYNTH ?? false);
   const [showComposite, setShowComposite] = useState(overlayPrefsInit.COMPOSITE ?? false);
+  const [showPullback, setShowPullback] = useState(overlayPrefsInit.PULLBACK ?? false);
+  const [showDeepPb, setShowDeepPb] = useState(overlayPrefsInit.DEEPPB ?? false);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
   // ref 镜像：updateIndicators 的 useCallback 依赖里没有这两个开关，
@@ -258,6 +264,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   showSynthRef.current = showSynth;
   const showCompositeRef = useRef(showComposite);
   showCompositeRef.current = showComposite;
+  const showPullbackRef = useRef(showPullback);
+  showPullbackRef.current = showPullback;
+  const showDeepPbRef = useRef(showDeepPb);
+  showDeepPbRef.current = showDeepPb;
   // 左上角 OHLC 图例：随十字线联动（悬停读历史K线，离开回落到最新一根，tick 实时刷新）
   interface LegendInfo { o: number; h: number; l: number; c: number; pct: number }
   const [legend, setLegend] = useState<LegendInfo | null>(null);
@@ -268,6 +278,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const autoPriceLinesRef = useRef<any[]>([]);
   // 斐波那契线 ref（原生价格线）
   const fibPriceLinesRef = useRef<any[]>([]);
+  // 回调线/深度回调线 ref（原生价格线）
+  const pullbackPriceLinesRef = useRef<any[]>([]);
   // 趋势通道 LineSeries refs（上轨/下轨/中轨 + 预测延伸线）
   const tcSeriesRef = useRef<{
     upper?: ISeriesApi<'Line'>; lower?: ISeriesApi<'Line'>; mid?: ISeriesApi<'Line'>;
@@ -775,6 +787,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       try { series.removePriceLine(pl); } catch {}
     }
     fibPriceLinesRef.current = [];
+    for (const pl of pullbackPriceLinesRef.current) {
+      try { series.removePriceLine(pl); } catch {}
+    }
+    pullbackPriceLinesRef.current = [];
 
     // —— AB9线（原生满宽价格线，价格轴可读数；应反馈恢复原画法） ——
     if (showAutoAB9 && isMember) {
@@ -830,7 +846,42 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         }
       }
     }
-  }, [showAutoAB9, showFibonacci, isMember, symbol]);
+
+    // —— 动态统计回调带（回调线 typical / 深度回调线 deep） ——
+    if ((showPullback || showDeepPb) && isMember) {
+      const pb = calcPullbackBands(klines);
+      if (pb) {
+        const pbDir = pb.direction === 'up' ? '回调' : '反弹';
+        const below = pb.direction === 'up'; // 上升语境两线在锚点下方
+        if (showPullback) {
+          try {
+            const pl = series.createPriceLine({
+              price: pb.typicalLevel,
+              color: 'rgba(56, 189, 248, 0.9)', // 天蓝
+              lineWidth: 1,
+              lineStyle: 2,
+              axisLabelVisible: true,
+              title: ` 回调 ${pb.typicalATR.toFixed(1)}ATR · ${pbDir}样本${pb.samples}`,
+            });
+            pullbackPriceLinesRef.current.push(pl);
+          } catch {}
+        }
+        if (showDeepPb) {
+          try {
+            const pl = series.createPriceLine({
+              price: pb.deepLevel,
+              color: 'rgba(251, 113, 133, 0.9)', // 玫红
+              lineWidth: 2,
+              lineStyle: 4,
+              axisLabelVisible: true,
+              title: ` 深回调 ${pb.deepATR.toFixed(1)}ATR · ${below ? '深度警戒' : '深度反弹'}`,
+            });
+            pullbackPriceLinesRef.current.push(pl);
+          } catch {}
+        }
+      }
+    }
+  }, [showAutoAB9, showFibonacci, showPullback, showDeepPb, isMember, symbol]);
 
   // ====== 趋势通道 + 预测延伸线 + 音叉 ====== 画线 ======
   // 在 redrawOverlayLines 之后独立执行，依赖 showTrendChannel/showPitchfork
@@ -2472,46 +2523,59 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   }, [openMenu, isFullscreen]);
 
   // 绘图/叠加图层菜单项（会员）
+  const currentOverlayPrefs = () => ({
+    AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork,
+    PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku,
+    SYNTH: showSynth, COMPOSITE: showComposite, PULLBACK: showPullback, DEEPPB: showDeepPb,
+  });
   const layerMenu = [
     {
       key: 'AB9', label: 'AB9 均线带', active: showAutoAB9,
-      on: () => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ AB9: v, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth, COMPOSITE: showComposite }); saveUserPref('prefAB9', v); setOpenMenu(null); },
+      on: () => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ ...currentOverlayPrefs(), AB9: v }); saveUserPref('prefAB9', v); setOpenMenu(null); },
     },
     {
       key: 'FIB', label: '斐波那契', active: showFibonacci,
-      on: () => { const v = !showFibonacci; setShowFibonacci(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: v, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth, COMPOSITE: showComposite }); saveUserPref('prefFibonacci', v); setOpenMenu(null); },
+      on: () => { const v = !showFibonacci; setShowFibonacci(v); saveOverlayPrefs({ ...currentOverlayPrefs(), FIB: v }); saveUserPref('prefFibonacci', v); setOpenMenu(null); },
     },
     {
       key: 'CHANNEL', label: '趋势通道', active: showTrendChannel,
-      on: () => { const v = !showTrendChannel; setShowTrendChannel(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: v, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth, COMPOSITE: showComposite }); setOpenMenu(null); },
+      on: () => { const v = !showTrendChannel; setShowTrendChannel(v); saveOverlayPrefs({ ...currentOverlayPrefs(), CHANNEL: v }); setOpenMenu(null); },
     },
     {
       key: 'PITCHFORK', label: '安德鲁音叉', active: showPitchfork,
-      on: () => { const v = !showPitchfork; setShowPitchfork(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: v, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth, COMPOSITE: showComposite }); setOpenMenu(null); },
+      on: () => { const v = !showPitchfork; setShowPitchfork(v); saveOverlayPrefs({ ...currentOverlayPrefs(), PITCHFORK: v }); setOpenMenu(null); },
     },
     {
       key: 'PREDICTION', label: '趋势预测', active: showPrediction,
-      on: () => { const v = !showPrediction; setShowPrediction(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: v, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth, COMPOSITE: showComposite }); setOpenMenu(null); },
+      on: () => { const v = !showPrediction; setShowPrediction(v); saveOverlayPrefs({ ...currentOverlayPrefs(), PREDICTION: v }); setOpenMenu(null); },
     },
     {
       key: 'FOURIER', label: '傅里叶 FFT', active: showFourier,
-      on: () => { const v = !showFourier; setShowFourier(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: v, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth, COMPOSITE: showComposite }); setOpenMenu(null); },
+      on: () => { const v = !showFourier; setShowFourier(v); saveOverlayPrefs({ ...currentOverlayPrefs(), FOURIER: v }); setOpenMenu(null); },
     },
     {
       key: 'VALUEAREA', label: '价值区域 VA', active: showValueArea,
-      on: () => { const v = !showValueArea; setShowValueArea(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: v, ICHIMOKU: showIchimoku, SYNTH: showSynth, COMPOSITE: showComposite }); setOpenMenu(null); },
+      on: () => { const v = !showValueArea; setShowValueArea(v); saveOverlayPrefs({ ...currentOverlayPrefs(), VALUEAREA: v }); setOpenMenu(null); },
     },
     {
       key: 'ICHIMOKU', label: '一目云图', active: showIchimoku,
-      on: () => { const v = !showIchimoku; setShowIchimoku(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: v, SYNTH: showSynth, COMPOSITE: showComposite }); setOpenMenu(null); },
+      on: () => { const v = !showIchimoku; setShowIchimoku(v); saveOverlayPrefs({ ...currentOverlayPrefs(), ICHIMOKU: v }); setOpenMenu(null); },
     },
     {
       key: 'SYNTH', label: '预测合成器', active: showSynth,
-      on: () => { const v = !showSynth; setShowSynth(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: v, COMPOSITE: showComposite }); setOpenMenu(null); },
+      on: () => { const v = !showSynth; setShowSynth(v); saveOverlayPrefs({ ...currentOverlayPrefs(), SYNTH: v }); setOpenMenu(null); },
     },
     {
       key: 'COMPOSITE', label: '合流锚线', active: showComposite,
-      on: () => { const v = !showComposite; setShowComposite(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth, COMPOSITE: v }); setOpenMenu(null); },
+      on: () => { const v = !showComposite; setShowComposite(v); saveOverlayPrefs({ ...currentOverlayPrefs(), COMPOSITE: v }); setOpenMenu(null); },
+    },
+    {
+      key: 'PULLBACK', label: '回调线', active: showPullback,
+      on: () => { const v = !showPullback; setShowPullback(v); saveOverlayPrefs({ ...currentOverlayPrefs(), PULLBACK: v }); setOpenMenu(null); },
+    },
+    {
+      key: 'DEEPPB', label: '深度回调线', active: showDeepPb,
+      on: () => { const v = !showDeepPb; setShowDeepPb(v); saveOverlayPrefs({ ...currentOverlayPrefs(), DEEPPB: v }); setOpenMenu(null); },
     },
   ];
 
