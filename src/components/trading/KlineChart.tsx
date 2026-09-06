@@ -887,7 +887,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             const pl = series.createPriceLine({
               price: pb.retestLevel,
               color: 'rgba(45, 212, 191, 0.9)', // 茶青
-              lineWidth: 1.5,
+              lineWidth: 2,
               lineStyle: 0,
               axisLabelVisible: true,
               title: ` 回踩位${pb.retestTouches}次 · ${pb.retestType === 'support' ? '支撑' : '阻力'}`,
