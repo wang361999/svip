@@ -230,6 +230,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const [showIchimoku, setShowIchimoku] = useState(overlayPrefsInit.ICHIMOKU ?? false);
   const [showSynth, setShowSynth] = useState(overlayPrefsInit.SYNTH ?? false);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
   // ref 镜像：updateIndicators 的 useCallback 依赖里没有这两个开关，
   // 切换币种/周期重载数据时闭包里是旧值，会出现"关了又冒出来/开了不出来"的状态错乱
   const showTrendChannelRef = useRef(showTrendChannel);
@@ -2399,10 +2400,15 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     return () => ws.disconnect();
   }, [interval, symbol, okxId, loadKlines, updateTick]);
 
-  // 菜单点击外部时关闭（避免用 fixed 遮罩被玻璃卡裁剪）
+  // 菜单点击外部时关闭（用 ref 判断是否点在工具栏内，避免 stopPropagation 时序导致开关点不上）
   useEffect(() => {
     if (!openMenu) return;
-    const handler = () => setOpenMenu(null);
+    const handler = (e: Event) => {
+      const target = e.target as Node | null;
+      if (toolbarRef.current && target && !toolbarRef.current.contains(target)) {
+        setOpenMenu(null);
+      }
+    };
     document.addEventListener('mousedown', handler);
     document.addEventListener('touchstart', handler);
     return () => {
@@ -2454,7 +2460,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   return (
     <div className="glass-card overflow-hidden">
       {/* 工具栏 */}
-      <div className="flex flex-wrap items-center justify-between gap-y-2 gap-x-3 px-3 py-2 border-b border-dark-700/50">
+      <div ref={toolbarRef} className="flex flex-wrap items-center justify-between gap-y-2 gap-x-3 px-3 py-2 border-b border-dark-700/50">
         {/* 左：币种 + 周期 */}
         <div className="flex items-center gap-2 min-w-0">
           <SymbolSelector
@@ -2490,7 +2496,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           </span>
 
           {/* 指标菜单（副图 + 主图，收纳到下拉减少占用） */}
-          <div className="relative" onMouseDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}>
+          <div className="relative">
             <button
               onClick={() => setOpenMenu(openMenu === 'ind' ? null : 'ind')}
               className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md transition-all ${
@@ -2534,7 +2540,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           </div>
           {/* 图层菜单（会员叠加层） */}
           {isMember && (
-            <div className="relative" onMouseDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}>
+            <div className="relative">
               <button
                 onClick={() => setOpenMenu(openMenu === 'layer' ? null : 'layer')}
                 className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md transition-all ${
