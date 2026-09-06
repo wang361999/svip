@@ -2706,6 +2706,9 @@ export interface PullbackBands {
   deepLevel: number;        // 深度回调线价格（深度回调深度）
   typicalATR: number;       // 典型回调深度（ATR 倍数）
   deepATR: number;          // 深度回调深度（ATR 倍数）
+  retestLevel: number | null; // 回踩线价格（被多次触及的关键水平位，无则 null）
+  retestTouches: number;    // 回踩位被触及的次数（≥2 才算回踩位）
+  retestType: 'support' | 'resistance' | null; // 回踩位相对当前价是支撑还是阻力
   currentATR: number;       // 最新 ATR（用于读写阅读）
   samples: number;          // 实际使用的回调样本数
 }
@@ -2801,6 +2804,25 @@ export function calcPullbackBands(
   const typicalLevel = direction === 'up' ? anchorPrice - typical * currentATR : anchorPrice + typical * currentATR;
   const deepLevel = direction === 'up' ? anchorPrice - deep * currentATR : anchorPrice + deep * currentATR;
 
+  // ---- 4) 回踩线：被多次触及的关键水平位 ----
+  const lastClose = klines[n - 1].close;
+  const tol = Math.max(currentATR * 0.12, lastClose * 0.0005); // 触及容差
+  const clusters: { price: number; count: number }[] = [];
+  for (const p of pivots) {
+    const hit = clusters.find(c => Math.abs(c.price - p.price) <= tol);
+    if (hit) hit.count += 1;
+    else clusters.push({ price: p.price, count: 1 });
+  }
+  let best: { price: number; count: number } | null = null;
+  for (const c of clusters) {
+    if (c.count >= 2 && (!best || Math.abs(c.price - lastClose) < Math.abs(best.price - lastClose))) best = c;
+  }
+  const retestLevel = best ? Math.round(best.price * 100) / 100 : null;
+  const retestTouches = best ? best.count : 0;
+  const retestType: 'support' | 'resistance' | null = retestLevel == null
+    ? null
+    : retestLevel >= lastClose ? 'resistance' : 'support';
+
   return {
     direction,
     anchorTime: lastPivot.time,
@@ -2809,6 +2831,9 @@ export function calcPullbackBands(
     deepLevel: Math.round(deepLevel * 100) / 100,
     typicalATR: Math.round(typical * 100) / 100,
     deepATR: Math.round(deep * 100) / 100,
+    retestLevel,
+    retestTouches,
+    retestType,
     currentATR: Math.round(currentATR * 100) / 100,
     samples: samples.length,
   };
