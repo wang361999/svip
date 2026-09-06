@@ -105,6 +105,8 @@ export interface RapidAnalysis {
     mode: 'trend' | 'range';
   };
   recentSignals: RapidSignal[];
+  higherTF?: Direction | 'neutral';  // v3 大周期趋势
+  higherLabel?: string;              // v3 大周期名称，如 '1h'
 }
 
 // ==================== 策略参数 ====================
@@ -133,9 +135,12 @@ export const RAPID_CONFIG = {
   volumeBreakoutMult: 1.5,  // 放量突破倍数
   divergenceLookback: 20,   // 背离回溯根数
   cooldownBars: 3,          // 同方向冷却 K 线数
-  scoreThreshold: 70,       // 趋势模式出信号最低分数
-  rangeScoreThreshold: 45, // 震荡模式出信号最低分数
+  scoreThreshold: 60,       // 趋势模式出信号最低分数（大周期顺势可 +8）
+  rangeScoreThreshold: 40, // 震荡模式出信号最低分数
   useTrendFilter: true,     // 是否启用趋势过滤
+  // v3 多周期顺势 + 评分完善
+  mtfAlignBonus: 8,         // 大周期趋势同向加分
+  mtfConflictPenalty: 10,   // 大周期趋势反向扣分
   // v3 震荡区间参数
   rangeLookback: 30,        // 震荡检测窗口
   rangeMaxWidthPct: 4.0,    // 最大宽度百分比（超过则不算震荡）
@@ -878,11 +883,29 @@ function isInCooldown(
   return false;
 }
 
+// ==================== v3 新增：大周期趋势判定 ====================
+
+// 用大周期 K 线算 EMA50 趋势，供 MTF 顺势过滤使用
+export function computeHigherTrend(klines: KlineData[]): Direction | 'neutral' {
+  if (!klines || klines.length < 60) return 'neutral';
+  const closes = klines.map(k => k.close);
+  const ema50 = emaSeries(closes, 50);
+  const price = closes[closes.length - 1];
+  const e50 = ema50[ema50.length - 1];
+  const atr = (atrSeries(klines, 14)[klines.length - 1] || 0);
+  // 距离阈值：价格明显偏离 EMA50 才算趋势，否则视为中性（震荡）
+  const thresh = Math.max(atr * 0.3, e50 * 0.001);
+  if (price > e50 && price - e50 > thresh) return 'long';
+  if (price < e50 && e50 - price > thresh) return 'short';
+  return 'neutral';
+}
+
 // ==================== 主分析函数 ====================
 
 export function analyzeRapid(
   symbol: string,
   klines: KlineData[],
+  ctx?: { higherTF?: Direction | 'neutral'; higherLabel?: string },
 ): RapidAnalysis {
   const n = klines.length;
   const now = Date.now();
@@ -992,16 +1015,18 @@ export function analyzeRapid(
       const entry = currentPrice;
       const stop = rangeInfo.support - currentATR * rangeStopMult;
       const target = rangeInfo.resistance;
-      const rangeScore = Math.max(score.total, 50); // 震荡模式最低给50分
+      // v3：使用真实评分，不再人为抬高到 50（避免"低分却做多"矛盾）
+      const rangeScore = score.total;
+      const mftNote = score.direction === 'long' ? '支撑+动量共振' : '支撑反抽（动量未确认）';
       suggestion = {
         direction: 'long',
         entry: round(entry, 2),
         stop: round(stop, 2),
         target: round(target, 2),
-        confidence: Math.max(winningSources.length, 1),
+        confidence: Math.max(winningSources.length, 1) + (score.direction === 'long' ? 1 : 0),
         score: rangeScore,
         sources: winningSources.length > 0 ? winningSources : ['bollinger'],
-        reason: `震荡区间：支撑${rangeInfo.support}做多，目标阻力${rangeInfo.resistance}（区间${rangeInfo.widthPct}%）`,
+        reason: `震荡·${mftNote}：支撑${rangeInfo.support}做多，目标阻力${rangeInfo.resistance}（区间${rangeInfo.widthPct}%）`,
         mode: 'range',
       };
     } else if (rangeInfo.position === 'near-resistance') {
@@ -1009,16 +1034,18 @@ export function analyzeRapid(
       const entry = currentPrice;
       const stop = rangeInfo.resistance + currentATR * rangeStopMult;
       const target = rangeInfo.support;
-      const rangeScore = Math.max(score.total, 50);
+      // v3：使用真实评分
+      const rangeScore = score.total;
+      const mftNote = score.direction === 'short' ? '阻力+动量共振' : '阻力反抽（动量未确认）';
       suggestion = {
         direction: 'short',
         entry: round(entry, 2),
         stop: round(stop, 2),
         target: round(target, 2),
-        confidence: Math.max(winningSources.length, 1),
+        confidence: Math.max(winningSources.length, 1) + (score.direction === 'short' ? 1 : 0),
         score: rangeScore,
         sources: winningSources.length > 0 ? winningSources : ['bollinger'],
-        reason: `震荡区间：阻力${rangeInfo.resistance}做空，目标支撑${rangeInfo.support}（区间${rangeInfo.widthPct}%）`,
+        reason: `震荡·${mftNote}：阻力${rangeInfo.resistance}做空，目标支撑${rangeInfo.support}（区间${rangeInfo.widthPct}%）`,
         mode: 'range',
       };
     } else {
@@ -1032,20 +1059,37 @@ export function analyzeRapid(
       };
     }
   } else if (score.direction !== 'none' && score.total >= effectiveThreshold && !cooldownActive) {
-    // ===== 趋势模式：评分达标 =====
+    // ===== 趋势模式：评分达标 + v3 大周期顺势 =====
+    const mtf = ctx?.higherTF;
+    const dir = score.direction as Direction;
+    let finalScore = score.total;
+    let mtfNote = '';
+    let mtfBonus = 0;
+    if (mtf && mtf !== 'neutral') {
+      const align = (dir === 'long' && mtf === 'long') || (dir === 'short' && mtf === 'short');
+      if (align) {
+        finalScore = Math.min(100, finalScore + RAPID_CONFIG.mtfAlignBonus);
+        mtfBonus = 1;
+        mtfNote = `${ctx?.higherLabel ?? ''}趋势顺势`;
+      } else {
+        finalScore = Math.max(0, finalScore - RAPID_CONFIG.mtfConflictPenalty);
+        mtfNote = `逆大周期(${ctx?.higherLabel ?? ''})趋势，谨慎`;
+      }
+    }
+    const baseReason = buildScoreReason(dir, score, winningSources);
     suggestion = {
-      direction: score.direction as Direction,
+      direction: dir,
       entry: currentPrice,
-      stop: score.direction === 'long'
+      stop: dir === 'long'
         ? currentPrice - RAPID_CONFIG.stopATRMult * currentATR
         : currentPrice + RAPID_CONFIG.stopATRMult * currentATR,
-      target: score.direction === 'long'
+      target: dir === 'long'
         ? currentPrice + RAPID_CONFIG.confluenceTargetMult * currentATR
         : currentPrice - RAPID_CONFIG.confluenceTargetMult * currentATR,
-      confidence: winningSources.length,
-      score: score.total,
+      confidence: Math.min(5, winningSources.length + mtfBonus),
+      score: finalScore,
       sources: winningSources,
-      reason: buildScoreReason(score.direction as Direction, score, winningSources),
+      reason: mtfNote ? `${mtfNote} · ${baseReason}` : baseReason,
       mode: 'trend',
     };
   } else {
@@ -1100,6 +1144,8 @@ export function analyzeRapid(
     rangeInfo,
     suggestion,
     recentSignals: allSignals.slice(-10),
+    higherTF: ctx?.higherTF,
+    higherLabel: ctx?.higherLabel,
   };
 }
 

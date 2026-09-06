@@ -10,7 +10,7 @@
 import { createHandler } from '@/shared/api/handler';
 import { apiSuccess, apiError } from '@/shared/api/response';
 import { requireUser } from '@/shared/api/auth-guard';
-import { analyzeRapid, KlineData, type RapidAnalysis } from '@/shared/lib/rapid-strategy';
+import { analyzeRapid, computeHigherTrend, KlineData, type Direction, type RapidAnalysis } from '@/shared/lib/rapid-strategy';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
@@ -24,6 +24,14 @@ const KLINES_HOSTS = [
 ];
 
 const VALID_INTERVALS = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'];
+
+// 周期 → 大一档周期（用于大周期顺势过滤），1d 无更大档位返回 null
+function getHigherInterval(interval: string): string | null {
+  const map: Record<string, string> = {
+    '1m': '15m', '5m': '1h', '15m': '1h', '30m': '1h', '1h': '4h', '4h': '1d',
+  };
+  return map[interval] || null;
+}
 
 async function fetchKlines(symbol: string, interval: string, limit: number = 200): Promise<KlineData[]> {
   for (const host of KLINES_HOSTS) {
@@ -82,8 +90,18 @@ export const GET = createHandler(async ({ req }) => {
     return apiError('KLINE_UNAVAILABLE', '行情数据源暂不可用，请稍后重试', 502);
   }
 
-  // 快速策略分析
-  const analysis = analyzeRapid(symbol, klines);
+  // 快速策略分析（带大周期顺势上下文）
+  const higherInterval = getHigherInterval(interval);
+  let higherTF: Direction | 'neutral' = 'neutral';
+  let higherLabel = '';
+  if (higherInterval) {
+    const hk = await fetchKlines(symbol, higherInterval, 150);
+    if (hk.length >= 60) {
+      higherTF = computeHigherTrend(hk);
+      higherLabel = higherInterval;
+    }
+  }
+  const analysis = analyzeRapid(symbol, klines, { higherTF, higherLabel });
 
   // 写缓存
   cache.set(cacheKey, { data: analysis, expiresAt: Date.now() + CACHE_TTL_MS });

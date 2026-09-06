@@ -183,6 +183,8 @@ interface RapidAnalysis {
   };
   recentSignals: RapidSignal[];
   cached: boolean;
+  higherTF?: 'long' | 'short' | 'neutral';
+  higherLabel?: string;
 }
 
 const SOURCE_NAMES: Record<string, string> = {
@@ -193,8 +195,8 @@ const SOURCE_NAMES: Record<string, string> = {
   'divergence': '背离',
 };
 
-const SCORE_THRESHOLD = 70;
-const RANGE_SCORE_THRESHOLD = 45;
+const SCORE_THRESHOLD = 60;
+const RANGE_SCORE_THRESHOLD = 40;
 
 export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: string }) {
   const [data, setData] = useState<RapidAnalysis | null>(null);
@@ -340,8 +342,15 @@ export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: strin
       {/* 头部 */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-dark-800">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-bold text-white">⚡ 快速信号 v2</span>
+          <span className="text-sm font-bold text-white">⚡ 快速信号 v3</span>
           <span className="text-xs text-dark-500">{symbol} · {interval}</span>
+          {data.higherTF && data.higherTF !== 'neutral' && (
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+              data.higherTF === 'long' ? 'bg-cyan-900/40 text-cyan-400' : 'bg-orange-900/40 text-orange-400'
+            }`}>
+              {data.higherLabel} {data.higherTF === 'long' ? '↑ 多' : '↓ 空'}
+            </span>
+          )}
           {isRangeMode && (
             <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-900/50 text-purple-400 font-bold">震荡</span>
           )}
@@ -441,6 +450,7 @@ export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: strin
 
       {/* 入场/止损/止盈 */}
       {hasSignal && (
+        <>
         <div className="grid grid-cols-3 gap-px bg-dark-800">
           <div className="bg-dark-900 px-3 py-2">
             <div className="text-xs text-dark-500">入场</div>
@@ -461,6 +471,20 @@ export default function RapidSignalCard({ symbol = 'ETHUSDT' }: { symbol?: strin
             </div>
           </div>
         </div>
+        {/* 盈亏比 R:R */}
+        <div className="px-3 py-2 flex items-center justify-between text-xs bg-dark-900">
+          <div className="flex items-center gap-1.5">
+            <span className="text-dark-500">盈亏比</span>
+            <span className="font-bold text-white tabular-nums">
+              {Math.abs(s.stop - s.entry) > 0 ? `1 : ${(Math.abs(s.target - s.entry) / Math.abs(s.stop - s.entry)).toFixed(2)}` : '—'}
+            </span>
+            {s.confidence > 0 && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-900/40 text-blue-400">把握 {Math.round(Math.min(100, s.confidence * 20))}%</span>
+            )}
+          </div>
+          <div className="text-[10px] text-dark-600">止损距{(Math.abs(s.entry - s.stop) / s.entry * 100).toFixed(2)}% · 目标距{(Math.abs(s.target - s.entry) / s.entry * 100).toFixed(2)}%</div>
+        </div>
+        </>
       )}
 
       {/* 震荡区间信息 */}
