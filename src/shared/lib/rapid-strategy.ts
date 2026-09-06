@@ -418,8 +418,8 @@ function detectRange(klines: KlineData[], atrVal: number): RangeInfo {
     && supportTouches >= 1
     && resistanceTouches >= 1;
 
-  // 当前价格在区间中的位置
-  const currentPrice = klines[n - 1].close;
+  // 当前价格在区间中的位置（用最后一根已收盘K线判断，与收盘确认一致）
+  const currentPrice = window[window.length - 1].close;
   const proximityThreshold = width * RAPID_CONFIG.rangeProximityPct;
   let position: 'near-support' | 'near-resistance' | 'middle';
   if (currentPrice - minLow < proximityThreshold) {
@@ -928,15 +928,18 @@ export function analyzeRapid(
   const startIdx = Math.max(1, n - lookback);
   const allSignals: RapidSignal[] = [];
 
+  // v4 收盘确认：只在已收盘K线上出信号/评分/建议，避免用未走完的K线反复触发/取消信号
+  const signalBar = n - 2; // 最后一根已收盘K线
+
   // v3：先检测震荡区间，用于信号过滤
-  const preATR = atr[n - 1];
+  const preATR = atr[signalBar] || atr[n - 1];
   const preRangeInfo = detectRange(klines, preATR);
   const isRangeMode = preRangeInfo.isRange;
 
-  for (let i = startIdx; i < n; i++) {
-    // v2：背离检测（只检测当前根）
-    const rsiDiv = i === n - 1 ? detectRSIDivergence(klines, rsi, RAPID_CONFIG.divergenceLookback, i) : 'none';
-    const macdDiv = i === n - 1 ? detectMACDDivergence(klines, macd.hist, RAPID_CONFIG.divergenceLookback, i) : 'none';
+  for (let i = startIdx; i <= signalBar; i++) {
+    // v2：背离检测（只在收盘确认K线上计算）
+    const rsiDiv = i === signalBar ? detectRSIDivergence(klines, rsi, RAPID_CONFIG.divergenceLookback, i) : 'none';
+    const macdDiv = i === signalBar ? detectMACDDivergence(klines, macd.hist, RAPID_CONFIG.divergenceLookback, i) : 'none';
 
     const detectors: (RapidSignal | null)[] = [
       detectEMACross(klines, i, ema9, ema21),
@@ -961,38 +964,38 @@ export function analyzeRapid(
     }
   }
 
-  const currentATR = atr[n - 1];
-  const currentPrice = klines[n - 1].close;
-  const latestBar = n - 1;
+  const signalATR = atr[signalBar];              // 收盘确认K线的ATR
+  const signalClose = klines[signalBar].close;   // 收盘确认K线的收盘价（入场参考）
+  const currentPrice = klines[n - 1].close;      // 实时价（仅用于展示）
   const rangeInfo = preRangeInfo;
 
   for (const sig of allSignals) {
-    sig.atr = currentATR;
+    sig.atr = signalATR;
     sig.stop = sig.direction === 'long'
-      ? sig.entry - RAPID_CONFIG.stopATRMult * currentATR
-      : sig.entry + RAPID_CONFIG.stopATRMult * currentATR;
+      ? sig.entry - RAPID_CONFIG.stopATRMult * signalATR
+      : sig.entry + RAPID_CONFIG.stopATRMult * signalATR;
     sig.target = sig.direction === 'long'
-      ? sig.entry + RAPID_CONFIG.targetATRMult * currentATR
-      : sig.entry - RAPID_CONFIG.targetATRMult * currentATR;
+      ? sig.entry + RAPID_CONFIG.targetATRMult * signalATR
+      : sig.entry - RAPID_CONFIG.targetATRMult * signalATR;
   }
 
-  // v2：背离检测（用于评分和状态展示）
-  const currentRsiDiv = detectRSIDivergence(klines, rsi, RAPID_CONFIG.divergenceLookback, latestBar);
-  const currentMacdDiv = detectMACDDivergence(klines, macd.hist, RAPID_CONFIG.divergenceLookback, latestBar);
+  // v2：背离检测（用于评分，基于已收盘K线）
+  const currentRsiDiv = detectRSIDivergence(klines, rsi, RAPID_CONFIG.divergenceLookback, signalBar);
+  const currentMacdDiv = detectMACDDivergence(klines, macd.hist, RAPID_CONFIG.divergenceLookback, signalBar);
 
-  // v2 优化4：信号评分
-  const score = calcSignalScore(klines, latestBar, {
+  // v2 优化4：信号评分（基于已收盘K线）
+  const score = calcSignalScore(klines, signalBar, {
     ema50, ema9, ema21, bb, rsi, macd, atr, volAvg,
     rsiDiv: currentRsiDiv, macdDiv: currentMacdDiv,
   });
 
   // v2 优化5：冷却期检测
-  const cooldownActive = isInCooldown(allSignals, latestBar, RAPID_CONFIG.cooldownBars, score.direction as Direction);
+  const cooldownActive = isInCooldown(allSignals, signalBar, RAPID_CONFIG.cooldownBars, score.direction as Direction);
 
   const effectiveThreshold = isRangeMode ? RAPID_CONFIG.rangeScoreThreshold : RAPID_CONFIG.scoreThreshold;
 
   // 共振统计（用于显示）
-  const recentWindow = allSignals.filter(s => s.barIndex >= latestBar - 1);
+  const recentWindow = allSignals.filter(s => s.barIndex >= signalBar - 1);
   const longSources = new Set<SignalSource>();
   const shortSources = new Set<SignalSource>();
   for (const s of recentWindow) {
@@ -1000,7 +1003,7 @@ export function analyzeRapid(
     else shortSources.add(s.source);
   }
 
-  const merged = mergeConfluence(recentWindow, currentATR, currentPrice, latestBar, klines);
+  const merged = mergeConfluence(recentWindow, signalATR, signalClose, signalBar, klines);
 
   // v2：suggestion 基于评分 + v3 震荡模式
   const winningSources = score.direction === 'long' ? Array.from(longSources) : Array.from(shortSources);
@@ -1012,8 +1015,8 @@ export function analyzeRapid(
     const rangeStopMult = 0.5; // 止损在区间外0.5倍ATR
     if (rangeInfo.position === 'near-support') {
       // 接近支撑 → 做多（震荡模式由位置决定方向，不受趋势评分干扰）
-      const entry = currentPrice;
-      const stop = rangeInfo.support - currentATR * rangeStopMult;
+      const entry = signalClose;
+      const stop = rangeInfo.support - signalATR * rangeStopMult;
       const target = rangeInfo.resistance;
       // v3：使用真实评分，不再人为抬高到 50（避免"低分却做多"矛盾）
       const rangeScore = score.total;
@@ -1031,8 +1034,8 @@ export function analyzeRapid(
       };
     } else if (rangeInfo.position === 'near-resistance') {
       // 接近阻力 → 做空（震荡模式由位置决定方向，不受趋势评分干扰）
-      const entry = currentPrice;
-      const stop = rangeInfo.resistance + currentATR * rangeStopMult;
+      const entry = signalClose;
+      const stop = rangeInfo.resistance + signalATR * rangeStopMult;
       const target = rangeInfo.support;
       // v3：使用真实评分
       const rangeScore = score.total;
@@ -1079,13 +1082,13 @@ export function analyzeRapid(
     const baseReason = buildScoreReason(dir, score, winningSources);
     suggestion = {
       direction: dir,
-      entry: currentPrice,
+      entry: signalClose,
       stop: dir === 'long'
-        ? currentPrice - RAPID_CONFIG.stopATRMult * currentATR
-        : currentPrice + RAPID_CONFIG.stopATRMult * currentATR,
+        ? signalClose - RAPID_CONFIG.stopATRMult * signalATR
+        : signalClose + RAPID_CONFIG.stopATRMult * signalATR,
       target: dir === 'long'
-        ? currentPrice + RAPID_CONFIG.confluenceTargetMult * currentATR
-        : currentPrice - RAPID_CONFIG.confluenceTargetMult * currentATR,
+        ? signalClose + RAPID_CONFIG.confluenceTargetMult * signalATR
+        : signalClose - RAPID_CONFIG.confluenceTargetMult * signalATR,
       confidence: Math.min(5, winningSources.length + mtfBonus),
       score: finalScore,
       sources: winningSources,
@@ -1125,7 +1128,7 @@ export function analyzeRapid(
     macdDea: round(macd.signal[n - 1], 4),
     macdCross: macd.hist[n - 2] <= 0 && macd.hist[n - 1] > 0 ? 'golden'
       : macd.hist[n - 2] >= 0 && macd.hist[n - 1] < 0 ? 'death' : 'none',
-    atr: round(currentATR, 2),
+    atr: round(atr[n - 1], 2),
     price: currentPrice,
     volumeAvg: round(volAvg[n - 1] || 0, 2),
     currentVolume: klines[n - 1].volume,
