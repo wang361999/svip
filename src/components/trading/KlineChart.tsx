@@ -124,8 +124,8 @@ function saveIndicatorPrefs(next: typeof DEFAULT_INDICATORS) {
 // 同样存于浏览器本地，刷新/换币种/换周期后保持用户的选择
 // 会员用户额外同步到后端（跨设备），非会员仅本地
 // 版本号：默认值变更时递增，旧 localStorage 自动失效
-  const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v5';
-const DEFAULT_OVERLAY = { AB9: false, FIB: false, CHANNEL: false, PITCHFORK: false, PREDICTION: false, FOURIER: false, VALUEAREA: false, ICHIMOKU: false, SYNTH: false, COMPOSITE: false, PULLBACK: false, DEEPPB: false, RETEST: false };
+  const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v6';
+const DEFAULT_OVERLAY = { AB9: false, FIB: false, CHANNEL: false, PITCHFORK: false, PREDICTION: false, FOURIER: false, VALUEAREA: false, ICHIMOKU: false, SYNTH: false, COMPOSITE: false, PULLBACK: false };
 
 function loadOverlayPrefs() {
   if (typeof window === 'undefined') return { ...DEFAULT_OVERLAY };
@@ -145,8 +145,6 @@ function loadOverlayPrefs() {
       SYNTH: parsed.SYNTH !== undefined ? !!parsed.SYNTH : DEFAULT_OVERLAY.SYNTH,
       COMPOSITE: parsed.COMPOSITE !== undefined ? !!parsed.COMPOSITE : DEFAULT_OVERLAY.COMPOSITE,
       PULLBACK: parsed.PULLBACK !== undefined ? !!parsed.PULLBACK : DEFAULT_OVERLAY.PULLBACK,
-      DEEPPB: parsed.DEEPPB !== undefined ? !!parsed.DEEPPB : DEFAULT_OVERLAY.DEEPPB,
-      RETEST: parsed.RETEST !== undefined ? !!parsed.RETEST : DEFAULT_OVERLAY.RETEST,
     };
   } catch {
     return { ...DEFAULT_OVERLAY };
@@ -244,8 +242,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const [showSynth, setShowSynth] = useState(overlayPrefsInit.SYNTH ?? false);
   const [showComposite, setShowComposite] = useState(overlayPrefsInit.COMPOSITE ?? false);
   const [showPullback, setShowPullback] = useState(overlayPrefsInit.PULLBACK ?? false);
-  const [showDeepPb, setShowDeepPb] = useState(overlayPrefsInit.DEEPPB ?? false);
-  const [showRetest, setShowRetest] = useState(overlayPrefsInit.RETEST ?? false);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
   // ref 镜像：updateIndicators 的 useCallback 依赖里没有这两个开关，
@@ -268,10 +264,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   showCompositeRef.current = showComposite;
   const showPullbackRef = useRef(showPullback);
   showPullbackRef.current = showPullback;
-  const showDeepPbRef = useRef(showDeepPb);
-  showDeepPbRef.current = showDeepPb;
-  const showRetestRef = useRef(showRetest);
-  showRetestRef.current = showRetest;
   // 左上角 OHLC 图例：随十字线联动（悬停读历史K线，离开回落到最新一根，tick 实时刷新）
   interface LegendInfo { o: number; h: number; l: number; c: number; pct: number }
   const [legend, setLegend] = useState<LegendInfo | null>(null);
@@ -851,38 +843,34 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       }
     }
 
-    // —— 动态统计回调带（回调线 typical / 深度回调线 deep / 回踩线 retest） ——
-    if ((showPullback || showDeepPb || showRetest) && isMember) {
+    // —— 动态统计回调带（回调线 typical / 深度回调线 deep / 回踩线 retest，一个开关同组） ——
+    if (showPullback && isMember) {
       const pb = calcPullbackBands(klines);
       if (pb) {
         const below = pb.direction === 'up'; // 上升语境回调两线在锚点下方
-        if (showPullback) {
-          try {
-            const pl = series.createPriceLine({
-              price: pb.typicalLevel,
-              color: 'rgba(56, 189, 248, 0.9)', // 天蓝
-              lineWidth: 1,
-              lineStyle: 2,
-              axisLabelVisible: true,
-              title: ` 回调 ${pb.typicalATR.toFixed(1)}ATR · 样本${pb.samples}`,
-            });
-            pullbackPriceLinesRef.current.push(pl);
-          } catch {}
-        }
-        if (showDeepPb) {
-          try {
-            const pl = series.createPriceLine({
-              price: pb.deepLevel,
-              color: 'rgba(251, 113, 133, 0.9)', // 玫红
-              lineWidth: 2,
-              lineStyle: 4,
-              axisLabelVisible: true,
-              title: ` 深回调 ${pb.deepATR.toFixed(1)}ATR · ${below ? '深度警戒' : '深度反弹'}`,
-            });
-            pullbackPriceLinesRef.current.push(pl);
-          } catch {}
-        }
-        if (showRetest && pb.retestLevel != null) {
+        try {
+          const pl = series.createPriceLine({
+            price: pb.typicalLevel,
+            color: 'rgba(56, 189, 248, 0.9)', // 天蓝
+            lineWidth: 1,
+            lineStyle: 2,
+            axisLabelVisible: true,
+            title: ` 回调 ${pb.typicalATR.toFixed(1)}ATR · 样本${pb.samples}`,
+          });
+          pullbackPriceLinesRef.current.push(pl);
+        } catch {}
+        try {
+          const pl = series.createPriceLine({
+            price: pb.deepLevel,
+            color: 'rgba(251, 113, 133, 0.9)', // 玫红
+            lineWidth: 2,
+            lineStyle: 4,
+            axisLabelVisible: true,
+            title: ` 深回调 ${pb.deepATR.toFixed(1)}ATR · ${below ? '深度警戒' : '深度反弹'}`,
+          });
+          pullbackPriceLinesRef.current.push(pl);
+        } catch {}
+        if (pb.retestLevel != null) {
           try {
             const pl = series.createPriceLine({
               price: pb.retestLevel,
@@ -897,7 +885,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         }
       }
     }
-  }, [showAutoAB9, showFibonacci, showPullback, showDeepPb, showRetest, isMember, symbol]);
+  }, [showAutoAB9, showFibonacci, showPullback, isMember, symbol]);
 
   // ====== 趋势通道 + 预测延伸线 + 音叉 ====== 画线 ======
   // 在 redrawOverlayLines 之后独立执行，依赖 showTrendChannel/showPitchfork
@@ -2542,7 +2530,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const currentOverlayPrefs = () => ({
     AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork,
     PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku,
-    SYNTH: showSynth, COMPOSITE: showComposite, PULLBACK: showPullback, DEEPPB: showDeepPb, RETEST: showRetest,
+    SYNTH: showSynth, COMPOSITE: showComposite, PULLBACK: showPullback,
   });
   const layerMenu = [
     {
@@ -2586,16 +2574,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       on: () => { const v = !showComposite; setShowComposite(v); saveOverlayPrefs({ ...currentOverlayPrefs(), COMPOSITE: v }); setOpenMenu(null); },
     },
     {
-      key: 'PULLBACK', label: '回调线', active: showPullback,
+      key: 'PULLBACK', label: '回调组(回调/深回调/回踩)', active: showPullback,
       on: () => { const v = !showPullback; setShowPullback(v); saveOverlayPrefs({ ...currentOverlayPrefs(), PULLBACK: v }); setOpenMenu(null); },
-    },
-    {
-      key: 'DEEPPB', label: '深度回调线', active: showDeepPb,
-      on: () => { const v = !showDeepPb; setShowDeepPb(v); saveOverlayPrefs({ ...currentOverlayPrefs(), DEEPPB: v }); setOpenMenu(null); },
-    },
-    {
-      key: 'RETEST', label: '回踩线', active: showRetest,
-      on: () => { const v = !showRetest; setShowRetest(v); saveOverlayPrefs({ ...currentOverlayPrefs(), RETEST: v }); setOpenMenu(null); },
     },
   ];
 
