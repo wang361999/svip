@@ -2426,38 +2426,67 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           ))}
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className={`text-xs px-2 py-0.5 rounded ${
+        <div className="flex items-center justify-end gap-1.5 flex-1 min-w-0 flex-wrap">
+          <span className={`text-xs px-2 py-0.5 rounded whitespace-nowrap ${
             dataStatus === '实时' ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'
           }`}>
             {dataStatus}
           </span>
-          {(['EMA', 'BOLL', 'MACD', 'RSI', 'VWAP', 'KDJ', 'ATR', 'NINE', 'CHAN'] as const).map((ind) => (
-            <button
-              key={ind}
-              onClick={() => {
-                // 前台徽章直接管控：点击即切换并持久化到浏览器本地
-                // indicators 变化会被下方 useEffect 捕获并自动重绘，无需手动调用
-                setIndicators((prev) => {
-                  const next = { ...prev, [ind]: !prev[ind] };
-                  saveIndicatorPrefs(next);
-                  return next;
-                });
-              }}
-              className={`px-2.5 py-1 text-xs font-medium cursor-pointer select-none transition-all ${
-                indicators[ind]
-                  ? 'text-blue-300 border-b-2 border-blue-400 pb-0.5'
-                  : 'text-dark-600 line-through hover:text-dark-400'
-              }`}
-              title={`点击切换${ind}显示`}
-            >
-              {ind === 'NINE' ? '九转' : ind === 'CHAN' ? '缠论' : ind}
-            </button>
-          ))}
-          {/* AB9 + 斐波那契 独立按钮 */}
+
+          {/* 副图指标组 */}
+          <div className="flex items-center gap-0.5 px-1.5 py-1 rounded-md bg-dark-800/40 border border-dark-700/40">
+            <span className="text-[10px] text-dark-500 mr-0.5 select-none">副图</span>
+            {(['EMA', 'BOLL', 'MACD', 'RSI', 'VWAP', 'KDJ', 'ATR'] as const).map((ind) => (
+              <button
+                key={ind}
+                onClick={() => {
+                  // 前台徽章直接管控：点击即切换并持久化到浏览器本地
+                  setIndicators((prev) => {
+                    const next = { ...prev, [ind]: !prev[ind] };
+                    saveIndicatorPrefs(next);
+                    return next;
+                  });
+                }}
+                className={`px-2 py-0.5 text-xs font-medium cursor-pointer select-none rounded transition-all ${
+                  indicators[ind]
+                    ? 'bg-blue-500/15 text-blue-300'
+                    : 'text-dark-600 line-through hover:text-dark-400'
+                }`}
+                title={`点击切换${ind}显示`}
+              >
+                {ind}
+              </button>
+            ))}
+          </div>
+
+          {/* 主图/高级组 */}
+          <div className="flex items-center gap-0.5 px-1.5 py-1 rounded-md bg-dark-800/40 border border-dark-700/40">
+            <span className="text-[10px] text-dark-500 mr-0.5 select-none">主图</span>
+            {(['NINE', 'CHAN'] as const).map((ind) => (
+              <button
+                key={ind}
+                onClick={() => {
+                  setIndicators((prev) => {
+                    const next = { ...prev, [ind]: !prev[ind] };
+                    saveIndicatorPrefs(next);
+                    return next;
+                  });
+                }}
+                className={`px-2 py-0.5 text-xs font-medium cursor-pointer select-none rounded transition-all ${
+                  indicators[ind]
+                    ? 'bg-blue-500/15 text-blue-300'
+                    : 'text-dark-600 line-through hover:text-dark-400'
+                }`}
+                title={`点击切换${ind}显示`}
+              >
+                {ind === 'NINE' ? '九转' : '缠论'}
+              </button>
+            ))}
+          </div>
+          {/* 会员叠加图层组（AB9/斐波那契/通道/音叉/预测/FFT/VA/云图/合成） */}
           {isMember && (
-            <>
-              <div className="w-px h-4 bg-dark-700" />
+            <div className="flex items-center gap-0.5 px-1.5 py-1 rounded-md bg-dark-800/40 border border-dark-700/40">
+              <span className="text-[10px] text-dark-500 mr-0.5 select-none">图层</span>
               <button
                 onClick={() => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ AB9: v, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); saveUserPref('prefAB9', v); }}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-all ${showAutoAB9 ? 'text-cyan-400' : 'text-dark-600'}`}
@@ -2521,11 +2550,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
               >
                 合成
               </button>
-            </>
+            </div>
           )}
 
           {/* 全屏按钮 */}
-          <div className="w-px h-4 bg-dark-700" />
           <button
             onClick={onToggleFullscreen}
             className="px-2.5 py-1 text-xs font-medium rounded text-dark-400 hover:text-white hover:bg-dark-700/50 transition-all"
