@@ -2592,3 +2592,107 @@ export function calcPredictionSynth(
   };
 }
 
+// ==================== 综合合流锚线（Composite Anchor Line） ====================
+
+export interface CompositeLineData {
+  time: number;
+  value: number; // 锚线价格
+}
+
+export interface CompositeLine {
+  // 锚线序列（可直接作为主图 line series 数据）
+  data: CompositeLineData[];
+  // 最后一根的多空合流偏置（-1 空 ~ +1 多）
+  lastBias: number;
+  // 多空合流方向
+  direction: 'up' | 'down' | 'neutral';
+  // 最新一根锚线值
+  anchorValue: number;
+  // 最新一幅的分项原始信号（供诊断/展示）
+  components: { ema: number; macd: number; rsi: number; st: number; volume: number };
+}
+
+/**
+ * 综合合流锚线：把 EMA 趋势 + MACD 动量 + RSI + 超趋势 + 成交量 合成一条主图叠加线。
+ *
+ * 原理：
+ *  - 各指标归一化到 [-1, 1] 的多空偏置，按权重合成为 bias；
+ *  - 成交量放大时强化合流方向、缩量时弱化（可信度调节）；
+ *  - 锚线 = EMA20 - bias * ATR * SHIFT；bias>0（偏多）→ 锚线在价格下方，
+ *    价格「在锚线上方 = 多方合流」，反之偏空。多空冲突时锚线贴近价格。
+ */
+export function calcCompositeLine(klines: KlineData[]): CompositeLine | null {
+  const n = klines.length;
+  if (!klines || n < 60) return null;
+
+  const ema20 = calcEMAArray(klines, 20);
+  const macd = calcMACD(klines, 12, 26, 9);
+  const rsi = calcRSIArray(klines, 14);
+  const st = calcSupertrend(klines, 10, 3);
+  const atr = calcATRArray(klines, 14);
+  if (!macd || !st) return null;
+
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+  // 成交量均线（周期 20）
+  const volAvg: (number | null)[] = [];
+  for (let i = 0; i < n; i++) {
+    if (i < 20) { volAvg.push(null); continue; }
+    let s = 0;
+    for (let j = i - 19; j <= i; j++) s += klines[j].volume;
+    volAvg.push(s / 20);
+  }
+
+  const data: CompositeLineData[] = [];
+  const SCALE = 1.5;  // 价格归一化：偏差 / (ATR*SCALE)
+  const SHIFT = 0.6;  // 锚线相对 EMA20 的偏移幅度（ATR 倍数），具体越大越醒目
+
+  let lastBias = 0;
+  let lastComp = { ema: 0, macd: 0, rsi: 0, st: 0, volume: 1 };
+
+  for (let i = 40; i < n; i++) {
+    const a = atr[i];
+    if (!a || !isFinite(a) || a === 0) continue;
+
+    // 1) EMA 趋势：价格相对 EMA20（归一化到 ATR）
+    const emaSig = clamp((klines[i].close - ema20[i]) / (a * SCALE), -1, 1);
+
+    // 2) MACD 动量：柱状图 / ATR
+    const macdSig = clamp((macd.hist[i] ?? 0) / (a * SCALE), -1, 1);
+
+    // 3) RSI 强度：(RSI-50)/50
+    const rsiSig = clamp(((rsi[i] ?? 50) - 50) / 50, -1, 1);
+
+    // 4) 超趋势方向
+    const stSig = st.line[i]?.state === 'up' ? 1 : -1;
+
+    // 5) 成交量确认：放量强化/缩量弱化合流方向
+    const va = volAvg[i];
+    const volFactor = va && va > 0 ? clamp(klines[i].volume / va, 0, 3) : 1;
+    const volMod = volFactor >= 1.5 ? 1.25 : volFactor <= 0.8 ? 0.8 : 1;
+
+    // 合成多空偏置（-1 ~ 1）
+    const rawBias = 0.30 * emaSig + 0.25 * macdSig + 0.20 * rsiSig + 0.25 * stSig;
+    const bias = clamp(rawBias * volMod, -1, 1);
+
+    // 锚线值
+    const anchor = ema20[i] - bias * a * SHIFT;
+
+    lastBias = bias;
+    lastComp = { ema: emaSig, macd: macdSig, rsi: rsiSig, st: stSig, volume: volFactor };
+    data.push({ time: klines[i].time, value: Math.round(anchor * 10000) / 10000 });
+  }
+
+  if (data.length === 0) return null;
+  const anchorValue = data[data.length - 1].value;
+  const direction = lastBias > 0.1 ? 'up' : lastBias < -0.1 ? 'down' : 'neutral';
+
+  return {
+    data,
+    lastBias: Math.round(lastBias * 100) / 100,
+    direction,
+    anchorValue,
+    components: lastComp,
+  };
+}
+

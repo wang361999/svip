@@ -18,6 +18,7 @@ import {
   calcValueArea,
   calcIchimoku,
   calcPredictionSynth,
+  calcCompositeLine,
   type ChanResult,
   type TrendChannel,
   type Pitchfork,
@@ -25,6 +26,7 @@ import {
   type ValueArea,
   type IchimokuData,
   type PredictionSynth,
+  type CompositeLine,
 } from '@/shared/lib/indicators';
 import { analyzeRapid, type RapidAnalysis } from '@/shared/lib/rapid-strategy';
 
@@ -121,7 +123,7 @@ function saveIndicatorPrefs(next: typeof DEFAULT_INDICATORS) {
 // 会员用户额外同步到后端（跨设备），非会员仅本地
 // 版本号：默认值变更时递增，旧 localStorage 自动失效
   const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v5';
-const DEFAULT_OVERLAY = { AB9: false, FIB: false, CHANNEL: false, PITCHFORK: false, PREDICTION: false, FOURIER: false, VALUEAREA: false, ICHIMOKU: false, SYNTH: false };
+const DEFAULT_OVERLAY = { AB9: false, FIB: false, CHANNEL: false, PITCHFORK: false, PREDICTION: false, FOURIER: false, VALUEAREA: false, ICHIMOKU: false, SYNTH: false, COMPOSITE: false };
 
 function loadOverlayPrefs() {
   if (typeof window === 'undefined') return { ...DEFAULT_OVERLAY };
@@ -139,6 +141,7 @@ function loadOverlayPrefs() {
       VALUEAREA: parsed.VALUEAREA !== undefined ? !!parsed.VALUEAREA : DEFAULT_OVERLAY.VALUEAREA,
       ICHIMOKU: parsed.ICHIMOKU !== undefined ? !!parsed.ICHIMOKU : DEFAULT_OVERLAY.ICHIMOKU,
       SYNTH: parsed.SYNTH !== undefined ? !!parsed.SYNTH : DEFAULT_OVERLAY.SYNTH,
+      COMPOSITE: parsed.COMPOSITE !== undefined ? !!parsed.COMPOSITE : DEFAULT_OVERLAY.COMPOSITE,
     };
   } catch {
     return { ...DEFAULT_OVERLAY };
@@ -204,6 +207,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const valueAreaRef = useRef<ValueArea | null>(null);
   const ichimokuRef = useRef<IchimokuData | null>(null);
   const synthRef = useRef<PredictionSynth | null>(null);
+  // 综合合流锚线：数据 + 主图 line series
+  const compositeRef = useRef<CompositeLine | null>(null);
+  const compositeSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const drawChanRef = useRef<() => void>(() => {});
 
   // 多空信号箭头画布
@@ -217,6 +223,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const pendingTickRef = useRef<number | null>(null);
   const rAFRef = useRef<number | null>(null);
   const lastTickAtRef = useRef<number>(0);
+  // 最近一次已“收盘”的K线时间：用于在丢失 isFinal 消息时也能驱动缠论/九转刷新
+  const lastBarTimeRef = useRef<number>(0);
 
   // AB9线 + 斐波那契回调线 + 趋势通道 + 安德鲁音叉：从 localStorage 初始化
   const overlayPrefsInit = loadOverlayPrefs();
@@ -229,6 +237,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const [showValueArea, setShowValueArea] = useState(overlayPrefsInit.VALUEAREA ?? false);
   const [showIchimoku, setShowIchimoku] = useState(overlayPrefsInit.ICHIMOKU ?? false);
   const [showSynth, setShowSynth] = useState(overlayPrefsInit.SYNTH ?? false);
+  const [showComposite, setShowComposite] = useState(overlayPrefsInit.COMPOSITE ?? false);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
   // ref 镜像：updateIndicators 的 useCallback 依赖里没有这两个开关，
@@ -247,6 +256,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   showIchimokuRef.current = showIchimoku;
   const showSynthRef = useRef(showSynth);
   showSynthRef.current = showSynth;
+  const showCompositeRef = useRef(showComposite);
+  showCompositeRef.current = showComposite;
   // 左上角 OHLC 图例：随十字线联动（悬停读历史K线，离开回落到最新一根，tick 实时刷新）
   interface LegendInfo { o: number; h: number; l: number; c: number; pct: number }
   const [legend, setLegend] = useState<LegendInfo | null>(null);
@@ -355,6 +366,40 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // 持久化画线开关偏好到后端
   const saveUserPref = useCallback((key: string, value: boolean) => {
     apiPut('/api/user/preferences', { [key]: value }).catch(() => {});
+  }, []);
+
+  // 渲染综合合流锚线（仅读 refs，无 stale 风险）
+  const renderComposite = useCallback(() => {
+    const chart = mainChart.current;
+    if (!chart) return;
+    const klines = allKlinesRef.current;
+
+    const removeSeries = () => {
+      if (compositeSeriesRef.current) {
+        try { chart.removeSeries(compositeSeriesRef.current); } catch {}
+        compositeSeriesRef.current = null;
+      }
+      compositeRef.current = null;
+    };
+
+    if (!showCompositeRef.current) { removeSeries(); return; }
+    if (klines.length === 0) { removeSeries(); return; }
+
+    const comp = calcCompositeLine(klines);
+    if (!comp) { removeSeries(); return; }
+
+    if (!compositeSeriesRef.current) {
+      compositeSeriesRef.current = chart.addLineSeries({
+        color: '#f472b6', // 洋红，与 EMA/APP 均线区分
+        lineWidth: 2,
+        lineStyle: 2, // dashed
+        priceLineVisible: false,
+        lastValueVisible: true,
+        crosshairMarkerVisible: false,
+      });
+    }
+    compositeSeriesRef.current.setData(comp.data as any);
+    compositeRef.current = comp;
   }, []);
 
   // 更新所有指标线
@@ -490,6 +535,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       });
       vwapSeries.current.setData(vwapData);
     }
+
+    // 综合合流锚线（读 ref 镜像，数据加载/指标变化时刷新）
+    renderComposite();
 
     // 神奇九转：计算数据并绘制到覆盖层 canvas
     if (indicators.NINE) {
@@ -653,7 +701,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         atrChartRef.current.parentElement.classList.add('hidden');
       }
     }
-  }, [indicators, periods]);
+  }, [indicators, periods, renderComposite]);
 
   // 徽章切换指标时立即重绘
   // 修复：此前徽章只改 state 不触发重绘，必须等K线收盘或刷新页面才生效
@@ -703,11 +751,13 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       } else {
         synthRef.current = null;
       }
+      // 综合合流锚线
+      renderComposite();
       requestAnimationFrame(() => {
         try { drawChanRef.current(); } catch (e) { console.warn('[Overlay] raf error:', e); }
       });
     }
-  }, [showTrendChannel, showPitchfork, showFourier, showValueArea, showIchimoku, showSynth]);
+  }, [showTrendChannel, showPitchfork, showFourier, showValueArea, showIchimoku, showSynth, showComposite, renderComposite]);
 
   // === AB9线 + 斐波那契回调线重绘 ===
   // 数据加载、开关切换、K线收盘（isFinal）时调用，统一走这一个入口
@@ -1105,19 +1155,23 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     // 图例跟随最新K线（新开的一根或盘中波动）
     setLegend(legendOf(kline.open, kline.high, kline.low, kline.close));
 
-    if (isFinal) {
+    // 判断“最新一根K线是否轮换”：
+    //  - 若 time 变了，说明一根新的K线已开始，前一根必然已收盘（即使缺失 isFinal 消息）
+    //  - 若 time 相同但 isFinal=true，说明当前这根正好收盘确认
+    // 满足任一条件都代表“已有新的确认K线出现”，此时才值得重算缠论/九转（仍是收盘粒度，不做逐tick预览）
+    const barSwitched = kline.time !== lastBarTimeRef.current;
+    if (isFinal || barSwitched) {
+      lastBarTimeRef.current = kline.time;
       updateIndicators();
-      // K线收盘后重算 AB9 / 斐波那契画线：新分形确认、突破换段都能及时反映，
-      // 修复此前盘中形成的新高/新低要等手动刷新才会体现在画线上的问题
+      // K线收盘后重算 AB9 / 斐波那契画线：新分形确认、突破换段都能及时反映
       redrawOverlayLines();
       // K线收盘后重算九转序列
       if (indicators.NINE) {
         nineTurnDataRef.current = calcNineTurn(klines);
       }
     }
-    // 九转/缠论canvas只在K线收盘时重绘（避免盘中每次tick都重绘浪费性能）
-    // 盘中价格变动不影响九转/缠论数据，只在K线收盘后数据才变化
-    if (isFinal) {
+    // 九转/缠论 canvas 只在“已有确认K线”时重绘（避免盘中每次tick都重绘浪费性能）
+    if (isFinal || barSwitched) {
       try { drawNineTurnRef.current(); } catch (e) { console.warn('[NineTurn] update error:', e); }
       try { drawChanRef.current(); } catch (e) { console.warn('[Chan] update error:', e); }
     }
@@ -2421,39 +2475,43 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const layerMenu = [
     {
       key: 'AB9', label: 'AB9 均线带', active: showAutoAB9,
-      on: () => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ AB9: v, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); saveUserPref('prefAB9', v); setOpenMenu(null); },
+      on: () => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ AB9: v, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth, COMPOSITE: showComposite }); saveUserPref('prefAB9', v); setOpenMenu(null); },
     },
     {
       key: 'FIB', label: '斐波那契', active: showFibonacci,
-      on: () => { const v = !showFibonacci; setShowFibonacci(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: v, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); saveUserPref('prefFibonacci', v); setOpenMenu(null); },
+      on: () => { const v = !showFibonacci; setShowFibonacci(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: v, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth, COMPOSITE: showComposite }); saveUserPref('prefFibonacci', v); setOpenMenu(null); },
     },
     {
       key: 'CHANNEL', label: '趋势通道', active: showTrendChannel,
-      on: () => { const v = !showTrendChannel; setShowTrendChannel(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: v, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); setOpenMenu(null); },
+      on: () => { const v = !showTrendChannel; setShowTrendChannel(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: v, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth, COMPOSITE: showComposite }); setOpenMenu(null); },
     },
     {
       key: 'PITCHFORK', label: '安德鲁音叉', active: showPitchfork,
-      on: () => { const v = !showPitchfork; setShowPitchfork(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: v, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); setOpenMenu(null); },
+      on: () => { const v = !showPitchfork; setShowPitchfork(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: v, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth, COMPOSITE: showComposite }); setOpenMenu(null); },
     },
     {
       key: 'PREDICTION', label: '趋势预测', active: showPrediction,
-      on: () => { const v = !showPrediction; setShowPrediction(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: v, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); setOpenMenu(null); },
+      on: () => { const v = !showPrediction; setShowPrediction(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: v, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth, COMPOSITE: showComposite }); setOpenMenu(null); },
     },
     {
       key: 'FOURIER', label: '傅里叶 FFT', active: showFourier,
-      on: () => { const v = !showFourier; setShowFourier(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: v, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth }); setOpenMenu(null); },
+      on: () => { const v = !showFourier; setShowFourier(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: v, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth, COMPOSITE: showComposite }); setOpenMenu(null); },
     },
     {
       key: 'VALUEAREA', label: '价值区域 VA', active: showValueArea,
-      on: () => { const v = !showValueArea; setShowValueArea(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: v, ICHIMOKU: showIchimoku, SYNTH: showSynth }); setOpenMenu(null); },
+      on: () => { const v = !showValueArea; setShowValueArea(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: v, ICHIMOKU: showIchimoku, SYNTH: showSynth, COMPOSITE: showComposite }); setOpenMenu(null); },
     },
     {
       key: 'ICHIMOKU', label: '一目云图', active: showIchimoku,
-      on: () => { const v = !showIchimoku; setShowIchimoku(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: v, SYNTH: showSynth }); setOpenMenu(null); },
+      on: () => { const v = !showIchimoku; setShowIchimoku(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: v, SYNTH: showSynth, COMPOSITE: showComposite }); setOpenMenu(null); },
     },
     {
       key: 'SYNTH', label: '预测合成器', active: showSynth,
-      on: () => { const v = !showSynth; setShowSynth(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: v }); setOpenMenu(null); },
+      on: () => { const v = !showSynth; setShowSynth(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: v, COMPOSITE: showComposite }); setOpenMenu(null); },
+    },
+    {
+      key: 'COMPOSITE', label: '合流锚线', active: showComposite,
+      on: () => { const v = !showComposite; setShowComposite(v); saveOverlayPrefs({ AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork, PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku, SYNTH: showSynth, COMPOSITE: v }); setOpenMenu(null); },
     },
   ];
 
