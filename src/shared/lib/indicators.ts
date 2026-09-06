@@ -381,23 +381,14 @@ export function calcTrendChannel(klines: KlineData[], lookback: number = 60): Tr
     if (devLow < maxDevDown) maxDevDown = devLow;
   }
 
-  // 用更稳健的方式：取最高的3个高点均值 和 最低的3个低点均值 作为轨道
-  const highs: number[] = [];
-  const lows: number[] = [];
-  for (let i = 0; i < w; i++) {
-    highs.push(window[i].high);
-    lows.push(window[i].low);
-  }
-  highs.sort((a, b) => b - a);
-  lows.sort((a, b) => a - b);
+  // 轨道偏移：改用窗口内真正的极值偏差 —— 上轨穿过最高的 high，下轨穿过最低的 low。
+  // 修复：此前取 top3 高/低点均值作偏移，偏差被平均后上下轨"悬空"，
+  //       不与任何真实 K 线极值相接。现直接以 maxDevUp/maxDevDown 为偏移，
+  //       轨道精确锚定窗口内的最高高点和最低低点。
+  const upperOffset = maxDevUp;
+  const lowerOffset = maxDevDown;
 
-  const avgHigh = highs.slice(0, Math.min(3, Math.floor(w / 5))).reduce((s, v) => s + v, 0) / Math.min(3, Math.floor(w / 5));
-  const avgLow = lows.slice(0, Math.min(3, Math.floor(w / 5))).reduce((s, v) => s + v, 0) / Math.min(3, Math.floor(w / 5));
-
-  const upperOffset = avgHigh - (intercept + slope * (w / 2));
-  const lowerOffset = avgLow - (intercept + slope * (w / 2));
-
-  // 实际的上下轨：平行于回归线
+  // 实际的上下轨：平行于回归线，并穿过极值点
   const upperIntercept = intercept + upperOffset;
   const lowerIntercept = intercept + lowerOffset;
 
@@ -618,11 +609,15 @@ export function calcPitchfork(klines: KlineData[], lookback: number = 80): Pitch
   const lowerEnd = { time: endTime, price: pointC.price + medianSlope * (endTime - pointC.time) };
 
   // 警告线：距离中轨2倍间距（在中轨另一侧再加一倍）
-  // 上警告线 = 上轨 + (上轨-中轨) = 2*上轨 - 中轨
-  const upperWarningStart = { time: pointB.time, price: pointB.price + (pointB.price - midBC.price) };
+  // 上警告线 = 上轨 + (上轨 - 该时刻的真实中枢位) = 2*上轨 - 中枢位
+  // 修复：此前用 midBC.price（B-C 中点价）作为中枢近似，在时间非等距时
+  //       与实际中枢位偏差较大。现用 B/C 各自时刻由 medianSlope 推出的真实中枢位。
+  const medianAtB = pointA.price + medianSlope * (pointB.time - pointA.time);
+  const medianAtC = pointA.price + medianSlope * (pointC.time - pointA.time);
+  const upperWarningStart = { time: pointB.time, price: pointB.price * 2 - medianAtB };
   const upperWarningEnd = { time: endTime, price: upperWarningStart.price + medianSlope * (endTime - pointB.time) };
 
-  const lowerWarningStart = { time: pointC.time, price: pointC.price - (midBC.price - pointC.price) };
+  const lowerWarningStart = { time: pointC.time, price: pointC.price * 2 - medianAtC };
   const lowerWarningEnd = { time: endTime, price: lowerWarningStart.price + medianSlope * (endTime - pointC.time) };
 
   // 当前价格位置
