@@ -6,30 +6,21 @@ import {
   calcEMAArray,
   calcRSIArray,
   calcAB9Lines,
-  calcFibonacci,
   calcVWAPArray,
   calcKDJ,
   calcATRArray,
   calcNineTurn,
   calcChan,
   calcTrendChannel,
-  calcPitchfork,
-  calcFourierExtrapolation,
   calcValueArea,
   calcIchimoku,
   calcPredictionSynth,
-  calcCompositeLine,
-  calcPullbackBands,
   calcRangeBox,
   type ChanResult,
   type TrendChannel,
-  type Pitchfork,
-  type FourierProjection,
   type ValueArea,
   type IchimokuData,
   type PredictionSynth,
-  type CompositeLine,
-  type PullbackBands,
 } from '@/shared/lib/indicators';
 
 
@@ -128,7 +119,7 @@ function saveIndicatorPrefs(next: typeof DEFAULT_INDICATORS) {
 // 会员用户额外同步到后端（跨设备），非会员仅本地
 // 版本号：默认值变更时递增，旧 localStorage 自动失效
   const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v6';
-const DEFAULT_OVERLAY = { AB9: false, FIB: false, CHANNEL: false, PITCHFORK: false, PREDICTION: false, FOURIER: false, VALUEAREA: false, ICHIMOKU: false, SYNTH: false, COMPOSITE: false, PULLBACK: false };
+const DEFAULT_OVERLAY = { AB9: false, CHANNEL: false, VALUEAREA: false, ICHIMOKU: false, SYNTH: false };
 
 function loadOverlayPrefs() {
   if (typeof window === 'undefined') return { ...DEFAULT_OVERLAY };
@@ -138,16 +129,10 @@ function loadOverlayPrefs() {
     const parsed = JSON.parse(raw) as Partial<typeof DEFAULT_OVERLAY>;
     return {
       AB9: parsed.AB9 !== undefined ? !!parsed.AB9 : DEFAULT_OVERLAY.AB9,
-      FIB: parsed.FIB !== undefined ? !!parsed.FIB : DEFAULT_OVERLAY.FIB,
       CHANNEL: parsed.CHANNEL !== undefined ? !!parsed.CHANNEL : DEFAULT_OVERLAY.CHANNEL,
-      PITCHFORK: parsed.PITCHFORK !== undefined ? !!parsed.PITCHFORK : DEFAULT_OVERLAY.PITCHFORK,
-      PREDICTION: parsed.PREDICTION !== undefined ? !!parsed.PREDICTION : DEFAULT_OVERLAY.PREDICTION,
-      FOURIER: parsed.FOURIER !== undefined ? !!parsed.FOURIER : DEFAULT_OVERLAY.FOURIER,
       VALUEAREA: parsed.VALUEAREA !== undefined ? !!parsed.VALUEAREA : DEFAULT_OVERLAY.VALUEAREA,
       ICHIMOKU: parsed.ICHIMOKU !== undefined ? !!parsed.ICHIMOKU : DEFAULT_OVERLAY.ICHIMOKU,
       SYNTH: parsed.SYNTH !== undefined ? !!parsed.SYNTH : DEFAULT_OVERLAY.SYNTH,
-      COMPOSITE: parsed.COMPOSITE !== undefined ? !!parsed.COMPOSITE : DEFAULT_OVERLAY.COMPOSITE,
-      PULLBACK: parsed.PULLBACK !== undefined ? !!parsed.PULLBACK : DEFAULT_OVERLAY.PULLBACK,
     };
   } catch {
     return { ...DEFAULT_OVERLAY };
@@ -208,14 +193,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const chanCanvasRef = useRef<HTMLCanvasElement>(null);
   const chanDataRef = useRef<ChanResult | null>(null);
   const trendChannelRef = useRef<TrendChannel | null>(null);
-  const pitchforkRef = useRef<Pitchfork | null>(null);
-  const fourierRef = useRef<FourierProjection | null>(null);
   const valueAreaRef = useRef<ValueArea | null>(null);
   const ichimokuRef = useRef<IchimokuData | null>(null);
   const synthRef = useRef<PredictionSynth | null>(null);
-  // 综合合流锚线：数据 + 主图 line series
-  const compositeRef = useRef<CompositeLine | null>(null);
-  const compositeSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const drawChanRef = useRef<() => void>(() => {});
 
   const srLinesRef = useRef<any[]>([]);
@@ -230,16 +210,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // AB9线 + 斐波那契回调线 + 趋势通道 + 安德鲁音叉：从 localStorage 初始化
   const overlayPrefsInit = loadOverlayPrefs();
   const [showAutoAB9, setShowAutoAB9] = useState(overlayPrefsInit.AB9);
-  const [showFibonacci, setShowFibonacci] = useState(overlayPrefsInit.FIB);
   const [showTrendChannel, setShowTrendChannel] = useState(overlayPrefsInit.CHANNEL);
-  const [showPitchfork, setShowPitchfork] = useState(overlayPrefsInit.PITCHFORK);
-  const [showPrediction, setShowPrediction] = useState(overlayPrefsInit.PREDICTION ?? false);
-  const [showFourier, setShowFourier] = useState(overlayPrefsInit.FOURIER ?? false);
   const [showValueArea, setShowValueArea] = useState(overlayPrefsInit.VALUEAREA ?? false);
   const [showIchimoku, setShowIchimoku] = useState(overlayPrefsInit.ICHIMOKU ?? false);
   const [showSynth, setShowSynth] = useState(overlayPrefsInit.SYNTH ?? false);
-  const [showComposite, setShowComposite] = useState(overlayPrefsInit.COMPOSITE ?? false);
-  const [showPullback, setShowPullback] = useState(overlayPrefsInit.PULLBACK ?? false);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   // 信号面板：聚合所有指标/画线工具的多空震荡判定
   const [showSignalsPanel, setShowSignalsPanel] = useState(false);
@@ -255,22 +229,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // 切换币种/周期重载数据时闭包里是旧值，会出现"关了又冒出来/开了不出来"的状态错乱
   const showTrendChannelRef = useRef(showTrendChannel);
   showTrendChannelRef.current = showTrendChannel;
-  const showPitchforkRef = useRef(showPitchfork);
-  showPitchforkRef.current = showPitchfork;
-  const showPredictionRef = useRef(showPrediction);
-  showPredictionRef.current = showPrediction;
-  const showFourierRef = useRef(showFourier);
-  showFourierRef.current = showFourier;
   const showValueAreaRef = useRef(showValueArea);
   showValueAreaRef.current = showValueArea;
   const showIchimokuRef = useRef(showIchimoku);
   showIchimokuRef.current = showIchimoku;
   const showSynthRef = useRef(showSynth);
   showSynthRef.current = showSynth;
-  const showCompositeRef = useRef(showComposite);
-  showCompositeRef.current = showComposite;
-  const showPullbackRef = useRef(showPullback);
-  showPullbackRef.current = showPullback;
   // 左上角 OHLC 图例：随十字线联动（悬停读历史K线，离开回落到最新一根，tick 实时刷新）
   interface LegendInfo { o: number; h: number; l: number; c: number; pct: number }
   const [legend, setLegend] = useState<LegendInfo | null>(null);
@@ -279,26 +243,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   }), []);
   // AB9线 ref（原生价格线）
   const autoPriceLinesRef = useRef<any[]>([]);
-  // 斐波那契线 ref（原生价格线）
-  const fibPriceLinesRef = useRef<any[]>([]);
-  // 回调线/深度回调线 ref（原生价格线）
-  const pullbackPriceLinesRef = useRef<any[]>([]);
   // 趋势通道 LineSeries refs（上轨/下轨/中轨 + 预测延伸线）
   const tcSeriesRef = useRef<{
     upper?: ISeriesApi<'Line'>; lower?: ISeriesApi<'Line'>; mid?: ISeriesApi<'Line'>;
     upperProj?: ISeriesApi<'Line'>; lowerProj?: ISeriesApi<'Line'>;
   }>({});
-  // 音叉 LineSeries refs（中轨/上轨/下轨/上下警告线）
-  const pfSeriesRef = useRef<{
-    median?: ISeriesApi<'Line'>; upper?: ISeriesApi<'Line'>; lower?: ISeriesApi<'Line'>;
-    upperWarn?: ISeriesApi<'Line'>; lowerWarn?: ISeriesApi<'Line'>;
-  }>({});
-  // Fourier Extrapolator LineSeries refs（拟合曲线 + 预测投影）
-  const fourierSeriesRef = useRef<{
-    fit?: ISeriesApi<'Line'>; proj?: ISeriesApi<'Line'>;
-  }>({});
-  // 自动趋势线 LineSeries refs
-  const trendLineSeriesRef = useRef<ISeriesApi<'Line'>[]>([]);
 
   // 指标显示开关：前台徽章直接管控（localStorage 持久化，后台不再干预）
   const [indicators, setIndicators] = useState(loadIndicatorPrefs);
@@ -381,40 +330,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // 持久化画线开关偏好到后端
   const saveUserPref = useCallback((key: string, value: boolean) => {
     apiPut('/api/user/preferences', { [key]: value }).catch(() => {});
-  }, []);
-
-  // 渲染综合合流锚线（仅读 refs，无 stale 风险）
-  const renderComposite = useCallback(() => {
-    const chart = mainChart.current;
-    if (!chart) return;
-    const klines = allKlinesRef.current;
-
-    const removeSeries = () => {
-      if (compositeSeriesRef.current) {
-        try { chart.removeSeries(compositeSeriesRef.current); } catch {}
-        compositeSeriesRef.current = null;
-      }
-      compositeRef.current = null;
-    };
-
-    if (!showCompositeRef.current) { removeSeries(); return; }
-    if (klines.length === 0) { removeSeries(); return; }
-
-    const comp = calcCompositeLine(klines);
-    if (!comp) { removeSeries(); return; }
-
-    if (!compositeSeriesRef.current) {
-      compositeSeriesRef.current = chart.addLineSeries({
-        color: '#f472b6', // 洋红，与 EMA/APP 均线区分
-        lineWidth: 2,
-        lineStyle: 2, // dashed
-        priceLineVisible: false,
-        lastValueVisible: true,
-        crosshairMarkerVisible: false,
-      });
-    }
-    compositeSeriesRef.current.setData(comp.data as any);
-    compositeRef.current = comp;
   }, []);
 
   // 更新所有指标线
@@ -551,9 +466,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       vwapSeries.current.setData(vwapData);
     }
 
-    // 综合合流锚线（读 ref 镜像，数据加载/指标变化时刷新）
-    renderComposite();
-
     // 神奇九转：计算数据并绘制到覆盖层 canvas
     if (indicators.NINE) {
       nineTurnDataRef.current = calcNineTurn(klines);
@@ -577,20 +489,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       trendChannelRef.current = calcTrendChannel(klines, 60);
     } else {
       trendChannelRef.current = null;
-    }
-
-    // 安德鲁音叉（读 ref 镜像，避免闭包过期）
-    if (showPitchforkRef.current) {
-      pitchforkRef.current = calcPitchfork(klines, 80);
-    } else {
-      pitchforkRef.current = null;
-    }
-
-    // Fourier 外推预测
-    if (showFourierRef.current) {
-      fourierRef.current = calcFourierExtrapolation(klines, 128, 8, 24);
-    } else {
-      fourierRef.current = null;
     }
 
     // 价值区域（VAH/VAL/POC）
@@ -676,7 +574,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         atrChartRef.current.parentElement.classList.add('hidden');
       }
     }
-  }, [indicators, periods, renderComposite]);
+  }, [indicators, periods]);
 
   // 徽章切换指标时立即重绘
   // 修复：此前徽章只改 state 不触发重绘，必须等K线收盘或刷新页面才生效
@@ -696,18 +594,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       } else {
         trendChannelRef.current = null;
       }
-      // 安德鲁音叉
-      if (showPitchfork) {
-        pitchforkRef.current = calcPitchfork(klines, 80);
-      } else {
-        pitchforkRef.current = null;
-      }
-      // Fourier 外推
-      if (showFourier) {
-        fourierRef.current = calcFourierExtrapolation(klines, 128, 8, 24);
-      } else {
-        fourierRef.current = null;
-      }
       // 价值区域
       if (showValueArea) {
         valueAreaRef.current = calcValueArea(klines, 80);
@@ -726,13 +612,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       } else {
         synthRef.current = null;
       }
-      // 综合合流锚线
-      renderComposite();
       requestAnimationFrame(() => {
         try { drawChanRef.current(); } catch (e) { console.warn('[Overlay] raf error:', e); }
       });
     }
-  }, [showTrendChannel, showPitchfork, showFourier, showValueArea, showIchimoku, showSynth, showComposite, renderComposite]);
+  }, [showTrendChannel, showValueArea, showIchimoku, showSynth]);
 
   // === AB9线 + 斐波那契回调线重绘 ===
   // 数据加载、开关切换、K线收盘（isFinal）时调用，统一走这一个入口
@@ -746,14 +630,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       try { series.removePriceLine(pl); } catch {}
     }
     autoPriceLinesRef.current = [];
-    for (const pl of fibPriceLinesRef.current) {
-      try { series.removePriceLine(pl); } catch {}
-    }
-    fibPriceLinesRef.current = [];
-    for (const pl of pullbackPriceLinesRef.current) {
-      try { series.removePriceLine(pl); } catch {}
-    }
-    pullbackPriceLinesRef.current = [];
 
     // —— 支撑/阻力（箱体区间或近端；恢复快信号版本的原画法，独立于策略引擎） ——
     for (const pl of srLinesRef.current) {
@@ -807,85 +683,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       }
     }
 
-    // —— 斐波那契回调线（原生满宽价格线，价格轴可读数；应反馈恢复原画法） ——
-    if (showFibonacci && isMember) {
-      const fib = calcFibonacci(klines);
-      if (fib) {
-        const fibColors: Record<string, string> = {
-          '0.0': 'rgba(239, 68, 68, 0.85)',
-          '23.6': 'rgba(249, 115, 22, 0.75)',
-          '38.2': 'rgba(245, 158, 11, 0.75)',
-          '50.0': 'rgba(234, 179, 8, 0.85)',
-          '61.8': 'rgba(34, 197, 94, 0.75)',
-          '78.6': 'rgba(20, 184, 166, 0.75)',
-          '100.0': 'rgba(59, 130, 246, 0.85)',
-          '161.8': 'rgba(168, 85, 247, 0.75)',
-          '261.8': 'rgba(236, 72, 153, 0.75)',
-        };
-        for (const level of fib.levels) {
-          const color = fibColors[level.label] || 'rgba(148, 163, 184, 0.6)';
-          const lineWidth = level.ratio === 0.5 || level.ratio === 0.618 ? 2 : 1;
-          try {
-            const pl = series.createPriceLine({
-              price: level.price,
-              color: color.replace(/[\d.]+\)$/, '0.85)'),
-              lineWidth,
-              lineStyle: level.type === 'extension' ? 3 : 2,
-              axisLabelVisible: true,
-              title: ` FIB ${level.label}%`,
-            });
-            fibPriceLinesRef.current.push(pl);
-          } catch {}
-        }
-      }
-    }
-
-    // —— 动态统计回调带（回调线 typical / 深度回调线 deep / 回踩线 retest，一个开关同组） ——
-    if (showPullback && isMember) {
-      const pb = calcPullbackBands(klines);
-      if (pb) {
-        const below = pb.direction === 'up'; // 上升语境回调两线在锚点下方
-        try {
-          const pl = series.createPriceLine({
-            price: pb.typicalLevel,
-            color: 'rgba(56, 189, 248, 0.9)', // 天蓝
-            lineWidth: 1,
-            lineStyle: 2,
-            axisLabelVisible: true,
-            title: ` 回调 ${pb.typicalATR.toFixed(1)}ATR · 样本${pb.samples}`,
-          });
-          pullbackPriceLinesRef.current.push(pl);
-        } catch {}
-        try {
-          const pl = series.createPriceLine({
-            price: pb.deepLevel,
-            color: 'rgba(251, 113, 133, 0.9)', // 玫红
-            lineWidth: 2,
-            lineStyle: 4,
-            axisLabelVisible: true,
-            title: ` 深回调 ${pb.deepATR.toFixed(1)}ATR · ${below ? '深度警戒' : '深度反弹'}`,
-          });
-          pullbackPriceLinesRef.current.push(pl);
-        } catch {}
-        if (pb.retestLevel != null) {
-          try {
-            const pl = series.createPriceLine({
-              price: pb.retestLevel,
-              color: 'rgba(45, 212, 191, 0.9)', // 茶青
-              lineWidth: 2,
-              lineStyle: 0,
-              axisLabelVisible: true,
-              title: ` 回踩位${pb.retestTouches}次 · ${pb.retestType === 'support' ? '支撑' : '阻力'}`,
-            });
-            pullbackPriceLinesRef.current.push(pl);
-          } catch {}
-        }
-      }
-    }
-  }, [showAutoAB9, showFibonacci, showPullback, isMember, symbol]);
+    }, [showAutoAB9, isMember, symbol]);
 
   // ====== 趋势通道 + 预测延伸线 + 音叉 ====== 画线 ======
-  // 在 redrawOverlayLines 之后独立执行，依赖 showTrendChannel/showPitchfork
+  // 在 redrawOverlayLines 之后独立执行，依赖 showTrendChannel
   const drawTrendOverlays = useCallback(() => {
     const klines = allKlinesRef.current;
     if (!mainChart.current || klines.length < 2) return;
@@ -897,23 +698,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         if (r[key]) { try { mainChart.current?.removeSeries(r[key]!); } catch {} r[key] = undefined; }
       }
     };
-    const removePfSeries = () => {
-      const r = pfSeriesRef.current;
-      for (const key of ['median', 'upper', 'lower', 'upperWarn', 'lowerWarn'] as const) {
-        if (r[key]) { try { mainChart.current?.removeSeries(r[key]!); } catch {} r[key] = undefined; }
-      }
-    };
-    const removeFourierSeries = () => {
-      const r = fourierSeriesRef.current;
-      if (r.fit) { try { mainChart.current?.removeSeries(r.fit); } catch {} r.fit = undefined; }
-      if (r.proj) { try { mainChart.current?.removeSeries(r.proj); } catch {} r.proj = undefined; }
-    };
-    for (const s of trendLineSeriesRef.current) { try { mainChart.current?.removeSeries(s); } catch {} }
-    trendLineSeriesRef.current = [];
-
-    const interval = klines[1].time - klines[0].time;
-    const projBars = 8; // 预测延伸 8 根 K 线（避免过度延伸导致视觉异常）
-
     // ---- 趋势通道 ----
     // 趋势通道通过 Canvas 叠层绘制（drawChan 内），不使用 LineSeries。
     // Canvas 绘制附带通道填充、方向感知配色和触点标签，功能更完整。
@@ -927,148 +711,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     // 清理可能残留的旧 LineSeries
     removeTcSeries();
 
-    // ---- 安德鲁音叉 ----
-    // 音叉通过 Canvas 叠层绘制（drawChan 内），不使用 LineSeries。
-    // LineSeries 要求时间严格递增，但音叉延伸端点 (medianEnd.time = lastKline + totalTimeSpan*0.5)
-    // 通常远超 projTime (lastKline + 8*interval)，导致数据非单调、线段不渲染。
-    // Canvas 的 timeToX 支持未来时间外推，且附带 A/B/C 标注和连线，功能更完整。
-    if (showPitchforkRef.current && isMember) {
-      if (!pitchforkRef.current) {
-        pitchforkRef.current = calcPitchfork(klines, 80);
-      }
-    } else {
-      pitchforkRef.current = null;
-    }
-    // 清理可能残留的旧 LineSeries（从旧版本迁移后可能存在）
-    removePfSeries();
-
-    // ---- 自动趋势线（摆动点连线 + 预测投影）----
-    if (showPredictionRef.current && isMember) {
-      // 找最近摆动高低点（分形：左右各 2 根确认）
-      const findRecentSwings = () => {
-        const highs: { idx: number; time: number; price: number }[] = [];
-        const lows: { idx: number; time: number; price: number }[] = [];
-        for (let i = 2; i < klines.length - 2; i++) {
-          if (klines[i].high >= klines[i-1].high && klines[i].high >= klines[i-2].high
-            && klines[i].high >= klines[i+1].high && klines[i].high >= klines[i+2].high) {
-            highs.push({ idx: i, time: klines[i].time, price: klines[i].high });
-          }
-          if (klines[i].low <= klines[i-1].low && klines[i].low <= klines[i-2].low
-            && klines[i].low <= klines[i+1].low && klines[i].low <= klines[i+2].low) {
-            lows.push({ idx: i, time: klines[i].time, price: klines[i].low });
-          }
-        }
-        return { highs, lows };
-      };
-      const { highs, lows } = findRecentSwings();
-      const lastKlineTime = klines[klines.length - 1].time;
-      const projTime = (lastKlineTime + interval * projBars) as Time;
-
-      // 下降趋势线：连接最近 2 个摆动高点，向右延伸
-      if (highs.length >= 2) {
-        const p0 = highs[highs.length - 2];
-        const p1 = highs[highs.length - 1];
-        const dx = p1.time - p0.time;
-        const dy = p1.price - p0.price;
-        const slope = dx !== 0 ? dy / dx : 0;
-        const projPrice = +(p1.price + slope * (projTime as number - p1.time)).toFixed(4);
-        const series = mainChart.current!.addLineSeries({
-          color: 'rgba(239, 68, 68, 0.7)', lineWidth: 1 as 1, lineStyle: LineStyle.Solid,
-          priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-        });
-        series.setData([
-          { time: p0.time as Time, value: p0.price },
-          { time: p1.time as Time, value: p1.price },
-        ]);
-        trendLineSeriesRef.current.push(series);
-
-        // 虚线延伸部分
-        const projSeries = mainChart.current!.addLineSeries({
-          color: 'rgba(239, 68, 68, 0.3)', lineWidth: 1 as 1, lineStyle: LineStyle.Dashed,
-          priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-        });
-        projSeries.setData([
-          { time: p1.time as Time, value: p1.price },
-          { time: projTime, value: projPrice },
-        ]);
-        trendLineSeriesRef.current.push(projSeries);
-      }
-
-      // 上升趋势线：连接最近 2 个摆动低点，向右延伸
-      if (lows.length >= 2) {
-        const p0 = lows[lows.length - 2];
-        const p1 = lows[lows.length - 1];
-        const dx = p1.time - p0.time;
-        const dy = p1.price - p0.price;
-        const slope = dx !== 0 ? dy / dx : 0;
-        const projPrice = +(p1.price + slope * (projTime as number - p1.time)).toFixed(4);
-        const series = mainChart.current!.addLineSeries({
-          color: 'rgba(34, 197, 94, 0.7)', lineWidth: 1 as 1, lineStyle: LineStyle.Solid,
-          priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-        });
-        series.setData([
-          { time: p0.time as Time, value: p0.price },
-          { time: p1.time as Time, value: p1.price },
-        ]);
-        trendLineSeriesRef.current.push(series);
-
-        // 虚线延伸部分
-        const projSeries = mainChart.current!.addLineSeries({
-          color: 'rgba(34, 197, 94, 0.3)', lineWidth: 1 as 1, lineStyle: LineStyle.Dashed,
-          priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-        });
-        projSeries.setData([
-          { time: p1.time as Time, value: p1.price },
-          { time: projTime, value: projPrice },
-        ]);
-        trendLineSeriesRef.current.push(projSeries);
-      }
-    }
-
-    // ---- Fourier Extrapolator（傅里叶外推预测） ----
-    // 使用 FFT 分解价格主导周期，外推未来价格走势
-    if (showFourierRef.current && isMember) {
-      if (!fourierRef.current) {
-        fourierRef.current = calcFourierExtrapolation(klines, 128, 8, 24);
-      }
-      const fp = fourierRef.current;
-      if (fp) {
-        // 拟合曲线（历史区间内的重构值，半透明实线）
-        const fitData = fp.reconstructed.map(p => ({ time: p.time as Time, value: p.price }));
-        if (fitData.length > 1) {
-          if (!fourierSeriesRef.current.fit) {
-            fourierSeriesRef.current.fit = mainChart.current!.addLineSeries({
-              color: 'rgba(168, 85, 247, 0.45)', lineWidth: 1 as 1, lineStyle: LineStyle.Solid,
-              priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-            });
-          }
-          fourierSeriesRef.current.fit.setData(fitData);
-        }
-
-        // 预测投影线（未来 K 线，虚线）
-        // 衔接：从最后一个拟合点延伸到第一个投影点
-        const lastFit = fp.reconstructed[fp.reconstructed.length - 1];
-        const projData: { time: Time; value: number }[] = [];
-        if (lastFit) {
-          projData.push({ time: lastFit.time as Time, value: lastFit.price });
-        }
-        for (const p of fp.projection) {
-          projData.push({ time: p.time as Time, value: p.price });
-        }
-        if (projData.length > 1) {
-          if (!fourierSeriesRef.current.proj) {
-            fourierSeriesRef.current.proj = mainChart.current!.addLineSeries({
-              color: 'rgba(168, 85, 247, 0.8)', lineWidth: 2 as 2, lineStyle: LineStyle.Dashed,
-              priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false,
-            });
-          }
-          fourierSeriesRef.current.proj.setData(projData);
-        }
-      }
-    } else {
-      removeFourierSeries();
-    }
-  }, [isMember, symbol]);
+    }, [isMember, symbol]);
 
   // 更新K线数据
   const updateChart = useCallback((klines: KlineData[], intv?: string) => {
@@ -1132,10 +775,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     redrawOverlayLines();
   }, [redrawOverlayLines]);
 
-  // 趋势通道/音叉/Fourier/VA/云图/合成 开关切换时重画
+  // 趋势通道/VA/云图/合成 开关切换时重画
   useEffect(() => {
     drawTrendOverlays();
-  }, [drawTrendOverlays, showTrendChannel, showPitchfork, showPrediction, showFourier, showValueArea, showIchimoku, showSynth]);
+  }, [drawTrendOverlays, showTrendChannel, showValueArea, showIchimoku, showSynth]);
 
   // Tick 实时更新（rAF + 50ms 节流，和 v24 一致）
   const flushTick = useCallback(() => {
@@ -1578,7 +1221,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
         // 没有任何叠层数据时，清空后直接返回
-        if (!chanData && !trendChannelRef.current && !pitchforkRef.current && !valueAreaRef.current && !ichimokuRef.current && !synthRef.current) return;
+        if (!chanData && !trendChannelRef.current && !valueAreaRef.current && !ichimokuRef.current && !synthRef.current) return;
 
         ctx.save();
         ctx.scale(dpr, dpr);
@@ -1910,138 +1553,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             ctx.fillText(`通道上轨 ${tc.upperTouches}触`, labelX, yUpperEnd - 2);
             ctx.textBaseline = 'top';
             ctx.fillText(`通道下轨 ${tc.lowerTouches}触`, labelX, yLowerEnd + 2);
-          }
-        }
-
-        // ========== 安德鲁音叉绘制 ==========
-        const pf = pitchforkRef.current;
-        if (pf) {
-          // 辅助函数：计算坐标（未来延伸时间用 timeToX 外推，确保右端点可解析）
-          const toX = (t: number) => timeToX(t);
-          const toY = (p: number) => candleSeries.current?.priceToCoordinate(p) ?? null;
-
-          const xA = toX(pf.pointA.time);
-          const yA = toY(pf.pointA.price);
-          const xB = toX(pf.pointB.time);
-          const yB = toY(pf.pointB.price);
-          const xC = toX(pf.pointC.time);
-          const yC = toY(pf.pointC.price);
-
-          const xMedStart = toX(pf.medianStart.time);
-          const yMedStart = toY(pf.medianStart.price);
-          const xMedEnd = toX(pf.medianEnd.time);
-          const yMedEnd = toY(pf.medianEnd.price);
-
-          const xUpStart = toX(pf.upperStart.time);
-          const yUpStart = toY(pf.upperStart.price);
-          const xUpEnd = toX(pf.upperEnd.time);
-          const yUpEnd = toY(pf.upperEnd.price);
-
-          const xLowStart = toX(pf.lowerStart.time);
-          const yLowStart = toY(pf.lowerStart.price);
-          const xLowEnd = toX(pf.lowerEnd.time);
-          const yLowEnd = toY(pf.lowerEnd.price);
-
-          const xUpWarnStart = toX(pf.upperWarningStart.time);
-          const yUpWarnStart = toY(pf.upperWarningStart.price);
-          const xUpWarnEnd = toX(pf.upperWarningEnd.time);
-          const yUpWarnEnd = toY(pf.upperWarningEnd.price);
-
-          const xLowWarnStart = toX(pf.lowerWarningStart.time);
-          const yLowWarnStart = toY(pf.lowerWarningStart.price);
-          const xLowWarnEnd = toX(pf.lowerWarningEnd.time);
-          const yLowWarnEnd = toY(pf.lowerWarningEnd.price);
-
-          const allCoords = [xA, yA, xB, yB, xC, yC,
-            xMedStart, yMedStart, xMedEnd, yMedEnd,
-            xUpStart, yUpStart, xUpEnd, yUpEnd,
-            xLowStart, yLowStart, xLowEnd, yLowEnd,
-            xUpWarnStart, yUpWarnStart, xUpWarnEnd, yUpWarnEnd,
-            xLowWarnStart, yLowWarnStart, xLowWarnEnd, yLowWarnEnd];
-
-          if (allCoords.every(c => c !== null)) {
-            const pfColor = pf.direction === 'up' ? 'rgba(251, 191, 36,' : 'rgba(168, 85, 247,';
-
-            // 警告线（最淡）
-            ctx.strokeStyle = pfColor + '0.25)';
-            ctx.lineWidth = 1;
-            ctx.setLineDash([2, 6]);
-            ctx.beginPath();
-            ctx.moveTo(xUpWarnStart!, yUpWarnStart!);
-            ctx.lineTo(xUpWarnEnd!, yUpWarnEnd!);
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.moveTo(xLowWarnStart!, yLowWarnStart!);
-            ctx.lineTo(xLowWarnEnd!, yLowWarnEnd!);
-            ctx.stroke();
-
-            // 上轨和下轨
-            ctx.strokeStyle = pfColor + '0.6)';
-            ctx.lineWidth = 1.5;
-            ctx.setLineDash([5, 4]);
-            ctx.beginPath();
-            ctx.moveTo(xUpStart!, yUpStart!);
-            ctx.lineTo(xUpEnd!, yUpEnd!);
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.moveTo(xLowStart!, yLowStart!);
-            ctx.lineTo(xLowEnd!, yLowEnd!);
-            ctx.stroke();
-
-            // 中轨（实线，最显眼）
-            ctx.strokeStyle = pfColor + '0.9)';
-            ctx.lineWidth = 2;
-            ctx.setLineDash([]);
-            ctx.beginPath();
-            ctx.moveTo(xMedStart!, yMedStart!);
-            ctx.lineTo(xMedEnd!, yMedEnd!);
-            ctx.stroke();
-
-            // A/B/C 三个基准点
-            const dotRadius = 4;
-            ctx.fillStyle = pfColor + '1)';
-            // A点
-            ctx.beginPath();
-            ctx.arc(xA!, yA!, dotRadius, 0, Math.PI * 2);
-            ctx.fill();
-            // B点
-            ctx.beginPath();
-            ctx.arc(xB!, yB!, dotRadius, 0, Math.PI * 2);
-            ctx.fill();
-            // C点
-            ctx.beginPath();
-            ctx.arc(xC!, yC!, dotRadius, 0, Math.PI * 2);
-            ctx.fill();
-
-            // AB和BC连线（淡虚线）
-            ctx.strokeStyle = pfColor + '0.4)';
-            ctx.lineWidth = 1;
-            ctx.setLineDash([3, 3]);
-            ctx.beginPath();
-            ctx.moveTo(xA!, yA!);
-            ctx.lineTo(xB!, yB!);
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.moveTo(xB!, yB!);
-            ctx.lineTo(xC!, yC!);
-            ctx.stroke();
-            ctx.setLineDash([]);
-
-            // 标签
-            ctx.font = '9px -apple-system, sans-serif';
-            ctx.fillStyle = pfColor + '0.8)';
-            ctx.textAlign = 'left';
-            ctx.textBaseline = 'middle';
-            ctx.fillText(' A', xA! + 4, yA!);
-            ctx.fillText(' B', xB! + 4, yB!);
-            ctx.fillText(' C', xC! + 4, yC!);
-
-            // 音叉末端标签
-            ctx.textAlign = 'right';
-            ctx.textBaseline = 'bottom';
-            ctx.fillText('音叉上轨', xUpEnd! - 2, yUpEnd! - 2);
-            ctx.textBaseline = 'top';
-            ctx.fillText('音叉下轨', xLowEnd! - 2, yLowEnd! + 2);
           }
         }
 
@@ -2515,9 +2026,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
   // 绘图/叠加图层菜单项（会员）
   const currentOverlayPrefs = () => ({
-    AB9: showAutoAB9, FIB: showFibonacci, CHANNEL: showTrendChannel, PITCHFORK: showPitchfork,
-    PREDICTION: showPrediction, FOURIER: showFourier, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku,
-    SYNTH: showSynth, COMPOSITE: showComposite, PULLBACK: showPullback,
+    AB9: showAutoAB9, CHANNEL: showTrendChannel, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku,
+    SYNTH: showSynth,
   });
   const layerMenu = [
     {
@@ -2525,24 +2035,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       on: () => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ ...currentOverlayPrefs(), AB9: v }); saveUserPref('prefAB9', v); setOpenMenu(null); },
     },
     {
-      key: 'FIB', label: '斐波那契', active: showFibonacci,
-      on: () => { const v = !showFibonacci; setShowFibonacci(v); saveOverlayPrefs({ ...currentOverlayPrefs(), FIB: v }); saveUserPref('prefFibonacci', v); setOpenMenu(null); },
-    },
-    {
       key: 'CHANNEL', label: '趋势通道', active: showTrendChannel,
       on: () => { const v = !showTrendChannel; setShowTrendChannel(v); saveOverlayPrefs({ ...currentOverlayPrefs(), CHANNEL: v }); setOpenMenu(null); },
-    },
-    {
-      key: 'PITCHFORK', label: '安德鲁音叉', active: showPitchfork,
-      on: () => { const v = !showPitchfork; setShowPitchfork(v); saveOverlayPrefs({ ...currentOverlayPrefs(), PITCHFORK: v }); setOpenMenu(null); },
-    },
-    {
-      key: 'PREDICTION', label: '趋势预测', active: showPrediction,
-      on: () => { const v = !showPrediction; setShowPrediction(v); saveOverlayPrefs({ ...currentOverlayPrefs(), PREDICTION: v }); setOpenMenu(null); },
-    },
-    {
-      key: 'FOURIER', label: '傅里叶 FFT', active: showFourier,
-      on: () => { const v = !showFourier; setShowFourier(v); saveOverlayPrefs({ ...currentOverlayPrefs(), FOURIER: v }); setOpenMenu(null); },
     },
     {
       key: 'VALUEAREA', label: '价值区域 VA', active: showValueArea,
@@ -2555,14 +2049,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     {
       key: 'SYNTH', label: '预测合成器', active: showSynth,
       on: () => { const v = !showSynth; setShowSynth(v); saveOverlayPrefs({ ...currentOverlayPrefs(), SYNTH: v }); setOpenMenu(null); },
-    },
-    {
-      key: 'COMPOSITE', label: '合流锚线', active: showComposite,
-      on: () => { const v = !showComposite; setShowComposite(v); saveOverlayPrefs({ ...currentOverlayPrefs(), COMPOSITE: v }); setOpenMenu(null); },
-    },
-    {
-      key: 'PULLBACK', label: '回调组(回调/深回调/回踩)', active: showPullback,
-      on: () => { const v = !showPullback; setShowPullback(v); saveOverlayPrefs({ ...currentOverlayPrefs(), PULLBACK: v }); setOpenMenu(null); },
     },
   ];
 

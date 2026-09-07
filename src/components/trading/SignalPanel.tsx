@@ -6,14 +6,11 @@ import { KlineData } from '@/shared/lib/market-data';
 import { calcFundingCrowding, FundingPoint } from '@/shared/lib/futures-signal';
 import {
   calcTrendChannel,
-  calcFourierExtrapolation,
   calcValueArea,
   calcIchimoku,
   calcPredictionSynth,
-  calcPullbackBands,
   calcAB9Lines,
   calcDirectionSignal,
-  calcFibonacci,
   calcChan,
   calcEMAArray,
   calcMACD,
@@ -189,38 +186,6 @@ export default function SignalPanel({ klines, refreshKey, precision, symbol = 'E
       });
     }
 
-    // ---- 回调组（回调/深回调/回踩）----
-    const pb = calcPullbackBands(klines, 14, 1.2);
-    if (pb) {
-      const upCtx = pb.direction === 'up';
-      let v: Verdict = upCtx ? 'bull' : 'bear';
-      let detail = upCtx ? `上方回调位 ${priceFmt(pb.typicalLevel)}` : `下方回调位 ${priceFmt(pb.typicalLevel)}`;
-      if (pb.retestLevel !== null) {
-        detail = `${upCtx ? '回踩支撑' : '回抽阻力'} ${priceFmt(pb.retestLevel)} (${pb.retestTouches}次)`;
-        v = pb.retestType === 'support' ? 'bull' : 'bear';
-      }
-      items.push({
-        key: 'pullback', name: '回调组',
-        verdict: v,
-        value: detail,
-        note: pb.retestLevel !== null ? `深回调 ${priceFmt(pb.deepLevel)}` : `样本 ${pb.samples} · ATR ${fmt(pb.currentATR)}`,
-      });
-    }
-
-    // ---- 傅里叶外推 ----
-    const fou = calcFourierExtrapolation(klines, 128, 8, 24);
-    if (fou && fou.projection.length && fou.rSquared > 0) {
-      const projPrice = fou.projection[fou.projection.length - 1].price;
-      const lowFit = fou.rSquared < 0.35;
-      items.push({
-        key: 'fourier', name: '傅里叶外推',
-        verdict: lowFit ? 'osc' : projPrice > price ? 'bull' : 'bear',
-        value: lowFit ? '拟合度过低（存疑）' : projPrice > price ? '投影看多' : '投影看空',
-        note: `R² ${fou.rSquared.toFixed(2)} · 投影 ${priceFmt(projPrice)}`,
-        pct: lowFit ? 50 : Math.min(95, Math.max(5, fou.rSquared * 100)),
-      });
-    }
-
     // ---- AB9线 ----
     const ab9 = calcAB9Lines(klines);
     if (ab9) {
@@ -237,17 +202,6 @@ export default function SignalPanel({ klines, refreshKey, precision, symbol = 'E
           : ab9.strength,
         note: `${ab9.direction === 'up' ? '上升' : '下降'}波段 · ${ab9.betweenLines}${volNote}`,
         pct: Math.min(95, Math.max(5, Math.round(Math.abs(ab9.slope) / (ab9.height / 24) * 50 + (ab9.volumeRatio >= 1 ? 12 : 0)))),
-      });
-    }
-
-    // ---- 斐波那契 ----
-    const fib = calcFibonacci(klines);
-    if (fib) {
-      items.push({
-        key: 'fib', name: '斐波那契',
-        verdict: fib.direction === 'up' ? 'bull' : fib.direction === 'down' ? 'bear' : 'osc',
-        value: fib.direction === 'up' ? '回调/扩展向上' : '回调/扩展向下',
-        note: fib.nearLevel !== null ? `贴近 ${fib.nearLevel} 线` : fib.betweenLevels,
       });
     }
 
@@ -376,8 +330,8 @@ export default function SignalPanel({ klines, refreshKey, precision, symbol = 'E
     );
   }
 
-  const drawTools = rows.filter((r) => ['trendChannel', 'pitchfork', 'composite', 'synth', 'ichimoku', 'valueArea', 'pullback', 'fourier', 'ab9', 'fib', 'chan'].includes(r.key));
-  const coreInds = rows.filter((r) => !['trendChannel', 'pitchfork', 'composite', 'synth', 'ichimoku', 'valueArea', 'pullback', 'fourier', 'ab9', 'fib', 'chan', 'atr'].includes(r.key));
+  const drawTools = rows.filter((r) => ['trendChannel', 'pitchfork', 'composite', 'synth', 'ichimoku', 'valueArea', 'ab9', 'chan'].includes(r.key));
+  const coreInds = rows.filter((r) => !['trendChannel', 'pitchfork', 'composite', 'synth', 'ichimoku', 'valueArea', 'ab9', 'chan', 'atr'].includes(r.key));
 
   return (
     <div className="border-b border-dark-700/50 bg-dark-900/60">
