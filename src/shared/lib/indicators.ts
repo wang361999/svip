@@ -3474,3 +3474,102 @@ export function calcPullbackBands(
   };
 }
 
+// ADX / DMI（趋势质量过滤）
+// +DI / -DI 反映多空方向强度，ADX 反映趋势强弱(通常 >25 视为有趋势，<20 视为震荡)。
+// 采用 Wilder 平滑，与 ATR 同源。
+export interface ADXData {
+  pdi: (number | null)[]; // +DI
+  mdi: (number | null)[]; // -DI
+  adx: (number | null)[];
+  plusDI: number; // 最新 +DI
+  minusDI: number; // 最新 -DI
+  lastADX: number; // 最新 ADX
+  direction: 'bull' | 'bear' | 'osc'; // 由 +DI/-DI 快判
+}
+
+export function calcADX(klines: KlineData[], period: number = 14): ADXData | null {
+  const n = klines.length;
+  if (!klines || n < Math.max(period + 1, period * 2)) return null;
+
+  const pdi: (number | null)[] = new Array(n).fill(null);
+  const mdi: (number | null)[] = new Array(n).fill(null);
+  const adx: (number | null)[] = new Array(n).fill(null);
+
+  const hl = (i: number) => Math.max(klines[i].high - klines[i].low, Math.abs(klines[i].high - klines[i - 1].close), Math.abs(klines[i].low - klines[i - 1].close));
+  const pdm = (i: number) => { const up = klines[i].high - klines[i - 1].high; const dn = klines[i - 1].low - klines[i].low; return up > dn && up > 0 ? up : 0; };
+  const mdm = (i: number) => { const up = klines[i].high - klines[i - 1].high; const dn = klines[i - 1].low - klines[i].low; return dn > up && dn > 0 ? dn : 0; };
+
+  // 种子：前 period 个值的 Wilder 均值
+  let smTR = 0, smPDM = 0, smMDM = 0;
+  for (let i = 1; i <= period; i++) { smTR += hl(i); smPDM += pdm(i); smMDM += mdm(i); }
+  let atr = smTR / period, plus = smPDM / period, minus = smMDM / period;
+
+  let lastPlus = 0, lastMinus = 0, lastAdx = 0;
+  let adxVal = 0;
+  const dxBuf: number[] = [];
+  for (let i = period; i < n; i++) {
+    if (i > period) {
+      const tr = hl(i); const p = pdm(i); const m = mdm(i);
+      atr = (atr * (period - 1) + tr) / period;
+      plus = (plus * (period - 1) + p) / period;
+      minus = (minus * (period - 1) + m) / period;
+    }
+    const pdiV = atr > 0 ? (100 * plus) / atr : 0;
+    const mdiV = atr > 0 ? (100 * minus) / atr : 0;
+    const sum = pdiV + mdiV;
+    const dx = sum > 0 ? (100 * Math.abs(pdiV - mdiV)) / sum : 0;
+    pdi[i] = Math.round(pdiV * 100) / 100;
+    mdi[i] = Math.round(mdiV * 100) / 100;
+    lastPlus = pdi[i] as number; lastMinus = mdi[i] as number;
+    dxBuf.push(dx);
+    if (dxBuf.length === period) { adxVal = dxBuf.reduce((a, b) => a + b, 0) / period; const r = Math.round(adxVal * 100) / 100; adx[i] = r; lastAdx = r; }
+    else if (dxBuf.length > period) { adxVal = (adxVal * (period - 1) + dx) / period; const r = Math.round(adxVal * 100) / 100; adx[i] = r; lastAdx = r; }
+  }
+
+  const direction: 'bull' | 'bear' | 'osc' = Math.abs(lastPlus - lastMinus) < 4 ? 'osc' : lastPlus > lastMinus ? 'bull' : 'bear';
+  return { pdi, mdi, adx, plusDI: lastPlus, minusDI: lastMinus, lastADX: lastAdx, direction };
+}
+
+// SuperTrend（ATR 趋势跟踪 · 机械可回测）
+// 上下轨 = 中点 ± multiplier×ATR，趋势内只向有利方向推动轨道，
+// 价格触及反向轨道即反转方向。默认 (10, 3)、常见 (14, 3)。
+export interface SuperTrendPoint { value: number | null; isUp: boolean | null; }
+export interface SuperTrendData {
+  points: SuperTrendPoint[];
+  lastValue: number | null;
+  lastIsUp: boolean | null;
+}
+
+export function calcSuperTrend(klines: KlineData[], period: number = 10, multiplier: number = 3): SuperTrendData {
+  const n = klines.length;
+  const points: SuperTrendPoint[] = new Array(n).fill(null).map(() => ({ value: null, isUp: null }));
+  if (!klines || n <= period + 1) return { points, lastValue: null, lastIsUp: null };
+
+  const atr = calcATRArray(klines, period);
+  const mid0 = (klines[period].high + klines[period].low) / 2;
+  const u0 = mid0 + multiplier * (atr[period] as number);
+  const l0 = mid0 - multiplier * (atr[period] as number);
+  let finalUpper = u0;
+  let finalLower = l0;
+  let trend: 'up' | 'down' = klines[period].close >= mid0 ? 'up' : 'down';
+  points[period] = { value: trend === 'up' ? finalUpper : finalLower, isUp: trend === 'up' };
+
+  for (let i = period + 1; i < n; i++) {
+    const av = atr[i] as number;
+    const mid = (klines[i].high + klines[i].low) / 2;
+    const baseU = mid + multiplier * av;
+    const baseL = mid - multiplier * av;
+    if (klines[i].close <= finalUpper) finalUpper = baseU; else finalUpper = Math.max(finalUpper, baseU);
+    if (klines[i].close >= finalLower) finalLower = baseL; else finalLower = Math.min(finalLower, baseL);
+    if (trend === 'up') {
+      if (klines[i].close < finalLower) { trend = 'down'; points[i] = { value: finalLower, isUp: false }; }
+      else { points[i] = { value: finalUpper, isUp: true }; }
+    } else {
+      if (klines[i].close > finalUpper) { trend = 'up'; points[i] = { value: finalUpper, isUp: true }; }
+      else { points[i] = { value: finalLower, isUp: false }; }
+    }
+  }
+  const last = points[n - 1];
+  return { points, lastValue: last ? last.value : null, lastIsUp: last ? last.isUp : null };
+}
+

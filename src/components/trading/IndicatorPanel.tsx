@@ -1,7 +1,7 @@
 import { useMemo, type ReactNode } from 'react';
 import {
   calcEMAArray, calcBollinger, calcMACD, calcRSIArray, calcVWAPArray,
-  calcATRArray, calcKDJ, calcNineTurn, calcChan,
+  calcATRArray, calcKDJ, calcNineTurn, calcChan, calcADX, calcSuperTrend,
 } from '@/shared/lib/indicators';
 import type { KlineData } from '@/shared/lib/market-data';
 
@@ -76,6 +76,8 @@ export default function IndicatorPanel({ klines, refreshKey = 0, precision = 2, 
     const vwap = lastN(calcVWAPArray(klines));
     const atr = lastN(calcATRArray(klines, 14));
     const atrPct = atr != null && cur ? (atr / cur) * 100 : null;
+    const adx = calcADX(klines, 14);
+    const st = calcSuperTrend(klines, 10, 3);
 
     // 主图 · 结构
     const nine = calcNineTurn(klines);
@@ -103,10 +105,14 @@ export default function IndicatorPanel({ klines, refreshKey = 0, precision = 2, 
     const nineCnt = Math.abs(nineVal);
     const nineVd: V = nineCnt >= 8 ? (nineIsBuy ? 'bull' : 'bear') : 'osc';
     const chanVd: V = chanLast ? (chanLast.direction === 'up' ? 'bull' : 'bear') : 'osc';
+    const stVd: V = cur == null || st.lastIsUp == null ? 'osc' : st.lastIsUp ? 'bull' : 'bear';
+    const adxVd: V = adx ? adx.direction : 'osc';
+    const adxStrong = adx && adx.lastADX > 0 ? adx.lastADX : null;
 
     return {
       cur, fmt, ema9, ema20, ema60, emaVd, macd, macdVd, macdCross, rsi, rsiVd,
       kdj, kdjVd, kdjCross, boll, bandPos, bollVd, vwap, vwapVd, atr, atrPct,
+      adx, adxVd, adxStrong, st, stVd,
       nineIsBuy, nineCnt, nineVd, chan, chanLast, chanSig, chanVd,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -114,6 +120,7 @@ export default function IndicatorPanel({ klines, refreshKey = 0, precision = 2, 
 
   const { cur, fmt, ema9, ema20, ema60, emaVd, macd, macdVd, macdCross, rsi, rsiVd,
     kdj, kdjVd, kdjCross, boll, bandPos, bollVd, vwap, vwapVd, atr, atrPct,
+    adx, adxVd, adxStrong, st, stVd,
     nineIsBuy, nineCnt, nineVd, chanLast, chanSig, chanVd } = memo;
 
   if (!cur) {
@@ -125,7 +132,7 @@ export default function IndicatorPanel({ klines, refreshKey = 0, precision = 2, 
   const bearAlign = cur < (up[0] ?? 0);
 
   let read = '—';
-  const votes = [macdVd === 'bull', rsiVd === 'bull', kdjVd === 'bull', bollVd !== 'bear', vwapVd === 'bull', nineVd === 'bull', chanVd === 'bull'];
+  const votes = [macdVd === 'bull', rsiVd === 'bull', kdjVd === 'bull', bollVd !== 'bear', vwapVd === 'bull', nineVd === 'bull', chanVd === 'bull', stVd === 'bull'];
   const bullN = votes.filter(Boolean).length;
   const bearN = votes.length - bullN;
   read = bullN > bearN ? `系统读数偏多（${bullN}/${votes.length}项），现价${bullAlign ? '站上均线' : '逼近均线'}；盯 MACD 柱${(macdCross ?? '')}与 RSI 是否过热`
@@ -168,6 +175,15 @@ export default function IndicatorPanel({ klines, refreshKey = 0, precision = 2, 
         <Card name="ATR(14)" verdict="osc"
           value={`${fmt(atr)} · 占价 ${atrPct != null ? atrPct.toFixed(2) + '%' : '--'}`}
           note={atrPct != null ? `日内波动${atrPct.toFixed(2)}%；参考单根止损 ≈ ${fmt(atr ?? null)}` : '--'} />
+      </Section>
+
+      <Section title="趋势跟踪">
+        <Card name="SuperTrend(10,3)" verdict={stVd}
+          value={st.lastValue != null ? `${st.lastIsUp ? '上轨' : '下轨'} ${fmt(st.lastValue)}` : '--'}
+          note={cur != null && st.lastIsUp != null ? (st.lastIsUp ? `现价沿上轨运行，趋势偏多` : `现价沿下轨运行，趋势偏空`) : '--'} />
+        <Card name="ADX / DMI(14)" verdict={adxVd}
+          value={adx ? `+DI ${fmt(adx.plusDI)} · -DI ${fmt(adx.minusDI)} · ADX ${fmt(adxStrong)}` : '--'}
+          note={adx == null ? '--' : adxStrong == null ? '需更多数据推趋势强度' : adxStrong >= 25 ? `ADX ${fmt(adxStrong)} 趋势强，方向${adxVd === 'bull' ? '偏多' : adxVd === 'bear' ? '偏空' : '两方相持'}` : `ADX ${fmt(adxStrong)} 偏弱，规避震荡追单`} />
       </Section>
 
       <Section title="主图 · 结构">
