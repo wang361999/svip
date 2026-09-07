@@ -1,0 +1,425 @@
+'use client';
+
+import { useMemo } from 'react';
+import { KlineData } from '@/shared/lib/market-data';
+import { RapidAnalysis } from '@/shared/lib/rapid-strategy';
+import {
+  calcTrendChannel,
+  calcPitchfork,
+  calcFourierExtrapolation,
+  calcValueArea,
+  calcIchimoku,
+  calcPredictionSynth,
+  calcCompositeLine,
+  calcPullbackBands,
+  calcAB9Lines,
+  calcFibonacci,
+  calcChan,
+  calcEMAArray,
+  calcMACD,
+  calcRSIArray,
+  calcKDJ,
+  calcBollinger,
+  calcVWAPArray,
+  calcATRArray,
+} from '@/shared/lib/indicators';
+
+type Verdict = 'bull' | 'bear' | 'osc';
+
+interface Item {
+  key: string;
+  name: string;
+  verdict: Verdict;
+  value: string;      // 真实读数（绝不虚构）
+  note?: string;      // 补充说明（来自真实数据）
+  pct?: number;       // 0~100 置信/偏度（可选）
+}
+
+const VERDICT_LABEL: Record<Verdict, string> = { bull: '多', bear: '空', osc: '震荡' };
+const VERDICT_COLOR: Record<Verdict, { chip: string; text: string; bar: string; barBg: string }> = {
+  bull: {
+    chip: 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400',
+    text: 'text-emerald-400',
+    bar: 'bg-emerald-500',
+    barBg: 'bg-emerald-500/10',
+  },
+  bear: {
+    chip: 'bg-red-500/15 border-red-500/40 text-red-400',
+    text: 'text-red-400',
+    bar: 'bg-red-500',
+    barBg: 'bg-red-500/10',
+  },
+  osc: {
+    chip: 'bg-amber-500/15 border-amber-500/40 text-amber-400',
+    text: 'text-amber-400',
+    bar: 'bg-amber-500',
+    barBg: 'bg-amber-500/10',
+  },
+};
+
+function fmt(v: number | null | undefined, n = 2): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return '--';
+  return Number(v).toFixed(n);
+}
+
+function fmtPrice(v: number | null | undefined, precision: number): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return '--';
+  return Number(v).toFixed(Math.max(1, Math.min(8, precision)));
+}
+
+interface Props {
+  klines: KlineData[];
+  signal: RapidAnalysis | null;
+  refreshKey: number;
+  precision: number;
+}
+
+export default function SignalPanel({ klines, signal, refreshKey, precision }: Props) {
+  const rows = useMemo<Item[]>(() => {
+    void refreshKey; // 触发重算：tick 版本号变化时刷新面板
+    const n = klines.length;
+    if (n < 5) return [];
+    const last = klines[n - 1];
+    const price = last.close;
+    const priceFmt = (p: number | null | undefined) => fmtPrice(p, precision);
+    const items: Item[] = [];
+
+    // ---- 快速信号（Rapid）----
+    if (signal) {
+      const st = signal.suggestion;
+      let v: Verdict = 'osc';
+      if (signal.rangeInfo.isRange) {
+        v = 'osc';
+        items.push({
+          key: 'rapid', name: '快速信号', verdict: v,
+          value: `区间模式 · 支撑${priceFmt(signal.rangeInfo.support)}`,
+          note: signal.rangeInfo.position === 'near-support' ? '贴近区间下沿' : signal.rangeInfo.position === 'near-resistance' ? '贴近区间上沿' : '区间中部',
+          pct: st.score,
+        });
+      } else if (st.direction === 'long') {
+        v = 'bull';
+        items.push({
+          key: 'rapid', name: '快速信号', verdict: v,
+          value: `得分 ${st.score} · 置信 ${st.confidence}%`,
+          note: `目标 ${priceFmt(st.target)}`,
+          pct: st.score,
+        });
+      } else if (st.direction === 'short') {
+        v = 'bear';
+        items.push({
+          key: 'rapid', name: '快速信号', verdict: v,
+          value: `得分 ${st.score} · 置信 ${st.confidence}%`,
+          note: `目标 ${priceFmt(st.target)}`,
+          pct: st.score,
+        });
+      } else {
+        items.push({
+          key: 'rapid', name: '快速信号', verdict: 'osc',
+          value: `得分 ${st.score}（低于阈值）`,
+          note: st.mode === 'range' ? '趋势/区间过滤中' : '多空信号未达阈值',
+          pct: st.score,
+        });
+      }
+    }
+
+    // ---- 趋势通道 ----
+    const tc = calcTrendChannel(klines, 60);
+    if (tc) {
+      items.push({
+        key: 'trendChannel', name: '趋势通道',
+        verdict: tc.direction === 'up' ? 'bull' : tc.direction === 'down' ? 'bear' : 'osc',
+        value: tc.direction === 'up' ? '上行通道' : tc.direction === 'down' ? '下行通道' : '走平',
+        note: `斜率 ${tc.slope.toFixed(6)} · 宽 ${tc.widthPct}%`,
+      });
+    }
+
+    // ---- 安德鲁音叉 ----
+    const pf = calcPitchfork(klines, 80);
+    if (pf) {
+      items.push({
+        key: 'pitchfork', name: '安德鲁音叉',
+        verdict: pf.direction === 'up' ? 'bull' : 'bear',
+        value: pf.direction === 'up' ? '向上倾斜' : '向下倾斜',
+        note: `三基准点（A/B/C）已锚定`,
+      });
+    }
+
+    // ---- 综合合流锚线 ----
+    const comp = calcCompositeLine(klines);
+    if (comp) {
+      items.push({
+        key: 'composite', name: '综合合流锚线',
+        verdict: comp.direction === 'up' ? 'bull' : comp.direction === 'down' ? 'bear' : 'osc',
+        value: `合流偏置 ${comp.lastBias > 0 ? '+' : ''}${comp.lastBias}`,
+        note: `锚线 ${priceFmt(comp.anchorValue)}`,
+        pct: (comp.lastBias + 1) / 2 * 100,
+      });
+    }
+
+    // ---- 预测信号合成 ----
+    const synth = calcPredictionSynth(klines);
+    if (synth) {
+      items.push({
+        key: 'synth', name: '预测合成',
+        verdict: synth.direction === 'up' ? 'bull' : synth.direction === 'down' ? 'bear' : 'osc',
+        value: `置信 ${synth.confidence}%`,
+        note: synth.signals[0] ? synth.signals[0].text : '共振平缓',
+        pct: synth.confidence,
+      });
+    }
+
+    // ---- 一目均衡表 ----
+    const ichi = calcIchimoku(klines, 9, 26, 52, 26);
+    if (ichi && ichi.cloud.length) {
+      const lastCloud = ichi.cloud[ichi.cloud.length - 1];
+      const cloudTop = lastCloud.top;
+      const cloudBot = lastCloud.bottom;
+      const inside = price <= cloudTop && price >= cloudBot;
+      items.push({
+        key: 'ichimoku', name: '一目均衡',
+        verdict: inside ? 'osc' : price > cloudTop ? 'bull' : 'bear',
+        value: inside ? '云内观望' : price > cloudTop ? '云上方（多）' : '云下方（空）',
+        note: `云顶 ${priceFmt(cloudTop)} · 云底 ${priceFmt(cloudBot)}`,
+      });
+    }
+
+    // ---- 价值区域 ----
+    const va = calcValueArea(klines, 80);
+    if (va) {
+      const above = price > va.vah;
+      const below = price < va.val;
+      items.push({
+        key: 'valueArea', name: '价值区域',
+        verdict: above ? 'bull' : below ? 'bear' : 'osc',
+        value: above ? '上穿价值区上沿' : below ? '跌破价值区下沿' : '价值区内',
+        note: `POC ${priceFmt(va.poc)}`,
+      });
+    }
+
+    // ---- 回调组（回调/深回调/回踩）----
+    const pb = calcPullbackBands(klines, 14, 1.2);
+    if (pb) {
+      const upCtx = pb.direction === 'up';
+      let v: Verdict = upCtx ? 'bull' : 'bear';
+      let detail = upCtx ? `上方回调位 ${priceFmt(pb.typicalLevel)}` : `下方回调位 ${priceFmt(pb.typicalLevel)}`;
+      if (pb.retestLevel !== null) {
+        detail = `${upCtx ? '回踩支撑' : '回抽阻力'} ${priceFmt(pb.retestLevel)} (${pb.retestTouches}次)`;
+        v = pb.retestType === 'support' ? 'bull' : 'bear';
+      }
+      items.push({
+        key: 'pullback', name: '回调组',
+        verdict: v,
+        value: detail,
+        note: pb.retestLevel !== null ? `深回调 ${priceFmt(pb.deepLevel)}` : `样本 ${pb.samples} · ATR ${fmt(pb.currentATR)}`,
+      });
+    }
+
+    // ---- 傅里叶外推 ----
+    const fou = calcFourierExtrapolation(klines, 128, 8, 24);
+    if (fou && fou.projection.length && fou.rSquared > 0) {
+      const projPrice = fou.projection[fou.projection.length - 1].price;
+      const lowFit = fou.rSquared < 0.35;
+      items.push({
+        key: 'fourier', name: '傅里叶外推',
+        verdict: lowFit ? 'osc' : projPrice > price ? 'bull' : 'bear',
+        value: lowFit ? '拟合度过低（存疑）' : projPrice > price ? '投影看多' : '投影看空',
+        note: `R² ${fou.rSquared.toFixed(2)} · 投影 ${priceFmt(projPrice)}`,
+        pct: lowFit ? 50 : Math.min(95, Math.max(5, fou.rSquared * 100)),
+      });
+    }
+
+    // ---- AB9线 ----
+    const ab9 = calcAB9Lines(klines);
+    if (ab9) {
+      const broken = ab9.strength === '趋势破坏';
+      items.push({
+        key: 'ab9', name: 'AB9线',
+        verdict: broken ? 'osc' : ab9.direction === 'up' ? 'bull' : 'bear',
+        value: ab9.strength,
+        note: `${ab9.direction === 'up' ? '上升' : '下降'}波段 · ${ab9.betweenLines}`,
+      });
+    }
+
+    // ---- 斐波那契 ----
+    const fib = calcFibonacci(klines);
+    if (fib) {
+      items.push({
+        key: 'fib', name: '斐波那契',
+        verdict: fib.direction === 'up' ? 'bull' : fib.direction === 'down' ? 'bear' : 'osc',
+        value: fib.direction === 'up' ? '回调/扩展向上' : '回调/扩展向下',
+        note: fib.nearLevel !== null ? `贴近 ${fib.nearLevel} 线` : fib.betweenLevels,
+      });
+    }
+
+    // ---- 缠论 ----
+    const chan = calcChan(klines);
+    if (chan && chan.bis.length) {
+      const lastBi = chan.bis[chan.bis.length - 1];
+      const lastSignal = chan.signals[chan.signals.length - 1];
+      items.push({
+        key: 'chan', name: '缠论',
+        verdict: lastBi.direction === 'up' ? 'bull' : 'bear',
+        value: lastBi.direction === 'up' ? '最近笔向上' : '最近笔向下',
+        note: lastSignal ? `${lastSignal.type === 'firstBuy' ? '一买' : lastSignal.type === 'secondBuy' ? '二买' : lastSignal.type === 'thirdBuy' ? '三买' : lastSignal.type === 'firstSell' ? '一卖' : lastSignal.type === 'secondSell' ? '二卖' : '三卖'} @ ${priceFmt(lastSignal.price)}` : `笔${chan.bis.length} · 中枢${chan.zhongshus.length}`,
+      });
+    }
+
+    // ---- EMA ----
+    const hid = signal?.indicatorState;
+    const emaCross = hid?.emaCross;
+    items.push({
+      key: 'ema', name: 'EMA',
+      verdict: emaCross === 'up' ? 'bull' : emaCross === 'down' ? 'bear' : 'osc',
+      value: emaCross === 'up' ? '金叉' : emaCross === 'down' ? '死叉' : '粘合/平走',
+      note: hid ? `EMA9 ${priceFmt(hid.ema9)} · EMA21 ${priceFmt(hid.ema21)}` : '数据未就绪',
+    });
+
+    // ---- MACD ----
+    const macdCross = hid?.macdCross;
+    items.push({
+      key: 'macd', name: 'MACD',
+      verdict: macdCross === 'golden' ? 'bull' : macdCross === 'death' ? 'bear' : (hid?.macdHist ?? 0) > 0 ? 'bull' : (hid?.macdHist ?? 0) < 0 ? 'bear' : 'osc',
+      value: macdCross === 'golden' ? '金叉' : macdCross === 'death' ? '死叉' : (hid?.macdHist ?? 0) > 0 ? '柱体为正' : (hid?.macdHist ?? 0) < 0 ? '柱体为负' : '柱体归零',
+      note: hid ? `DIF ${fmt(hid.macdDif)} · DEA ${fmt(hid.macdDea)}` : '数据未就绪',
+    });
+
+    // ---- RSI ----
+    const rsiVal = hid?.rsi;
+    items.push({
+      key: 'rsi', name: 'RSI',
+      verdict: rsiVal == null ? 'osc' : rsiVal > 60 ? 'bull' : rsiVal < 40 ? 'bear' : 'osc',
+      value: rsiVal == null ? '--' : `值 ${rsiVal.toFixed(0)}`,
+      note: rsiVal == null ? '' : rsiVal > 70 ? '超买' : rsiVal < 30 ? '超卖' : '中性区',
+      pct: rsiVal ?? 50,
+    });
+
+    // ---- KDJ ----
+    const kdj = calcKDJ(klines, 9, 3, 3);
+    if (kdj) {
+      items.push({
+        key: 'kdj', name: 'KDJ',
+        verdict: kdj.lastK >= kdj.lastD ? 'bull' : 'bear',
+        value: `K ${fmt(kdj.lastK)} · D ${fmt(kdj.lastD)}`,
+        note: kdj.lastJ >= 100 ? 'J超买' : kdj.lastJ <= 0 ? 'J超卖' : '正常',
+        pct: kdj.lastK,
+      });
+    }
+
+    // ---- BOLL ----
+    const bb = calcBollinger(klines, 20);
+    if (bb) {
+      let v: Verdict = 'osc'; let txt = '';
+      if (hid?.bollingerPosition === 'above-upper') { v = 'bull'; txt = '上轨上方'; }
+      else if (hid?.bollingerPosition === 'below-lower') { v = 'bear'; txt = '下轨下方'; }
+      else { v = 'osc'; txt = '轨道内'; }
+      items.push({
+        key: 'boll', name: 'BOLL',
+        verdict: v,
+        value: txt,
+        note: `上 ${priceFmt(bb.upper)} · 中 ${priceFmt(bb.middle)} · 下 ${priceFmt(bb.lower)}`,
+      });
+    }
+
+    // ---- VWAP ----
+    const vwapArr = calcVWAPArray(klines);
+    const vwapLast = vwapArr[vwapArr.length - 1];
+    if (vwapLast != null) {
+      items.push({
+        key: 'vwap', name: 'VWAP',
+        verdict: price > vwapLast ? 'bull' : 'bear',
+        value: price > vwapLast ? '价格在上方' : '价格在下方',
+        note: `VWAP ${priceFmt(vwapLast)}`,
+      });
+    }
+
+    // ---- ATR（波动，非方向）----
+    const atr = calcATRArray(klines, 14);
+    const atrLast = atr[atr.length - 1];
+    if (atrLast != null) {
+      items.push({
+        key: 'atr', name: 'ATR', verdict: 'osc',
+        value: `波动 ${fmt(atrLast)}`,
+        note: '波动率指示（不判方向）',
+      });
+    }
+
+    return items;
+  }, [klines, signal, refreshKey, precision]);
+
+  const counts = useMemo(() => {
+    const c = { bull: 0, bear: 0, osc: 0 };
+    for (const r of rows) c[r.verdict]++;
+    return c;
+  }, [rows]);
+
+  const total = rows.length || 1;
+  const bullPct = (counts.bull / total) * 100;
+  const bearPct = (counts.bear / total) * 100;
+
+  const Section = ({ title, list }: { title: string; list: Item[] }) => (
+    <div>
+      <div className="px-3 pt-2.5 pb-1 text-[10px] uppercase tracking-wider text-dark-500">{title}</div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 px-3 pb-3">
+        {list.map((r) => {
+          const c = VERDICT_COLOR[r.verdict];
+          return (
+            <div key={r.key} className="rounded-lg border border-dark-700/50 bg-dark-800/40 p-2.5 flex flex-col gap-1.5">
+              <div className="flex items-center justify-between gap-1">
+                <span className="text-[11px] text-dark-200 font-medium truncate">{r.name}</span>
+                <span className={`shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded border ${c.chip} ${c.text}`}>
+                  {VERDICT_LABEL[r.verdict]}
+                </span>
+              </div>
+              <div className="text-[11px] font-mono tabular-nums text-dark-300 leading-tight">{r.value}</div>
+              {r.note ? <div className="text-[10px] text-dark-400 leading-tight break-words">{r.note}</div> : null}
+              {r.pct != null ? (
+                <div className="mt-auto pt-0.5">
+                  <div className="h-1 w-full rounded-full overflow-hidden bg-dark-700/40">
+                    <div className={`h-full rounded-full ${c.bar}`} style={{ width: `${Math.max(3, Math.min(100, r.pct))}%` }} />
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  if (rows.length === 0) {
+    return (
+      <div className="border-b border-dark-700/50 px-4 py-3 text-xs text-dark-400">
+        信号面板 · 等待K线数据…
+      </div>
+    );
+  }
+
+  const drawTools = rows.filter((r) => ['trendChannel', 'pitchfork', 'composite', 'synth', 'ichimoku', 'valueArea', 'pullback', 'fourier', 'ab9', 'fib', 'chan'].includes(r.key));
+  const coreInds = rows.filter((r) => !['trendChannel', 'pitchfork', 'composite', 'synth', 'ichimoku', 'valueArea', 'pullback', 'fourier', 'ab9', 'fib', 'chan', 'atr'].includes(r.key));
+
+  return (
+    <div className="border-b border-dark-700/50 bg-dark-900/60">
+      {/* 汇总头 */}
+      <div className="flex items-center gap-3 flex-wrap px-3 pt-2">
+        <span className="text-xs font-semibold text-slate-200">信号面板</span>
+        <div className="flex items-center gap-1.5 text-[11px]">
+          <span className="flex items-center gap-1 text-emerald-400"><i className="w-1.5 h-1.5 rounded-full bg-emerald-400" />多 {counts.bull}</span>
+          <span className="flex items-center gap-1 text-red-400"><i className="w-1.5 h-1.5 rounded-full bg-red-400" />空 {counts.bear}</span>
+          <span className="flex items-center gap-1 text-amber-400"><i className="w-1.5 h-1.5 rounded-full bg-amber-400" />震荡 {counts.osc}</span>
+        </div>
+        {/* 多空比例条 */}
+        <div className="flex h-1.5 w-28 rounded-full overflow-hidden">
+          <div className="bg-emerald-500" style={{ width: `${bullPct}%` }} />
+          <div className="bg-red-500" style={{ width: `${bearPct}%` }} />
+          <div className="bg-amber-500/60" style={{ width: `calc(${100 - bullPct - bearPct}% - 0px)` }} />
+        </div>
+        <span className="text-[10px] text-dark-500">
+          {counts.bull > counts.bear && counts.bull > counts.osc ? '整体偏多' : counts.bear > counts.bull && counts.bear > counts.osc ? '整体偏空' : '整体偏震荡'}
+        </span>
+      </div>
+
+      <Section title="画线工具 · 结构判定" list={drawTools} />
+      <Section title="核心指标 · 动量判定" list={coreInds} />
+    </div>
+  );
+}

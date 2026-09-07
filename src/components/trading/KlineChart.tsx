@@ -56,6 +56,7 @@ import useAuthStore from '@/store/authStore';
 import useChartStore from '@/store/chartStore';
 import { apiGet, apiPut } from '@/shared/api/client';
 import SymbolSelector from './SymbolSelector';
+import SignalPanel from './SignalPanel';
 
 // AB9线固定彩色（9种不同颜色）
 const AB9_COLORS: Record<number, string> = {
@@ -243,7 +244,16 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const [showComposite, setShowComposite] = useState(overlayPrefsInit.COMPOSITE ?? false);
   const [showPullback, setShowPullback] = useState(overlayPrefsInit.PULLBACK ?? false);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
+  // 信号面板：聚合所有指标/画线工具的多空震荡判定
+  const [showSignalsPanel, setShowSignalsPanel] = useState(false);
+  const [panelTick, setPanelTick] = useState(0);
   const toolbarRef = useRef<HTMLDivElement>(null);
+  // 面板独立节流刷新：直接读 ref 最新数据，不影响主图重绘频率
+  useEffect(() => {
+    if (!showSignalsPanel) return;
+    const t = setInterval(() => setPanelTick((v) => v + 1), 1500);
+    return () => clearInterval(t);
+  }, [showSignalsPanel]);
   // ref 镜像：updateIndicators 的 useCallback 依赖里没有这两个开关，
   // 切换币种/周期重载数据时闭包里是旧值，会出现"关了又冒出来/开了不出来"的状态错乱
   const showTrendChannelRef = useRef(showTrendChannel);
@@ -2691,6 +2701,17 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             </div>
           )}
 
+          {/* 信号面板按钮 */}
+          <button
+            onClick={() => setShowSignalsPanel((v) => !v)}
+            className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-all ${
+              showSignalsPanel ? 'bg-blue-600 text-white' : 'text-dark-400 hover:text-white hover:bg-dark-700/50'
+            }`}
+            title="信号面板"
+          >
+            信号
+          </button>
+
           {/* 全屏按钮 */}
           <button
             onClick={onToggleFullscreen}
@@ -2709,6 +2730,16 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           </button>
         </div>
       </div>
+
+      {/* 信号面板：聚合所有指标/画线工具的多空震荡（真实读数） */}
+      {showSignalsPanel && (
+        <SignalPanel
+          klines={allKlinesRef.current}
+          signal={signalDataRef.current}
+          refreshKey={panelTick}
+          precision={pricePrecision}
+        />
+      )}
 
       {/* 主图 */}
       <div className="relative">
