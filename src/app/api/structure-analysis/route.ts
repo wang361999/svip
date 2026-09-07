@@ -118,12 +118,16 @@ export const GET = createHandler(async ({ req }) => {
     });
   }
 
-  // 并行拉三周期 + 资金费率（费率失败不阻塞，指标降级为"不可用"）
+  // 并行拉三周期 + 资金费率（仅 ETH 需要：费率背离/TSMOM 仅 ETH 有实证，
+  // 非 ETH 币种无需拉取，白拉无意义；费率失败不阻塞，指标降级为"不可用"）
+  const isETH = symbol.startsWith('ETH');
   const [k4h, k1h, k15m, funding] = await Promise.all([
     fetchKlines(symbol, '4h', 300),
     fetchKlines(symbol, '1h', 300),
     fetchKlines(symbol, '15m', 300),
-    fetchFundingHistory(symbol).catch(() => [] as FundingPoint[]),
+    isETH
+      ? fetchFundingHistory(symbol).catch(() => [] as FundingPoint[])
+      : Promise.resolve([] as FundingPoint[]),
   ]);
 
   if (k4h.length < 80 || k1h.length < 80 || k15m.length < 80) {

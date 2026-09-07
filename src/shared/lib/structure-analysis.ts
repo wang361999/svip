@@ -843,7 +843,7 @@ function atrSeries(ks: KlineData[], period = 14): number[] {
 }
 
 /** 实时信号计算（纯函数：4h 定核心方向，1h 定背离与实时动能）
- * 资金费率与 TSMOM 仅在 ETH 上有实证（BTC/SOL 回测无效，只展示不触发） */
+ * 资金费率与 TSMOM 仅在 ETH 上有实证；非 ETH 币种（BTC/SOL 回测无效）已彻底移除，不进入指标面板 */
 function calcRealtimeSignal(
   k4h: KlineData[],
   k1h: KlineData[],
@@ -1090,13 +1090,17 @@ function calcRealtimeSignal(
     stateText = '无信号·价格中性';
   }
 
+  // 信号助手只保留真正会触发的信号。删掉仅作状态展示的装饰项（trend/macd/atr 为 context 只读参考），
+  // 面板只显示可下单依据：MR 反转、RSI 背离（三币实证），以及 ETH 专属的资金费率背离 / TSMOM。
+  const indicators = [mr, divergence, ...(isETH ? [fundingInd, tsInd] : [])];
+
   return {
     active,
     dir,
     confidence,
     triggerKind: active ? triggerKind : 'none',
     triggerSource: active ? triggerSource : '未触发',
-    indicators: [trend, mr, divergence, macd, atr, fundingInd, tsInd],
+    indicators,
     mrScore,
     e200Side: side4,
     fundingZ,
