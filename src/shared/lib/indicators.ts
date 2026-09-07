@@ -1047,6 +1047,7 @@ function detectChanSignals(
   bis: ChanBi[],
   zhongshus: ChanZhongshu[],
   klines: KlineData[],
+  macdHist: (number | null)[] | null = null,
 ): ChanSignal[] {
   const signals: ChanSignal[] = [];
   if (zhongshus.length === 0 || bis.length === 0 || klines.length === 0) return signals;
@@ -1096,7 +1097,7 @@ function detectChanSignals(
       const lastBiLow = Math.min(lastBi.startPrice, lastBi.endPrice);
       const lastBiHigh = Math.max(lastBi.startPrice, lastBi.endPrice);
 
-      // 一买：中枢下方，最后一笔下降背驰
+      // 一买：中枢下方，最后一笔下降背驰（MACD 柱面积衰减为第一判据，价格幅度为第二判据）
       if (lastPrice < zs.low) {
         const downBis = bisForLast.filter(b => b.direction === 'down');
         if (downBis.length >= 2) {
@@ -1104,15 +1105,30 @@ function detectChanSignals(
           const prevDown = downBis[downBis.length - 2];
           const lastRange = Math.abs(lastDown.endPrice - lastDown.startPrice);
           const prevRange = Math.abs(prevDown.endPrice - prevDown.startPrice);
-          if (lastRange < prevRange * 0.8) {
+          // MACD 柱面积背驰：后段向下面积(负)绝对值相比前段收缩
+          let macdDiverge: boolean | null = null;
+          if (macdHist) {
+            const aPrev = chanBiMacdArea(macdHist, prevDown.startIndex, prevDown.endIndex);
+            const aLast = chanBiMacdArea(macdHist, lastDown.startIndex, lastDown.endIndex);
+            // 面积有效(两段都非零且方向为负)时才启用面积判据；
+            // 若落在 MACD 预热区(面积为0)则视为无法判定，退回价格幅度。
+            if (aPrev !== 0 && aLast !== 0 && aPrev < 0 && aLast < 0)
+              macdDiverge = Math.abs(aLast) < Math.abs(aPrev) * 0.8;
+            else macdDiverge = null;
+          }
+          // 因:以面积衰减为准(缠论标准)；面积无法判定时退回价格幅度
+          const diverge = macdDiverge !== null ? macdDiverge : lastRange < prevRange * 0.8;
+          if (diverge) {
             signals.push({
               type: 'firstBuy', price: lastPrice, time: lastTime,
-              description: '一买：中枢下方下降笔背驰',
+              description: macdDiverge !== null
+                ? '一买：中枢下方下降笔 MACD 面积背驰'
+                : '一买：中枢下方下降笔背驰',
             });
           }
         }
       }
-      // 一卖：中枢上方，最后一笔上升背驰
+      // 一卖：中枢上方，最后一笔上升背驰（MACD 柱面积衰减为第一判据）
       if (lastPrice > zs.high) {
         const upBis = bisForLast.filter(b => b.direction === 'up');
         if (upBis.length >= 2) {
@@ -1120,10 +1136,21 @@ function detectChanSignals(
           const prevUp = upBis[upBis.length - 2];
           const lastRange = Math.abs(lastUp.endPrice - lastUp.startPrice);
           const prevRange = Math.abs(prevUp.endPrice - prevUp.startPrice);
-          if (lastRange < prevRange * 0.8) {
+          let macdDiverge: boolean | null = null;
+          if (macdHist) {
+            const aPrev = chanBiMacdArea(macdHist, prevUp.startIndex, prevUp.endIndex);
+            const aLast = chanBiMacdArea(macdHist, lastUp.startIndex, lastUp.endIndex);
+            if (aPrev !== 0 && aLast !== 0 && aPrev > 0 && aLast > 0)
+              macdDiverge = Math.abs(aLast) < Math.abs(aPrev) * 0.8;
+            else macdDiverge = null;
+          }
+          const diverge = macdDiverge !== null ? macdDiverge : lastRange < prevRange * 0.8;
+          if (diverge) {
             signals.push({
               type: 'firstSell', price: lastPrice, time: lastTime,
-              description: '一卖：中枢上方上升笔背驰',
+              description: macdDiverge !== null
+                ? '一卖：中枢上方上升笔 MACD 面积背驰'
+                : '一卖：中枢上方上升笔背驰',
             });
           }
         }
@@ -1150,6 +1177,19 @@ function detectChanSignals(
   }
 
   return signals;
+}
+
+// 计算某笔（按起止 index 在原始K线上的位置）对应的 MACD 柱(hist)面积
+// 用于缠论标准背驰判定：对比同级别前后两段同向笔的动能，而非单纯价格幅度。
+// hist 即 calcMACD 输出的柱状图数组（12/26/9），向上笔面积应>0，向下笔面积应<0。
+function chanBiMacdArea(hist: (number | null)[], startIndex: number, endIndex: number): number {
+  let area = 0;
+  for (let i = startIndex; i <= endIndex; i++) {
+    const h = hist[i];
+    if (h === undefined || h === null) continue;
+    area += h;
+  }
+  return area;
 }
 
 // ===== 第六步：预警投射（提前预测画线） =====
@@ -1352,7 +1392,11 @@ export function calcChan(klines: KlineData[]): ChanResult {
   const fractals = detectChanFractals(merged);
   const bis = buildBi(fractals, klines);
   const zhongshus = buildZhongshu(bis);
-  const signals = detectChanSignals(bis, zhongshus, klines);
+  // 计算 MACD 柱面积用于标准背驰判定（12/26/9）
+  let macdHist: (number | null)[] | null = null;
+  const macdData = calcMACD(klines, 12, 26, 9);
+  if (macdData && macdData.hist) macdHist = macdData.hist;
+  const signals = detectChanSignals(bis, zhongshus, klines, macdHist);
   const projections = calcChanProjections(bis, zhongshus, klines);
   return { fractals, bis, zhongshus, signals, projections };
 }
