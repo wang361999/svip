@@ -17,6 +17,7 @@ import {
   calcIchimoku,
   calcPredictionSynth,
   calcRangeBox,
+  calcSuperTrend,
   type ChanResult,
   type TrendChannel,
   type ValueArea,
@@ -121,7 +122,7 @@ function saveIndicatorPrefs(next: typeof DEFAULT_INDICATORS) {
 // 会员用户额外同步到后端（跨设备），非会员仅本地
 // 版本号：默认值变更时递增，旧 localStorage 自动失效
   const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v6';
-const DEFAULT_OVERLAY = { AB9: false, CHANNEL: false, VALUEAREA: false, ICHIMOKU: false, SYNTH: false, GANN: false };
+const DEFAULT_OVERLAY = { AB9: false, CHANNEL: false, VALUEAREA: false, ICHIMOKU: false, SYNTH: false, GANN: false, SUPER: false };
 
 function loadOverlayPrefs() {
   if (typeof window === 'undefined') return { ...DEFAULT_OVERLAY };
@@ -136,6 +137,7 @@ function loadOverlayPrefs() {
       ICHIMOKU: parsed.ICHIMOKU !== undefined ? !!parsed.ICHIMOKU : DEFAULT_OVERLAY.ICHIMOKU,
       SYNTH: parsed.SYNTH !== undefined ? !!parsed.SYNTH : DEFAULT_OVERLAY.SYNTH,
       GANN: parsed.GANN !== undefined ? !!parsed.GANN : DEFAULT_OVERLAY.GANN,
+      SUPER: parsed.SUPER !== undefined ? !!parsed.SUPER : DEFAULT_OVERLAY.SUPER,
     };
   } catch {
     return { ...DEFAULT_OVERLAY };
@@ -326,6 +328,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const [showIchimoku, setShowIchimoku] = useState(overlayPrefsInit.ICHIMOKU ?? false);
   const [showSynth, setShowSynth] = useState(overlayPrefsInit.SYNTH ?? false);
   const [showGann, setShowGann] = useState(overlayPrefsInit.GANN ?? false);
+  const [showSuperTrend, setShowSuperTrend] = useState(overlayPrefsInit.SUPER ?? false);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   // 信号面板：聚合所有指标/画线工具的多空震荡判定
   const [showSignalsPanel, setShowSignalsPanel] = useState(false);
@@ -335,10 +338,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const toolbarRef = useRef<HTMLDivElement>(null);
   // 面板独立节流刷新：直接读 ref 最新数据，不影响主图重绘频率
   useEffect(() => {
-    if (!showSignalsPanel) return;
+    if (!showSignalsPanel && !showGannPanel && !showIndicatorPanel) return;
     const t = setInterval(() => setPanelTick((v) => v + 1), 1500);
     return () => clearInterval(t);
-  }, [showSignalsPanel]);
+  }, [showSignalsPanel, showGannPanel, showIndicatorPanel]);
   // ref 镜像：updateIndicators 的 useCallback 依赖里没有这两个开关，
   // 切换币种/周期重载数据时闭包里是旧值，会出现"关了又冒出来/开了不出来"的状态错乱
   const showTrendChannelRef = useRef(showTrendChannel);
@@ -351,6 +354,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   showSynthRef.current = showSynth;
   const showGannRef = useRef(showGann);
   showGannRef.current = showGann;
+  const showSuperTrendRef = useRef(showSuperTrend);
+  showSuperTrendRef.current = showSuperTrend;
+  // SuperTrend 叠加段 series 引用（重算/关闭时清理）
+  const superTrendSegsRef = useRef<ISeriesApi<'Line'>[]>([]);
   // 江恩工具箱结果缓存（按 K 线签名懒重算）
   const gannRef = useRef<ReturnType<typeof calcGannAll> | null>(null);
   const gannSigRef = useRef<string>('');
@@ -496,6 +503,34 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         bbMiddle.current.setData(bb.middleSeries.map((d) => ({ time: d.time as Time, value: d.value })));
         bbLower.current.setData(bb.lowerSeries.map((d) => ({ time: d.time as Time, value: d.value })));
       }
+    }
+
+    // SuperTrend 叠加（上趋势绿轨 / 下趋势红轨，按连续段分段）
+    superTrendSegsRef.current.forEach((s) => { try { mainChart.current?.removeSeries(s); } catch {} });
+    superTrendSegsRef.current = [];
+    if (showSuperTrendRef.current) {
+      const st = calcSuperTrend(klines, 10, 3);
+      const runs: { up: boolean; data: LineData[] }[] = [];
+      let seg: LineData[] | null = null;
+      let segUp: boolean | null = null;
+      for (let i = 0; i < st.points.length; i++) {
+        const p = st.points[i];
+        if (p.value == null || p.isUp == null) continue;
+        if (!seg || segUp !== p.isUp) { if (seg) runs.push({ up: !!segUp, data: seg }); seg = []; segUp = p.isUp; }
+        seg.push({ time: klines[i].time as Time, value: p.value });
+      }
+      if (seg) runs.push({ up: !!segUp, data: seg });
+      runs.forEach((r) => {
+        if (r.data.length < 2) return;
+        const s = mainChart.current?.addLineSeries({
+          color: r.up ? 'rgba(16, 185, 129, 0.9)' : 'rgba(244, 63, 94, 0.9)',
+          lineWidth: 2,
+          lineStyle: 0,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+        if (s) { s.setData(r.data); superTrendSegsRef.current.push(s); }
+      });
     }
 
     // MACD 副图
@@ -898,6 +933,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   useEffect(() => {
     drawTrendOverlays();
   }, [drawTrendOverlays, showTrendChannel, showValueArea, showIchimoku, showSynth]);
+
+  // SuperTrend 开关切换时重算主图叠加
+  useEffect(() => {
+    updateIndicators();
+  }, [showSuperTrend, updateIndicators]);
 
   // Tick 实时更新（rAF + 50ms 节流，和 v24 一致）
   const flushTick = useCallback(() => {
@@ -2160,7 +2200,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // 绘图/叠加图层菜单项（会员）
   const currentOverlayPrefs = () => ({
     AB9: showAutoAB9, CHANNEL: showTrendChannel, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku,
-    SYNTH: showSynth, GANN: showGann,
+    SYNTH: showSynth, GANN: showGann, SUPER: showSuperTrend,
   });
   const layerMenu = [
     {
@@ -2186,6 +2226,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     {
       key: 'GANN', label: '江恩工具箱', active: showGann,
       on: () => { const v = !showGann; setShowGann(v); saveOverlayPrefs({ ...currentOverlayPrefs(), GANN: v }); setOpenMenu(null); },
+    },
+    {
+      key: 'SUPER', label: 'SuperTrend', active: showSuperTrend,
+      on: () => { const v = !showSuperTrend; setShowSuperTrend(v); saveOverlayPrefs({ ...currentOverlayPrefs(), SUPER: v }); setOpenMenu(null); },
     },
   ];
 
