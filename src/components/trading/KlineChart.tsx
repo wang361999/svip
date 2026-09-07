@@ -49,7 +49,6 @@ import useChartStore from '@/store/chartStore';
 import { apiGet, apiPut } from '@/shared/api/client';
 import SymbolSelector from './SymbolSelector';
 import SignalPanel from './SignalPanel';
-import CarryMonitor from './CarryMonitor';
 
 // AB9线固定彩色（9种不同颜色）
 const AB9_COLORS: Record<number, string> = {
@@ -2315,8 +2314,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           symbol={symbol}
         />
       )}
-      {/* 资金费套利监控（Carry · Delta中性 · 仅信号） */}
-      {showSignalsPanel && <CarryMonitor refreshKey={panelTick} />}
     </div>
   );
 }
