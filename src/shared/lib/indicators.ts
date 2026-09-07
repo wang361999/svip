@@ -1867,6 +1867,28 @@ export interface AB9Analysis {
   betweenLines: string;
   /** 操作建议 */
   advice: string;
+  /** 近距离穿越事件：当前价相对上一根K线发生的关键线穿越（供信号触发） */
+  cross: AB9Cross[];
+  /** 波段斜率（价格/根）与量能比，辅助强度判断 */
+  slope: number;
+  /** 量能支撑：当前 vs AB段平均成交量，>1 表示放量 */
+  volumeRatio: number;
+  /** 当前价对应的阻力/支撑参考线号（入场后止损/目标参考）。null=处于扩展区无内部参考 */
+  refLine: number | null;
+}
+
+/** AB9 关键线穿越事件 */
+export interface AB9Cross {
+  /** 触发方向：'up'=向上穿越(升破) 'down'=向下穿越(跌破) */
+  dir: 'up' | 'down';
+  /** 被穿越的线号 1-9 */
+  lineNo: number;
+  /** 触发时的上一根K线价与当前价 */
+  from: number;
+  to: number;
+  /** 语义标签：中轴/趋势破坏/突破等高价值参考 */
+  label: string;
+  time: number;
 }
 
 /**
@@ -2002,6 +2024,52 @@ export function calcAB9Lines(klines: KlineData[]): AB9Analysis | null {
     }
   }
 
+  // 计算AB段长度与斜率（价格/根）
+  const swingLen = Math.max(1, selected.endIdx - selected.startIdx);
+  const slope = height / swingLen;
+
+  // 量能比：当前(最近5根)均量 vs AB段均量
+  const volArr = klines.filter((k) => typeof k.volume === 'number');
+  let volumeRatio = 1;
+  if (volArr.length >= 6) {
+    const recent = volArr.slice(-5);
+    const recentAvg = recent.reduce((s, k) => s + k.volume, 0) / recent.length;
+    const abVols = volArr.slice(selected.startIdx, selected.endIdx + 1);
+    if (abVols.length > 0) {
+      const abAvg = abVols.reduce((s, k) => s + k.volume, 0) / abVols.length;
+      if (abAvg > 0) volumeRatio = recentAvg / abAvg;
+    }
+  }
+
+  // 跨线事件：用上一根已收盘K线价比较当前价相对各线的位置
+  const cross: AB9Cross[] = [];
+  if (klines.length >= 2) {
+    const prevClose = klines[klines.length - 2].close;
+    const prevTime = klines[klines.length - 2].time;
+    for (const line of lines) {
+      const wasAbove = prevClose >= line.price;
+      const isAbove = currentPrice >= line.price;
+      if (wasAbove !== isAbove) {
+        const dir: 'up' | 'down' = isAbove ? 'up' : 'down';
+        let label: string;
+        if (line.lineNo === 4) label = '中轴';
+        else if (line.lineNo <= 3) label = '趋势破坏区';
+        else if (line.lineNo >= 8) label = '突破/扩展区';
+        else label = `${line.lineNo}线`;
+        cross.push({ dir, lineNo: line.lineNo, from: prevClose, to: currentPrice, label, time: prevTime });
+      }
+    }
+  }
+
+  // 支撑/压力参考：当前价就近的内部线号（排除9线扩展位，作为风控参考更稳妥的参数）
+  let refLine: number | null = null;
+  let bestGap = Infinity;
+  for (const line of lines) {
+    if (line.lineNo === 9) continue; // 扩展位一般不止损参考
+    const gap = Math.abs(currentPrice - line.price);
+    if (gap < bestGap) { bestGap = gap; refLine = line.lineNo; }
+  }
+
   return {
     pointA,
     pointB,
@@ -2014,6 +2082,10 @@ export function calcAB9Lines(klines: KlineData[]): AB9Analysis | null {
     strength: trendStrength,
     betweenLines,
     advice,
+    cross,
+    slope,
+    volumeRatio,
+    refLine,
   };
 }
 

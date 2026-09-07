@@ -272,11 +272,18 @@ export default function SignalPanel({ klines, signal, refreshKey, precision, sym
     const ab9 = calcAB9Lines(klines);
     if (ab9) {
       const broken = ab9.strength === '趋势破坏';
+      // 挑出最近的关键穿越（中轴/破坏区优先）
+      const keyCross = ab9.cross.find(c => c.dir === 'down' && c.lineNo <= 4)
+        || ab9.cross.find(c => c.dir === 'up' && c.lineNo >= 8);
+      const volNote = ab9.volumeRatio >= 1.15 ? '· 放量' : ab9.volumeRatio <= 0.85 ? '· 缩量' : '';
       items.push({
         key: 'ab9', name: 'AB9线',
         verdict: broken ? 'osc' : ab9.direction === 'up' ? 'bull' : 'bear',
-        value: ab9.strength,
-        note: `${ab9.direction === 'up' ? '上升' : '下降'}波段 · ${ab9.betweenLines}`,
+        value: keyCross
+          ? `${keyCross.dir === 'up' ? '升破' : '跌破'}${keyCross.lineNo}线(${keyCross.label})`
+          : ab9.strength,
+        note: `${ab9.direction === 'up' ? '上升' : '下降'}波段 · ${ab9.betweenLines}${volNote}`,
+        pct: Math.min(95, Math.max(5, Math.round(Math.abs(ab9.slope) / (ab9.height / 24) * 50 + (ab9.volumeRatio >= 1 ? 12 : 0)))),
       });
     }
 
