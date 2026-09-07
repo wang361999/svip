@@ -4,23 +4,28 @@ import { apiError } from '@/shared/api/response';
 
 export const dynamic = 'force-dynamic';
 
-const FAPI = 'https://fapi.binance.com';
+const FAPI_HOSTS = ['https://fapi.binance.com', 'https://data-api.binance.vision'];
 const VALID_PERIOD = new Set(['1h', '1d']);
 const BAR_MS: Record<string, number> = { '1h': 3600000, '1d': 86400000 };
 
 async function get(path: string, ms = 6000): Promise<any> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ms);
-  try {
-    const resp = await fetch(`${FAPI}${path}`, {
-      signal: controller.signal,
-      headers: { 'user-agent': 'ETH-Trading-Vercel-Proxy/1.0', 'accept': 'application/json' },
-    });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    return await resp.json();
-  } finally {
-    clearTimeout(timer);
+  // 多主机失败转移：主站深圳受限（含香港451），镜像优先也试
+  for (const host of FAPI_HOSTS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try {
+      const resp = await fetch(`${host}${path}`, {
+        signal: controller.signal,
+        headers: { 'user-agent': 'ETH-Trading-Vercel-Proxy/1.0', 'accept': 'application/json' },
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      return await resp.json();
+    } catch {
+    } finally {
+      clearTimeout(timer);
+    }
   }
+  throw new Error('all-fapi-hosts-failed');
 }
 
 export const GET = createHandler(async ({ req }) => {
@@ -30,13 +35,26 @@ export const GET = createHandler(async ({ req }) => {
   const want = Math.max(60, Math.min(500, parseInt(searchParams.get('limit') || '350') || 350));
   const barMs = BAR_MS[period];
 
-  const out: any = { symbol, period, source: 'binance', funding: null, oi: null, taker: null, now: null };
+  const out: any = { symbol, period, source: 'binance', funding: null, fundingOkx: null, oi: null, taker: null, now: null };
 
   // 资金费率历史：约 8h 一根，最多要 800 根（约 267 天）
   try {
     const fr = await get(`/fapi/v1/fundingRate?symbol=${symbol}&limit=${Math.min(want * 3, 800)}`);
     if (Array.isArray(fr) && fr.length) {
       out.funding = fr.map((r: any) => ({ time: r.fundingTime, rate: parseFloat(r.fundingRate) }));
+    }
+  } catch {}
+
+  // OKX 资金费率（双源对照）：instId 如 ETH-USDT-SWAP
+  try {
+    const inst = symbol.replace('USDT', '-USDT-SWAP');
+    const r = await fetch(`https://www.okx.com/api/v5/public/funding-rate-history?instId=${inst}&limit=${Math.min(want, 100)}`, {
+      signal: AbortSignal.timeout(4000),
+      headers: { 'user-agent': 'ETH-Trading-Vercel-Proxy/1.0' },
+    });
+    const o = r.ok ? (await r.json()) as any : null;
+    if (o?.code === '0' && Array.isArray(o.data) && o.data.length) {
+      out.fundingOkx = o.data.map((x: any) => ({ time: parseInt(x.fundingTime), rate: parseFloat(x.fundingRate) }));
     }
   } catch {}
 
