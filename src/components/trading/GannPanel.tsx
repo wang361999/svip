@@ -1,5 +1,5 @@
 import { useMemo, type ReactNode } from 'react';
-import { calcGannAll } from '@/shared/lib/indicators';
+import { calcAB9Lines, calcGannAll } from '@/shared/lib/indicators';
 import type { KlineData } from '@/shared/lib/market-data';
 
 interface Props {
@@ -45,12 +45,34 @@ export default function GannPanel({ klines, refreshKey = 0, precision = 2, symbo
   const memo = useMemo(() => {
     void refreshKey;
     const g = calcGannAll(klines);
+    const ab9 = calcAB9Lines(klines);
     const cur = klines.length ? klines[klines.length - 1].close : null;
     const fmt = (v: number | null | undefined) => (v == null ? '--' : v.toFixed(precision));
-    return { g, cur, fmt };
+
+    // 回调位集合：AB9 八分关键档(3/4/5线) + 三分位(1/3、2/3)，按价升序
+    let cl: { label: string; price: number }[] = [];
+    if (ab9) for (const ln of ab9.lines) if (ln.lineNo === 3 || ln.lineNo === 4 || ln.lineNo === 5) cl.push({ label: ln.label, price: ln.price });
+    if (g.thirds) for (const t of g.thirds) cl.push({ label: t.label, price: t.price });
+    cl = cl.sort((a, b) => a.price - b.price);
+
+    const lineOf = (no: number) => (ab9 ? ab9.lines.find((l) => l.lineNo === no)?.price : undefined);
+    const height = ab9 ? ab9.height : 0;
+    const lo = ab9 ? Math.min(ab9.pointA, ab9.pointB) : null;
+    const hi = ab9 ? Math.max(ab9.pointA, ab9.pointB) : null;
+    const ab9Dir = ab9?.direction ?? g.fan?.direction ?? null;
+    let depthPct: number | null = null;
+    if (cur != null && hi != null && lo != null && height > 0) {
+      const d = ab9Dir === 'down' ? (cur - lo) / height : (hi - cur) / height;
+      depthPct = Math.round(Math.max(0, Math.min(1, d)) * 100);
+    }
+    const nearBelow = cur == null ? undefined : [...cl].reverse().find((l) => l.price <= cur + 1e-9);
+    const nearAbove = cur == null ? undefined : cl.find((l) => l.price >= cur - 1e-9);
+
+    return { g, ab9, cur, fmt, cl, lineOf, depthPct, nearBelow, nearAbove };
   }, [klines, refreshKey, precision]);
 
-  const { g, cur, fmt } = memo;
+  const { g, ab9, cur, fmt, lineOf, depthPct, nearBelow, nearAbove } = memo;
+  const depthVerdict: V = depthPct == null ? 'osc' : depthPct <= 33 ? 'bull' : depthPct >= 66 ? 'bear' : 'osc';
   const dir: V = g.fan ? (g.fan.direction === 'up' ? 'bull' : 'bear') : 'osc';
 
   // —— 关键价位收敛：三分位 + 轮中轮支撑/阻力 ——
@@ -109,19 +131,28 @@ export default function GannPanel({ klines, refreshKey = 0, precision = 2, symbo
           note={g.timeCycles ? `自波段两端外推变盘窗口，已标于图上` : '--'} />
       </Section>
 
-      <Section title="关键价位 · 三分位 / 轮中轮">
-        <Card name="三分位 1/3·2/3" verdict="osc"
-          value={g.thirds ? `1/3 ${fmt(g.thirds[0]?.price)} · 2/3 ${fmt(g.thirds[1]?.price)}` : '--'}
-          note="回踩 2/3 留意承压，失守 1/3 转弱" />
+      <Section title="回调位 · AB9 八分结合">
+        <Card name="AB9 回调位 3/4/5线" verdict="osc"
+          value={`3线 ${fmt(lineOf(3))} · 4线 ${fmt(lineOf(4))} · 5线 ${fmt(lineOf(5))}`}
+          note="江恩八分回调档（回落/反弹参考）" />
+        <Card name="当前回调深度" verdict={depthVerdict}
+          value={depthPct != null ? `${depthPct}%` : '--'}
+          note={ab9 ? `自${ab9.direction === 'down' ? '低点反弹' : '高点回撤'}·${depthPct != null ? (depthPct <= 33 ? '回调浅(强)' : depthPct >= 66 ? '回调深(弱)' : '回调中(一般)') : ''}` : '--'} />
+        <Card name="最近下方回调位" verdict="bull"
+          value={nearBelow ? `${fmt(nearBelow.price)} · ${nearBelow.label}` : '--'}
+          note="回踩参考" />
+        <Card name="最近上方回调位" verdict="bear"
+          value={nearAbove ? `${fmt(nearAbove.price)} · ${nearAbove.label}` : '--'}
+          note="反弹/上方参考" />
+      </Section>
+
+      <Section title="关键价位 · 轮中轮">
         <Card name="轮中轮 · 支撑" verdict="bull"
           value={g.squareOfNine && supBelow ? `近档 ${fmt(supBelow.price)} (下${supBelow.deg}°)` : '--'}
           note={g.squareOfNine ? `自波段${g.squareOfNine.seedLabel}√N下行推算` : '--'} />
         <Card name="轮中轮 · 阻力" verdict="bear"
           value={g.squareOfNine && resAbove ? `近档 ${fmt(resAbove.price)} (上${resAbove.deg}°)` : '--'}
           note={g.squareOfNine ? `自波段${g.squareOfNine.seedLabel}√N上行推算` : '--'} />
-        <Card name="现价位置" verdict={dir}
-          value={cur != null ? `上方 ${fmt(above[0]?.price) ?? '--'} · 下方 ${fmt(below[0]?.price) ?? '--'}` : '--'}
-          note={`最近支撑 ${fmt(below[0]?.price) ?? '--'} · 最近阻力 ${fmt(above[0]?.price) ?? '--'}`} />
       </Section>
 
       <div className="px-3 pb-3 text-[11px] text-dark-300 border-t border-dark-700/40 pt-2">
