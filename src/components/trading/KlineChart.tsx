@@ -2731,16 +2731,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         </div>
       </div>
 
-      {/* 信号面板：聚合所有指标/画线工具的多空震荡（真实读数） */}
-      {showSignalsPanel && (
-        <SignalPanel
-          klines={allKlinesRef.current}
-          signal={signalDataRef.current}
-          refreshKey={panelTick}
-          precision={pricePrecision}
-        />
-      )}
-
       {/* 主图 */}
       <div className="relative">
         {loading && !candleSeries.current && (
@@ -2852,6 +2842,16 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           ATR({periods.atrPeriod})
         </span>
       </div>
+
+      {/* 信号面板：聚合所有指标/画线工具的多空震荡（真实读数），位于K线图下方 */}
+      {showSignalsPanel && (
+        <SignalPanel
+          klines={allKlinesRef.current}
+          signal={signalDataRef.current}
+          refreshKey={panelTick}
+          precision={pricePrecision}
+        />
+      )}
     </div>
   );
 }
