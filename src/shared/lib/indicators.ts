@@ -239,23 +239,12 @@ export function calcFourierExtrapolation(
   // 截取最后 fftSize 个数据点
   const data = closes.slice(-fftSize);
 
-  // 线性去趋势（相等于回测验证的 M1 方案）：
-  // 只去均值会让外推按"周期性"把价格越推越离谱；先拟合并剔除线性趋势 y=a+b*t，
-  // 对残差做 FFT 提取周期，再叠加外推的趋势，投影就不再向外发散。
-  let sT = 0, sY = 0, sTY = 0, sT2 = 0;
-  for (let t = 0; t < fftSize; t++) { sT += t; sY += data[t]; sTY += t * data[t]; sT2 += t * t; }
-  const denom = fftSize * sT2 - sT * sT;
-  const slope = denom !== 0 ? (fftSize * sTY - sT * sY) / denom : 0;
-  const intercept = (sY - slope * sT) / fftSize;
-  const trendAt = (t: number): number => intercept + slope * t;
-  const detrended = data.map((v, t) => v - trendAt(t));
-
-  // 残差再去一次均值（消除残余直流），保证 FFT 输入零均值
-  const cycleBias = detrended.reduce((s, v) => s + v, 0) / fftSize;
-  const centered = detrended.map((v) => v - cycleBias);
+  // 去均值（消除直流分量）
+  const mean = data.reduce((s, v) => s + v, 0) / fftSize;
+  const detrended = data.map((v) => v - mean);
 
   // FFT
-  const { re, im } = fftRadix2(centered);
+  const { re, im } = fftRadix2(detrended);
 
   // 计算每个频率的振幅，按强度排序
   const harmonics: { idx: number; amp: number }[] = [];
@@ -271,7 +260,7 @@ export function calcFourierExtrapolation(
 
   // 重构函数：给定 t（0~fftSize-1 为历史，fftSize~ 为未来）
   const reconstruct = (t: number): number => {
-    let val = cycleBias; // 周期分量的直流偏移
+    let val = mean; // 加回均值（直流分量）
     for (let k = 1; k < fftSize / 2; k++) {
       if (!harmonicIdxs.has(k)) continue;
       const angle = (2 * Math.PI * k * t) / fftSize;
@@ -282,7 +271,7 @@ export function calcFourierExtrapolation(
       const k = fftSize / 2;
       val += (re[k] * Math.cos(Math.PI * t)) / fftSize;
     }
-    return trendAt(t) + val; // 叠加回外推的线性趋势
+    return val;
   };
 
   // 时间间隔
@@ -314,8 +303,7 @@ export function calcFourierExtrapolation(
   // 计算 R² 拟合度
   const predicted = data.map((_, t) => reconstruct(t));
   const ssRes = data.reduce((s, v, t) => s + Math.pow(v - predicted[t], 2), 0);
-  const dataMean = data.reduce((s, v) => s + v, 0) / fftSize;
-  const ssTot = data.reduce((s, v) => s + Math.pow(v - dataMean, 2), 0);
+  const ssTot = data.reduce((s, v) => s + Math.pow(v - mean, 2), 0);
   const rSquared = ssTot > 0 ? 1 - ssRes / ssTot : 0;
 
   // 主导周期（以K线根数为单位）
