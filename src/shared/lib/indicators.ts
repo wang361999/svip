@@ -2090,45 +2090,56 @@ export function calcAB9Lines(klines: KlineData[]): AB9Analysis | null {
 }
 
 /**
- * 近端支撑/阻力：就近的 swing 高低点（独立于策略引擎，供主图画绿支撑/红阻力参考线）
+ * 震荡箱体 / 近端支撑阻力：检测价格是否处于箱体区间，并给出支撑区下沿与阻力区上沿。
+ * 独立于策略引擎，供主图画箱体（区间）或近端支撑/阻力参考线。
  */
-export interface SRLines {
-  /** 当前价下方最近的支撑位 */
+export interface RangeBox {
+  /** 箱体下沿（支撑区） */
   support: number;
-  /** 当前价上方最近的阻力位 */
+  /** 箱体上沿（阻力区） */
   resistance: number;
+  /** 是否判定为箱体（价格仍在区间内、宽度适中、有多点触及） */
+  isRange: boolean;
+  /** 箱体宽度百分比（相对中线） */
+  widthPct: number;
+  /** 箱体上下沿被触及的总次数 */
+  touches: number;
+  /** 当前价在箱体内的位置 */
+  position: 'near-support' | 'near-resistance' | 'middle';
 }
-export function calcSRLines(klines: KlineData[], lookback = 20): SRLines | null {
+export function calcRangeBox(klines: KlineData[], lookback = 20): RangeBox | null {
   const n = klines.length;
-  if (n < 6) return null;
-  const last = klines[n - 1].close;
+  if (n < 8) return null;
+  const last = klines[n - 1];
   const win = klines.slice(Math.max(0, n - lookback), n);
-  let support: number | null = null;
-  let resistance: number | null = null;
+  const swHigh: number[] = [], swLow: number[] = [];
   for (let i = 1; i < win.length - 1; i++) {
     const a = win[i - 1], c = win[i], b = win[i + 1];
-    // 局部 swing high（3 根判别：中间最高）→ 当前价上方最近的阻力
-    if (c.high >= a.high && c.high >= b.high) {
-      if (c.high > last && (resistance === null || c.high < resistance)) resistance = c.high;
-    }
-    // 局部 swing low（3 根判别：中间最低）→ 当前价下方最近的支撑
-    if (c.low <= a.low && c.low <= b.low) {
-      if (c.low < last && (support === null || c.low > support)) support = c.low;
-    }
+    if (c.high >= a.high && c.high >= b.high) swHigh.push(c.high);
+    if (c.low <= a.low && c.low <= b.low) swLow.push(c.low);
   }
-  // 兜底：窗口内无单侧分型时取窗口极值
-  if (resistance === null) {
-    let mh = -Infinity;
-    for (const k of win) mh = Math.max(mh, k.high);
-    if (mh > -Infinity) resistance = mh;
+  if (swHigh.length < 2 || swLow.length < 2) return null;
+  swHigh.sort((x, y) => x - y);
+  swLow.sort((x, y) => x - y);
+  // 箱体上下沿：取高低点群的稳健代表（排除单一极端 spike）
+  const hiHi = swHigh[Math.min(swHigh.length - 1, Math.floor(swHigh.length * 0.85))];
+  const loLo = swLow[Math.min(swLow.length - 1, Math.floor(swLow.length * 0.15))];
+  const resistance = hiHi > last.close ? hiHi : (swHigh[swHigh.length - 1] || hiHi);
+  const support = loLo < last.close ? loLo : (swLow[0] || loLo);
+  if (support >= resistance) return null;
+  const mid = (support + resistance) / 2;
+  const widthPct = (resistance - support) / Math.max(1e-9, mid) * 100;
+  const inside = last.close >= support && last.close <= resistance;
+  // 触及次数：价格接近上/下沿的K线数（±1.2% 判为一次触及）
+  let touches = 0;
+  for (const k of win) {
+    if (Math.abs(k.high - resistance) / resistance <= 0.012) touches++;
+    if (Math.abs(k.low - support) / support <= 0.012) touches++;
   }
-  if (support === null) {
-    let ml = Infinity;
-    for (const k of win) ml = Math.min(ml, k.low);
-    if (ml < Infinity) support = ml;
-  }
-  if (support === null || resistance === null || support >= resistance) return null;
-  return { support, resistance };
+  const isRange = inside && widthPct >= 0.8 && widthPct <= 12 && touches >= 2;
+  const pos = (resistance - support) > 0 ? (last.close - support) / (resistance - support) : 0.5;
+  const position = pos < 0.35 ? 'near-support' : pos > 0.65 ? 'near-resistance' : 'middle';
+  return { support, resistance, isRange, widthPct, touches, position };
 }
 
 // ========== 多周期趋势（结构法）==========

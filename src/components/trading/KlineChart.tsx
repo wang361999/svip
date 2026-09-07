@@ -20,7 +20,7 @@ import {
   calcPredictionSynth,
   calcCompositeLine,
   calcPullbackBands,
-  calcSRLines,
+  calcRangeBox,
   type ChanResult,
   type TrendChannel,
   type Pitchfork,
@@ -755,30 +755,31 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     }
     pullbackPriceLinesRef.current = [];
 
-    // —— 近端支撑/阻力（就近 swing 高低点；恢复快信号版本的原画法，独立于策略引擎） ——
+    // —— 支撑/阻力（箱体区间或近端；恢复快信号版本的原画法，独立于策略引擎） ——
     for (const pl of srLinesRef.current) {
       try { series.removePriceLine(pl); } catch {}
     }
     srLinesRef.current = [];
-    if (isMember && klines.length >= 6) {
-      const sr = calcSRLines(klines);
+    if (isMember && klines.length >= 8) {
+      const sr = calcRangeBox(klines);
       if (sr) {
+        const solid = sr.isRange; // 箱体:实(0.8) | 近端:淡(0.5)
         try {
           srLinesRef.current.push(series.createPriceLine({
             price: sr.support,
-            color: 'rgba(34, 197, 94, 0.5)',
+            color: solid ? 'rgba(34, 197, 94, 0.8)' : 'rgba(34, 197, 94, 0.5)',
             lineWidth: 1,
             lineStyle: 2,
             axisLabelVisible: true,
-            title: ' 支撑',
+            title: solid ? ' 支撑' : ' 近端支撑',
           }));
           srLinesRef.current.push(series.createPriceLine({
             price: sr.resistance,
-            color: 'rgba(246, 70, 93, 0.5)',
+            color: solid ? 'rgba(246, 70, 93, 0.8)' : 'rgba(246, 70, 93, 0.5)',
             lineWidth: 1,
             lineStyle: 2,
             axisLabelVisible: true,
-            title: ' 阻力',
+            title: solid ? ' 阻力' : ' 近端阻力',
           }));
         } catch {}
       }
