@@ -14,6 +14,7 @@ import {
   calcCompositeLine,
   calcPullbackBands,
   calcAB9Lines,
+  calcDirectionSignal,
   calcFibonacci,
   calcChan,
   calcEMAArray,
@@ -160,6 +161,18 @@ export default function SignalPanel({ klines, signal, refreshKey, precision, sym
           pct: st.score,
         });
       }
+    }
+
+    // ---- 当前方向（结构顺趋势为主；仅建议，不含带单承诺） ----
+    const dirSig = calcDirectionSignal(klines);
+    if (dirSig) {
+      const dv: Verdict = dirSig.decision === 'long' ? 'bull' : dirSig.decision === 'short' ? 'bear' : 'osc';
+      items.push({
+        key: 'dirSignal', name: '当前方向', verdict: dv,
+        value: dirSig.label,
+        note: `趋势${dirSig.trendLabel} · ${dirSig.basis}`,
+        pct: dirSig.confidence,
+      });
     }
 
     // ---- 趋势通道 ----

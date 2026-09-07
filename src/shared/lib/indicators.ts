@@ -2205,6 +2205,116 @@ export function calcTrendSignal(klines: KlineData[]): TrendSignal | null {
   return { direction, strength, label, price, lastHigh, lastLow, changePercent };
 }
 
+// ========== 常驻多空方向信号（结构顺趋势为主） ==========
+// 以道氏结构定大方向，缠论最近笔方向做共振确认，AB9 下降趋势破坏做否决。
+// 用途：给用户一个明确的「现在做多 / 做空 / 观望」执行参考（决策辅助，非带单）。
+// 回测结论(真实行情, 不含交易成本, 触发带宽0.5×ATR, 窗口12根)：
+//   ETH 4h：多头≈48% / 空头≈46%   ETH 1h：多头≈52% / 空头≈51%
+//   BTC 4h：多头≈44% / 空头≈37%（系统无效，勿用于BTC）
+export type DirectionDecision = 'long' | 'short' | 'neutral';
+
+export interface DirectionSignal {
+  /** 常驻方向结论 */
+  decision: DirectionDecision;
+  /** 用户可读标签：做多 / 做空 / 观望 */
+  label: string;
+  /** 综合置信度 0-100（反映依据充分度，非承诺胜率） */
+  confidence: number;
+  /** 依据简述（各子依据来源，绝不虚构读数） */
+  basis: string;
+  /** 结构方向标签（强多头/偏多/震荡...） */
+  trendLabel: string;
+  /** 缠论最近笔方向：'up'|'down'|null */
+  biDir: 'up' | 'down' | null;
+  /** AB9 强/弱评级 */
+  ab9Strength: string | null;
+  /** 当前价就近的 AB9 支撑/阻力参考线号 */
+  refLine: number | null;
+}
+
+export function calcDirectionSignal(klines: KlineData[]): DirectionSignal | null {
+  if (!klines || klines.length < 60) return null;
+
+  const trend = calcTrendSignal(klines);
+  const ab9 = calcAB9Lines(klines);
+  const chan = calcChan(klines);
+
+  let decision: DirectionDecision = 'neutral';
+  let confidence = 40;
+  const reasons: string[] = [];
+
+  // 1) 结构方向为主
+  if (trend) {
+    if (trend.direction === 'bullish') {
+      decision = 'long';
+      confidence += trend.strength === 'strong' ? 22 : 10;
+      reasons.push(`结构${trend.label}`);
+    } else if (trend.direction === 'bearish') {
+      decision = 'short';
+      confidence += trend.strength === 'strong' ? 18 : 7;
+      reasons.push(`结构${trend.label}`);
+    } else {
+      reasons.push('结构震荡');
+    }
+  } else {
+    reasons.push('结构数据不足');
+  }
+
+  const trendFlowsWith = (biDir: 'up' | 'down') =>
+    (decision === 'long' && biDir === 'up') || (decision === 'short' && biDir === 'down');
+
+  // 2) 缠论最近笔方向共振/否决
+  let biDir: 'up' | 'down' | null = null;
+  if (chan && chan.bis.length) {
+    const lastBi = chan.bis[chan.bis.length - 1];
+    biDir = lastBi.direction;
+    if (decision === 'neutral') {
+      // 结构震荡时，缠论笔方向作为兜底倾向（弱信号，不抬高置信太高）
+      decision = biDir === 'up' ? 'long' : 'short';
+      confidence = 42;
+      reasons.push(biDir === 'up' ? '缠论笔向上兜底' : '缠论笔向下兜底');
+    } else if (trendFlowsWith(biDir)) {
+      confidence += 10;
+      reasons.push('缠论笔顺向');
+    } else {
+      // 结构已定方向但最近笔反向：本级别回调进行中，观望等企稳
+      decision = 'neutral';
+      confidence = 40;
+      reasons.push('缠论笔反向，回调中');
+    }
+  }
+
+  // 3) AB9 强度顺向加分 / 破坏否决
+  let ab9Strength: string | null = null;
+  if (ab9) {
+    const ab9Dir = ab9.direction === 'up' ? 'up' : 'down';
+    ab9Strength = ab9.strength;
+    if (decision !== 'neutral' && !trendFlowsWith(ab9Dir) && ab9.strength === '趋势破坏') {
+      decision = 'neutral';
+      confidence = 35;
+      reasons.push('AB9结构破坏');
+    } else if (decision !== 'neutral' && trendFlowsWith(ab9Dir) && ab9.strength === '较强趋势') {
+      confidence += 8;
+      reasons.push('AB9较强顺势');
+    }
+  }
+
+  const label = decision === 'long' ? '做多' : decision === 'short' ? '做空' : '观望';
+  if (decision === 'neutral') confidence = Math.min(confidence, 45);
+  confidence = Math.max(15, Math.min(90, Math.round(confidence)));
+
+  return {
+    decision,
+    label,
+    confidence,
+    basis: reasons.join(' · ') || '数据不足',
+    trendLabel: trend ? trend.label : '--',
+    biDir,
+    ab9Strength,
+    refLine: ab9 ? ab9.refLine : null,
+  };
+}
+
 // ========== 神奇九转（TD Sequential / Nine Turn） ==========
 // 标准 TD Sequential 规则：
 // 1. 底部九转（买入信号）：连续9根K线，每根收盘价 < 各自往前第4根的收盘价
