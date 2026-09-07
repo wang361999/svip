@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { calcCarryView, CarryView } from '@/shared/lib/carry-signal';
 import { FundingPoint } from '@/shared/lib/futures-signal';
 
-const SYMBOLS = ['ETHUSDT', 'BTCUSDT'];
+const SYMBOLS = ['ETHUSDT'];
 const SIGNAL_COLOR: Record<string, string> = {
   '加仓': 'text-emerald-300 border-emerald-500/40 bg-emerald-500/15',
   '持仓': 'text-sky-300 border-sky-500/40 bg-sky-500/15',
@@ -50,7 +50,7 @@ export default function CarryMonitor({ refreshKey }: { refreshKey: number }) {
   return (
     <div className="border-b border-dark-700/50 bg-dark-900/60">
       <div className="flex items-center justify-between px-3 pt-2">
-        <span className="text-xs font-semibold text-slate-200">资金费套利监控（Carry · Delta中性 · 仅信号）</span>
+        <span className="text-xs font-semibold text-slate-200">ETH 资金费套利监控（Carry · Delta中性 · 仅信号）</span>
         {loading ? <span className="text-[10px] text-dark-500">读取中…</span> : <span className="text-[10px] text-dark-500">实时</span>}
       </div>
 
