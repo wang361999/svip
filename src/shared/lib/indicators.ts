@@ -2842,14 +2842,15 @@ export function calcPullbackBands(
     else clusters.push({ price: p.price, count: 1 });
   }
   const byDist = (a: { price: number }, b: { price: number }) => Math.abs(a.price - lastClose) - Math.abs(b.price - lastClose);
-  const supportCands = clusters
-    .filter(c => c.price < lastClose - minSep && (lastClose - c.price) <= band)
-    .sort(byDist);
-  const resistCands = clusters
-    .filter(c => c.price > lastClose + minSep && (c.price - lastClose) <= band)
-    .sort(byDist);
-  const sup = supportCands[0];
-  const res = resistCands[0];
+  const supportCands = clusters.filter(c => c.price < lastClose - minSep && (lastClose - c.price) <= band);
+  const resistCands = clusters.filter(c => c.price > lastClose + minSep && (c.price - lastClose) <= band);
+  // 越精准越好：先看"被多次触及"的更强水平位，其次用最近的摆动位兜底
+  const multiSup = supportCands.filter(c => c.count >= 2).sort(byDist);
+  const multiRes = resistCands.filter(c => c.count >= 2).sort(byDist);
+  const anySup = supportCands.sort(byDist);
+  const anyRes = resistCands.sort(byDist);
+  const sup = multiSup[0] || anySup[0];
+  const res = multiRes[0] || anyRes[0];
   let retestLevel: number | null = null;
   let retestTouches = 0;
   let retestType: 'support' | 'resistance' | null = null;
