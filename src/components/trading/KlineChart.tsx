@@ -51,6 +51,7 @@ import { apiGet, apiPut } from '@/shared/api/client';
 import SymbolSelector from './SymbolSelector';
 import SignalPanel from './SignalPanel';
 import GannPanel from './GannPanel';
+import IndicatorPanel from './IndicatorPanel';
 
 // AB9线固定彩色（9种不同颜色）
 const AB9_COLORS: Record<number, string> = {
@@ -329,6 +330,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // 信号面板：聚合所有指标/画线工具的多空震荡判定
   const [showSignalsPanel, setShowSignalsPanel] = useState(false);
   const [showGannPanel, setShowGannPanel] = useState(false);
+  const [showIndicatorPanel, setShowIndicatorPanel] = useState(false);
   const [panelTick, setPanelTick] = useState(0);
   const toolbarRef = useRef<HTMLDivElement>(null);
   // 面板独立节流刷新：直接读 ref 最新数据，不影响主图重绘频率
@@ -2321,6 +2323,17 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             江恩
           </button>
 
+          {/* 指标面板按钮 */}
+          <button
+            onClick={() => setShowIndicatorPanel((v) => !v)}
+            className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-all ${
+              showIndicatorPanel ? 'bg-cyan-600 text-white' : 'text-dark-400 hover:text-white hover:bg-dark-700/50'
+            }`}
+            title="指标面板"
+          >
+            指标
+          </button>
+
           {/* 全屏按钮 */}
           <button
             onClick={onToggleFullscreen}
@@ -2463,6 +2476,14 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       )}
       {showGannPanel && (
         <GannPanel
+          klines={allKlinesRef.current}
+          refreshKey={panelTick}
+          precision={pricePrecision}
+          symbol={symbol}
+        />
+      )}
+      {showIndicatorPanel && (
+        <IndicatorPanel
           klines={allKlinesRef.current}
           refreshKey={panelTick}
           precision={pricePrecision}
