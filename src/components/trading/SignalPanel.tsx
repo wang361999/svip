@@ -6,12 +6,10 @@ import { KlineData } from '@/shared/lib/market-data';
 import { calcFundingCrowding, FundingPoint } from '@/shared/lib/futures-signal';
 import {
   calcTrendChannel,
-  calcPitchfork,
   calcFourierExtrapolation,
   calcValueArea,
   calcIchimoku,
   calcPredictionSynth,
-  calcCompositeLine,
   calcPullbackBands,
   calcAB9Lines,
   calcDirectionSignal,
@@ -148,29 +146,6 @@ export default function SignalPanel({ klines, refreshKey, precision, symbol = 'E
         verdict: tc.direction === 'up' ? 'bull' : tc.direction === 'down' ? 'bear' : 'osc',
         value: tc.direction === 'up' ? '上行通道' : tc.direction === 'down' ? '下行通道' : '走平',
         note: `斜率 ${tc.slope.toFixed(6)} · 宽 ${tc.widthPct}%`,
-      });
-    }
-
-    // ---- 安德鲁音叉 ----
-    const pf = calcPitchfork(klines, 80);
-    if (pf) {
-      items.push({
-        key: 'pitchfork', name: '安德鲁音叉',
-        verdict: pf.direction === 'up' ? 'bull' : 'bear',
-        value: pf.direction === 'up' ? '向上倾斜' : '向下倾斜',
-        note: `三基准点（A/B/C）已锚定`,
-      });
-    }
-
-    // ---- 综合合流锚线 ----
-    const comp = calcCompositeLine(klines);
-    if (comp) {
-      items.push({
-        key: 'composite', name: '综合合流锚线',
-        verdict: comp.direction === 'up' ? 'bull' : comp.direction === 'down' ? 'bear' : 'osc',
-        value: `合流偏置 ${comp.lastBias > 0 ? '+' : ''}${comp.lastBias}`,
-        note: `锚线 ${priceFmt(comp.anchorValue)}`,
-        pct: (comp.lastBias + 1) / 2 * 100,
       });
     }
 
