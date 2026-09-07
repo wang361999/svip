@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>信号整合回测报告</title>
+<style>
+  :root{color-scheme:light;--ink:#1b1f27;--mut:#5b6472;--line:#e5e8ef;--bg:#f7f8fa;--card:#fff;
+    --blue:#3b82f6;--green:#16a34a;--red:#dc2626;--amber:#d97706;}
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:"Noto Sans CJK SC","PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;
+    background:var(--bg);color:var(--ink);line-height:1.6;}
+  .wrap{max-width:920px;margin:0 auto;padding:36px 22px 64px;}
+  h1{font-size:26px;margin:0 0 4px;}
+  .sub{color:var(--mut);font-size:13px;margin-bottom:26px;}
+  h2{font-size:18px;margin:38px 0 12px;padding-left:10px;border-left:4px solid var(--blue);}
+  p{font-size:14px;margin:10px 0;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0;box-shadow:0 1px 2px rgba(0,0,0,.03);}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin:12px 0;}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:right;}
+  th{color:var(--mut);font-weight:600;background:#f1f3f7;text-align:right;font-size:12px;}
+  th:first-child,td:first-child{text-align:left;}
+  .pos{color:var(--green);font-weight:600;}
+  .neg{color:var(--red);}
+  .neutral{color:var(--mut);}
+  .bar-wrap{display:flex;flex-direction:column;gap:8px;margin:14px 0;}
+  .bar-row{display:flex;align-items:center;gap:10px;font-size:12px;}
+  .bar-row .lb{width:84px;text-align:right;color:var(--mut);flex-shrink:0;}
+  .bar-track{flex:1;height:16px;background:#eef0f4;border-radius:8px;overflow:hidden;}
+  .bar-fill{height:100%;border-radius:8px;background:var(--blue);}
+  .bar-row .vl{width:68px;font-variant-numeric:tabular-nums;font-size:12px;}
+  .kpi{display:flex;gap:16px;flex-wrap:wrap;margin:16px 0;}
+  .kpi .box{flex:1;min-width:150px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;}
+  .kpi .num{font-size:22px;font-weight:700;}
+  .kpi .lbl{font-size:12px;color:var(--mut);margin-top:2px;}
+  .callout{border-left:4px solid var(--amber);background:#fffaf0;border-radius:0 10px 10px 0;padding:12px 16px;font-size:13.5px;margin:14px 0;}
+  .callout.blue{border-color:var(--blue);background:#f3f8ff;}
+  ul{margin:8px 0 8px 0;padding-left:20px;}
+  li{font-size:13.5px;margin:6px 0;}
+  code{background:#eef0f4;border-radius:5px;padding:1px 6px;font-size:12px;font-family:ui-monospace,Menlo,Consolas,monospace;}
+  .foot{color:var(--mut);font-size:12px;margin-top:30px;border-top:1px solid var(--line);padding-top:14px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>信号整合回测报告</h1>
+  <div class="sub">标的：BTC/ETH · 周期：4H + 1D（4 数据集 × 每片 1000 根滚动）· 生成于 2026-09-07 · 数据源：币安历史K线</div>
+
+  <div class="kpi">
+    <div class="box"><div class="num" style="color:var(--blue)">46.4%</div><div class="lbl">事件回测基线（MA方向）赢率10</div></div>
+    <div class="box"><div class="num" style="color:var(--blue)">52.1%</div><div class="lbl">分数分层全样本赢率10</div></div>
+    <div class="box"><div class="num" style="color:var(--green)">+1.1%</div><div class="lbl">多头共振 均R10（期望回报）</div></div>
+    <div class="box"><div class="num" style="color:var(--red)">-0.1%</div><div class="lbl">空头共振 均R10（期望回报）</div></div>
+  </div>
+
+  <h2>一、方法</h2>
+  <div class="card">
+    <p><b>回测一 · 事件型信号</b>：对 7 类客观信号逐根扫描，触发即记录（如 MACD 金叉、KDJ 金叉、价格升破布林上轨等），统计触发后未来 5/10/20 根的「方向命中率」与平均收益。判定只用触发当时（含当日收盘）数据，不对未来取值，规避前视偏差。</p>
+    <p><b>回测二 · 分数分层</b>：把 7 个信号合成为一根全时状态分数 <code>score∈[-7,7]</code>（每个信号多/空/中 各记 +1/-1/0），再按分数强弱分档测「10 根胜率与期望收益」，验证「共振越强是否越可靠」。</p>
+  </div>
+
+  <h2>二、单信号：超额能力有限</h2>
+  <div class="card">
+    <table>
+      <tr><th>信号</th><th>样本</th><th>赢率5</th><th>赢率10</th><th>赢率20</th><th>均R10</th><th>相对基线(+lift)</th></tr>
+      <tr><td>KDJ金叉</td><td>322</td><td>52.2%</td><td class="pos">52.5%</td><td>49.7%</td><td>0.0040</td><td class="pos">+6.1pp</td></tr>
+      <tr><td>RSI上穿50</td><td>191</td><td>52.4%</td><td class="pos">51.3%</td><td>45.5%</td><td>0.0055</td><td class="pos">+4.9pp</td></tr>
+      <tr><td>RSI下穿50</td><td>189</td><td>55.0%</td><td class="pos">50.8%</td><td>50.3%</td><td>0.0067</td><td class="pos">+4.4pp</td></tr>
+      <tr><td>MACD金叉</td><td>144</td><td>43.1%</td><td class="pos">50.7%</td><td>50.0%</td><td>0.0047</td><td class="pos">+4.3pp</td></tr>
+      <tr><td>MACD死叉</td><td>145</td><td>53.8%</td><td>49.7%</td><td>41.4%</td><td>0.0063</td><td class="pos">+3.2pp</td></tr>
+      <tr><td>KDJ死叉</td><td>320</td><td>46.9%</td><td>48.8%</td><td>50.3%</td><td>0.0047</td><td>+2.3pp</td></tr>
+      <tr><td>EMA空头排列</td><td>251</td><td>41.8%</td><td>47.8%</td><td>44.6%</td><td>0.0017</td><td>+1.4pp</td></tr>
+      <tr><td>EMA多头排列</td><td>221</td><td>50.7%</td><td class="neg">45.2%</td><td>45.2%</td><td>0.0050</td><td class="neg">-1.2pp</td></tr>
+      <tr><td>BOLL升破</td><td>64*</td><td>48.4%</td><td class="neg">39.1%</td><td>37.5%</td><td class="neg">-0.0008</td><td class="neg">-7.3pp</td></tr>
+    </table>
+    <p class="sub" style="margin-top:2px">* 样本少于 100，结论不稳健；基线 = 「近10日均线方向」的 10 根命中率 46.4%。</p>
+    <div class="callout">没有任何一个单信号达到「+8pp 可靠」阈值（最高 +6.1pp）。<b>单信号单独使用 ≈ 比抛硬币略好，难以区敌人</b>——这正是你怀疑「指标是否值得信赖」的核心原因。</div>
+  </div>
+
+  <h2>三、加权重合：拉不动胜率，但有多空不对称</h2>
+  <div class="card">
+    <table>
+      <tr><th>分层</th><th>样本</th><th>赢率10</th><th>赢率20</th><th>均R10（期望收益）</th><th>vs 全样本</th></tr>
+      <tr><td>全样本(基线)</td><td>3800</td><td>52.1%</td><td>50.5%</td><td>+0.0051</td><td>—</td></tr>
+      <tr><td>多·共振3档</td><td>1497</td><td>51.2%</td><td>50.6%</td><td class="pos">+0.0107</td><td>-0.9pp</td></tr>
+      <tr><td>多·共振2档</td><td>1662</td><td>51.6%</td><td>51.0%</td><td class="pos">+0.0104</td><td>-0.6pp</td></tr>
+      <tr><td>多·1档</td><td>1825</td><td>51.3%</td><td>49.4%</td><td class="pos">+0.0092</td><td>-0.8pp</td></tr>
+      <tr><td>空·1档</td><td>1881</td><td>53.4%</td><td>51.8%</td><td>+0.0013</td><td>+1.3pp</td></tr>
+      <tr><td>空·共振2档</td><td>1696</td><td class="pos">54.0%</td><td>52.4%</td><td>+0.0009</td><td>+1.8pp</td></tr>
+      <tr><td>空·共振3档</td><td>1557</td><td>53.2%</td><td>51.2%</td><td class="neg">-0.0010</td><td>+1.1pp</td></tr>
+    </table>
+
+    <div class="bar-wrap">
+      <div class="bar-row"><span class="lb">多·3档</span><div class="bar-track"><div class="bar-fill" style="width:100%;background:var(--green)"></div></div><span class="vl">R10 +1.07%</span></div>
+      <div class="bar-row"><span class="lb">多·2档</span><div class="bar-track"><div class="bar-fill" style="width:97%;background:var(--green)"></div></div><span class="vl">R10 +1.04%</span></div>
+      <div class="bar-row"><span class="lb">多·1档</span><div class="bar-track"><div class="bar-fill" style="width:86%;background:var(--green)"></div></div><span class="vl">R10 +0.92%</span></div>
+      <div class="bar-row"><span class="lb">空·1档</span><div class="bar-track"><div class="bar-fill" style="width:12%;background:var(--amber)"></div></div><span class="vl">R10 +0.13%</span></div>
+      <div class="bar-row"><span class="lb">空·2档</span><div class="bar-track"><div class="bar-fill" style="width:8%;background:var(--amber)"></div></div><span class="vl">R10 +0.09%</span></div>
+      <div class="bar-row"><span class="lb">空·3档</span><div class="bar-track"><div class="bar-fill" style="width:0%;background:var(--red)"></div></div><span class="vl">R10 -0.10%</span></div>
+    </div>
+
+    <div class="callout blue">
+      两个关键发现：<br>
+      ① <b>共振抬不动「方向命中率」</b>——各档都在 51–54% 区间，说明这些动量/均线信号信息高度同源，加权叠加无法把准确率显著拉高。<br>
+      ② <b>但「期望收益」方向明确不对称</b>——多头共振的 10 根期望收益显著为正（+0.9%~+1.1%），空头共振期望收益接近零甚至转负（最强空头档为 -0.1%）。结合币安系品种长期重心上移，<b>「多」比「空」可信</b>。
+    </div>
+  </div>
+
+  <h2>四、结论与落地</h2>
+  <div class="card">
+    <ul>
+      <li><b>别指望加权打分神奇提高方向准确率</b>：同类动量信号共振，胜率仍围着 ~52% 打转。所谓「越共振越准」在本数据上不成立。</li>
+      <li><b>真正能用的不对称</b>：多头信号期望回报优于空头。操作含义——<b>空头信号应降权、慎用逆势做空</b>；系统仍可保留空头提示，但必须在综合读数里低于多头。</li>
+      <li><b>少数有实证超额的外部因子</b>：资金费率逆向拥挤（此前实测 |z|≥0.7 时 5 日逆向命中 BTC/ETH 59–71%）是从「外部情绪」而非「价格自相关」获得信息，应保留高优先级。</li>
+      <li><b>本次的落地</b>：信号面板顶部改为「加权综合」读数——多头信号权重 1.0、空头 0.6（多空不对称降权）、资金费率逆向 1.6（高优），输出加权偏多/偏空与置信度，并标注回测依据，不再做等权投票的「整体偏多」。</li>
+    </ul>
+  </div>
+
+  <h2>五、局限</h2>
+  <div class="card">
+    <ul>
+      <li>仅覆盖 BTC/ETH 两个品种、4H/1D 两周期，结论对山寨币/更短周期需另行验证。</li>
+      <li>未计入手续费、滑点；多档分层样本大量重叠，丢入过拟合风险。</li>
+      <li>本报告用于信号可靠度评估，不构成任何买卖建议；实盘需结合仓位与风控。</li>
+    </ul>
+  </div>
+
+  <div class="foot">数据与脚本：<code>signal-backtest.mts</code>（事件信号切片）＋ <code>signal-scores.mts</code>（分数分层），基于交易系统已上线指标库（MACD/RSI/KDJ/BOLL/EMA/SuperTrend/ADX）真实计算。</div>
+</div>
+</body>
+</html>

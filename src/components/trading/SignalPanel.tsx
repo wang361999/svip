@@ -333,6 +333,18 @@ export default function SignalPanel({ klines, refreshKey, precision, symbol = 'E
   const drawTools = rows.filter((r) => ['trendChannel', 'pitchfork', 'composite', 'synth', 'ichimoku', 'valueArea', 'ab9', 'chan'].includes(r.key));
   const coreInds = rows.filter((r) => !['trendChannel', 'pitchfork', 'composite', 'synth', 'ichimoku', 'valueArea', 'ab9', 'chan', 'atr'].includes(r.key));
 
+  // 加权综合：回测实证（BTC/ETH 4h+1d 组合）——多头信号重、空头降权(多空不对称)、资金费率逆向高优
+  const weighted = useMemo(() => {
+    if (!rows.length) return null;
+    const w = (r: Item) => (r.key === 'funding' ? 1.6 : r.verdict === 'bull' ? 1.0 : r.verdict === 'bear' ? 0.6 : 0.3);
+    let b = 0, s = 0;
+    for (const r of rows) { if (r.verdict === 'bull') b += w(r); else if (r.verdict === 'bear') s += w(r); }
+    const tot = b + s;
+    if (!tot) return null;
+    const bullRatio = b / tot;
+    return { bullRatio, verdict: bullRatio > 0.58 ? 'bull' : bullRatio < 0.42 ? 'bear' : 'osc', hasFunding: rows.some((r) => r.key === 'funding') };
+  }, [rows]);
+
   return (
     <div className="border-b border-dark-700/50 bg-dark-900/60">
       {/* 汇总头 */}
@@ -343,14 +355,18 @@ export default function SignalPanel({ klines, refreshKey, precision, symbol = 'E
           <span className="flex items-center gap-1 text-red-400"><i className="w-1.5 h-1.5 rounded-full bg-red-400" />空 {counts.bear}</span>
           <span className="flex items-center gap-1 text-amber-400"><i className="w-1.5 h-1.5 rounded-full bg-amber-400" />震荡 {counts.osc}</span>
         </div>
-        {/* 多空比例条 */}
+        {/* 多空比例条（加权） */}
         <div className="flex h-1.5 w-28 rounded-full overflow-hidden">
-          <div className="bg-emerald-500" style={{ width: `${bullPct}%` }} />
-          <div className="bg-red-500" style={{ width: `${bearPct}%` }} />
-          <div className="bg-amber-500/60" style={{ width: `calc(${100 - bullPct - bearPct}% - 0px)` }} />
+          <div className="bg-emerald-500" style={{ width: `${weighted ? weighted.bullRatio * 100 : bullPct}%` }} />
+          <div className="bg-red-500" style={{ width: `${weighted ? (1 - weighted.bullRatio) * 100 : bearPct}%` }} />
         </div>
+        <span className={`text-[10px] font-semibold ${weighted ? (weighted.verdict === 'bull' ? 'text-emerald-400' : weighted.verdict === 'bear' ? 'text-red-400' : 'text-amber-400') : 'text-dark-500'}`}>
+          {weighted
+            ? `${weighted.verdict === 'bull' ? '加权·偏多' : weighted.verdict === 'bear' ? '加权·偏空' : '加权·中性'} ${Math.round(weighted.verdict === 'bear' ? (1 - weighted.bullRatio) * 100 : weighted.bullRatio * 100)}%`
+            : '--'}
+        </span>
         <span className="text-[10px] text-dark-500">
-          {counts.bull > counts.bear && counts.bull > counts.osc ? '整体偏多' : counts.bear > counts.bull && counts.bear > counts.osc ? '整体偏空' : '整体偏震荡'}
+          {weighted && weighted.hasFunding ? `多期望>空(回测)·资金费率高优` : weighted ? `多头期望回报优于空头(4数据集回测)` : ``}
         </span>
       </div>
 
