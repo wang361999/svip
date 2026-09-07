@@ -2769,9 +2769,33 @@ export function calcPullbackBands(
 
   if (pivots.length < 2) return null;
   const lastPivot = pivots[pivots.length - 1];
-  const direction: 'up' | 'down' = lastPivot.type === 'top' ? 'up' : 'down';
+  const lastClose = klines[n - 1].close;
+  const currentATR = atr[n - 1] || atr[n - 2] || 0;
+  if (currentATR <= 0) return null;
 
-  // ---- 2) 收集回调动程样本（与语境方向一致） ----
+  // 当前活跃腿：最后摆动点为"底"→ 价格自底上行（上升腿）；为"顶"→ 自顶下行（下降腿）
+  const direction: 'up' | 'down' = lastPivot.type === 'bottom' ? 'up' : 'down';
+  const legStart = lastPivot.index;
+
+  // 腿内的高低极值：回调/反弹线必须落在腿内，而不是越出行情之外
+  let legLow: number, legHigh: number, anchorPrice: number;
+  if (direction === 'up') {
+    legLow = lastPivot.price;
+    let hi = legLow;
+    for (let i = legStart; i < n; i++) if (klines[i].high > hi) hi = klines[i].high;
+    legHigh = hi;
+    anchorPrice = legHigh;
+  } else {
+    legHigh = lastPivot.price;
+    let lo = legHigh;
+    for (let i = legStart; i < n; i++) if (klines[i].low < lo) lo = klines[i].low;
+    legLow = lo;
+    anchorPrice = legLow;
+  }
+  const range = legHigh - legLow;
+  if (range <= 0) return null;
+
+  // ---- 2) 收集同方向历史调/反弹动程样本 ----
   const samples: number[] = [];
   for (let p = 0; p + 1 < pivots.length; p++) {
     const a = pivots[p];
@@ -2779,13 +2803,13 @@ export function calcPullbackBands(
     const av = atr[a.index] || 0;
     if (av <= 0) continue;
     if (direction === 'up' && a.type === 'top' && b.type === 'bottom') {
-      samples.push((a.price - b.price) / av);
+      samples.push((a.price - b.price) / av);   // 上升语境：从高点的回调跌程
     } else if (direction === 'down' && a.type === 'bottom' && b.type === 'top') {
-      samples.push((b.price - a.price) / av);
+      samples.push((b.price - a.price) / av);   // 下降语境：从低点的反弹升程
     }
   }
 
-  // ---- 3) 深度分位数（样本不足时回退到合理默认值，仍能出图） ----
+  // ---- 3) 深度分位数，并夹回到当前腿的 ATR 预算内 ----
   let typical: number;
   let deep: number;
   if (samples.length >= 3) {
@@ -2796,32 +2820,49 @@ export function calcPullbackBands(
     typical = 0.8;
     deep = 1.6;
   }
-  // 保证深线至少比典型线更深
-  deep = Math.max(deep, typical + 0.3);
+  const maxATR = range / currentATR;
+  typical = Math.min(Math.max(typical, maxATR * 0.2), maxATR * 0.7);
+  deep = Math.min(Math.max(deep, Math.min(typical + maxATR * 0.15, maxATR * 0.85)), maxATR * 0.9);
 
-  const currentATR = atr[n - 1] || atr[n - 2] || typical * (klines[n - 1].high - klines[n - 1].low) || 0;
-  const anchorPrice = lastPivot.price;
-  const typicalLevel = direction === 'up' ? anchorPrice - typical * currentATR : anchorPrice + typical * currentATR;
-  const deepLevel = direction === 'up' ? anchorPrice - deep * currentATR : anchorPrice + deep * currentATR;
+  const typicalLevel = direction === 'up'
+    ? legHigh - typical * currentATR
+    : legLow + typical * currentATR;
+  const deepLevel = direction === 'up'
+    ? legHigh - deep * currentATR
+    : legLow + deep * currentATR;
 
-  // ---- 4) 回踩线：被多次触及的关键水平位 ----
-  const lastClose = klines[n - 1].close;
+  // ---- 4) 回踩位：贴近现价但非重合、且被多次触及的水平支撑/阻力 ----
   const tol = Math.max(currentATR * 0.12, lastClose * 0.0005); // 触及容差
+  const minSep = Math.max(currentATR * 0.3, lastClose * 0.002); // 与现价最小间距（杜绝线贴住现价）
+  const band = currentATR * 4;                                  // 可接受的回踩带
   const clusters: { price: number; count: number }[] = [];
   for (const p of pivots) {
     const hit = clusters.find(c => Math.abs(c.price - p.price) <= tol);
     if (hit) hit.count += 1;
     else clusters.push({ price: p.price, count: 1 });
   }
-  let best: { price: number; count: number } | null = null;
-  for (const c of clusters) {
-    if (c.count >= 2 && (!best || Math.abs(c.price - lastClose) < Math.abs(best.price - lastClose))) best = c;
+  const byDist = (a: { price: number }, b: { price: number }) => Math.abs(a.price - lastClose) - Math.abs(b.price - lastClose);
+  const supportCands = clusters
+    .filter(c => c.price < lastClose - minSep && (lastClose - c.price) <= band)
+    .sort(byDist);
+  const resistCands = clusters
+    .filter(c => c.price > lastClose + minSep && (c.price - lastClose) <= band)
+    .sort(byDist);
+  const sup = supportCands[0];
+  const res = resistCands[0];
+  let retestLevel: number | null = null;
+  let retestTouches = 0;
+  let retestType: 'support' | 'resistance' | null = null;
+  // 回踩语义：优先取下方支撑（价格回落到的支撑区），无支撑时才用上方阻力作反弹位
+  if (sup) {
+    retestLevel = Math.round(sup.price * 100) / 100;
+    retestTouches = sup.count;
+    retestType = 'support';
+  } else if (res) {
+    retestLevel = Math.round(res.price * 100) / 100;
+    retestTouches = res.count;
+    retestType = 'resistance';
   }
-  const retestLevel = best ? Math.round(best.price * 100) / 100 : null;
-  const retestTouches = best ? best.count : 0;
-  const retestType: 'support' | 'resistance' | null = retestLevel == null
-    ? null
-    : retestLevel >= lastClose ? 'resistance' : 'support';
 
   return {
     direction,
