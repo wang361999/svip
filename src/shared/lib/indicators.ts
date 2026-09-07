@@ -2337,6 +2337,196 @@ export function calcTrendSignal(klines: KlineData[]): TrendSignal | null {
 }
 
 // ========== 常驻多空方向信号（结构顺趋势为主） ==========
+// ========== 江恩工具箱（角度线 / 时间周期 / 时价四方 / 轮中轮 / 三分位）==========
+// 全部复用 AB9 的同一组 A/B 波段（resolveABPoints），价格轴各工具与 AB9、
+// 斐波那契锚定完全一致。lib 只产出几何量，像素化由图表层完成。
+
+export interface GannFanRay { label: string; ratio: number; }
+
+/** 江恩角度线（Gann Fan）：以波段起点为锚，1x1 = 单位价/单位时，45° 主角度 */
+export interface GannFan {
+  /** 锚点下标/时间/价格（上升=波段低点，下降=波段高点） */
+  anchorIdx: number; anchorTime: number; anchorPrice: number;
+  direction: 'up' | 'down';
+  /** 波段时长（根） */
+  spanBars: number;
+  /** 单根K线时间间隔（秒，供图表层外推时间→x） */
+  interval: number;
+  /** 1x1 价格步长（每根），= 波段幅度 / 波段时长 */
+  unitPerBar: number;
+  rays: GannFanRay[];
+}
+
+/**
+ * 江恩角度线：以当前 A/B 波段的"平均每根涨幅"作为 1x1 单位，
+ * 生成 8x1..1x16 一组角度射线（上升趋势从低点向上发散，下降趋势从高点向下发散）。
+ */
+export function calcGannFan(klines: KlineData[]): GannFan | null {
+  const ab = resolveABPoints(klines);
+  if (!ab) return null;
+  const s = ab.selected;
+  const spanBars = Math.max(1, s.endIdx - s.startIdx);
+  const unitPerBar = s.range / spanBars;
+  if (!(unitPerBar > 0)) return null;
+  const interval = klines.length > 1 ? klines[1].time - klines[0].time : 0;
+  const rays: GannFanRay[] = [
+    { label: '8x1', ratio: 8 }, { label: '4x1', ratio: 4 }, { label: '2x1', ratio: 2 },
+    { label: '1x1', ratio: 1 }, { label: '1x2', ratio: 0.5 }, { label: '1x4', ratio: 0.25 },
+    { label: '1x8', ratio: 0.125 }, { label: '1x16', ratio: 0.0625 },
+  ];
+  return {
+    anchorIdx: s.startIdx, anchorTime: klines[s.startIdx].time, anchorPrice: s.startPrice,
+    direction: s.direction, spanBars, interval, unitPerBar, rays,
+  };
+}
+
+export interface GannTimeCycle { bars: number; label: string; time: number; price: number; }
+export interface GannTimeCycles {
+  /** 单根K线的时间间隔（秒） */
+  interval: number;
+  pivots: { idx: number; time: number; price: number; label: string }[];
+  /** 各周期节点（含未来时间，由图表层外推 x） */
+  markers: GannTimeCycle[];
+}
+
+/**
+ * 江恩时间周期：从当前波段的两个端点起，向右外推 45/90/144/180/270/360 根
+ * 的时间对称转折点。时段落在未来，图表层用最后两根K线间距外推 x。
+ */
+export function calcGannTimeCycles(klines: KlineData[]): GannTimeCycles | null {
+  const ab = resolveABPoints(klines);
+  if (!ab || klines.length < 2) return null;
+  const interval = klines[1].time - klines[0].time;
+  if (!(interval > 0)) return null;
+  const s = ab.selected;
+  const pivots = [
+    { idx: s.startIdx, time: klines[s.startIdx].time, price: s.startPrice, label: s.direction === 'up' ? '低点' : '高点' },
+    { idx: s.endIdx, time: klines[s.endIdx].time, price: s.endPrice, label: s.direction === 'up' ? '高点' : '低点' },
+  ];
+  const cycles = [45, 90, 144, 180, 270, 360];
+  const markers: GannTimeCycle[] = [];
+  for (const p of pivots) {
+    for (const bars of cycles) {
+      markers.push({ bars, label: `${p.label}${p.idx === s.startIdx ? '' : ''}+${bars}`, time: p.time + bars * interval, price: p.price });
+    }
+  }
+  markers.sort((a, b) => a.time - b.time);
+  return { interval, pivots, markers };
+}
+
+/** 江恩时价四方：以当前波段为盒，对角线与 1x1 主角度线重合 */
+export interface GannSquare {
+  startIdx: number; endTime: number;
+  /** 盒子时间跨度（根，等分价轴时的一格） */
+  bars: number;
+  priceLo: number; priceHi: number;
+  /** 1x1 价格步长 */
+  step: number;
+  interval: number;
+}
+
+export function calcGannSquare(klines: KlineData[]): GannSquare | null {
+  const ab = resolveABPoints(klines);
+  if (!ab || klines.length < 2) return null;
+  const s = ab.selected;
+  if (!(s.range > 0)) return null;
+  const interval = klines[1].time - klines[0].time;
+  if (!(interval > 0)) return null;
+  const xSpan = Math.max(1, s.endIdx - s.startIdx);
+  const step = s.range / xSpan; // 每根价格步长 = 1x1 斜率
+  const priceLo = Math.min(s.startPrice, s.endPrice);
+  const priceHi = Math.max(s.startPrice, s.endPrice);
+  return {
+    startIdx: s.startIdx, bars: xSpan, priceLo, priceHi, step, interval,
+    endTime: klines[s.startIdx].time + xSpan * interval,
+  };
+}
+
+export interface GannNineLevel { deg: number; price: number; }
+export interface GannSquareOfNine {
+  seed: number; seedLabel: string; seedIndex: number; seedTime: number;
+  direction: 'up' | 'down';
+  /** 上方档位 */
+  resistance: GannNineLevel[];
+  /** 下方档位 */
+  support: GannNineLevel[];
+}
+
+/** 轮中轮（江恩九宫格）：√N 旋转法推支撑/阻力，步进 45°~360° */
+function sqrtRot(v: number, delta: number): number {
+  const s = Math.sqrt(Math.max(v, 1e-12));
+  return (s + delta) * (s + delta);
+}
+
+export function calcGannSquareOfNine(klines: KlineData[]): GannSquareOfNine | null {
+  const ab = resolveABPoints(klines);
+  if (!ab) return null;
+  const s = ab.selected;
+  const seed = s.direction === 'up' ? s.endPrice : s.startPrice;
+  const seedIndex = s.direction === 'up' ? s.endIdx : s.startIdx;
+  const steps = [0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1];
+  const resistance: GannNineLevel[] = [];
+  const support: GannNineLevel[] = [];
+  const push = (arr: GannNineLevel[], sign: number) => {
+    for (const d of steps) {
+      const price = sqrtRot(seed, sign * d);
+      if (price > 0) arr.push({ deg: Math.round(d * 360), price });
+    }
+  };
+  if (s.direction === 'up') {
+    push(support, -1); // 种子为高点，向下推支撑
+    push(resistance, 1);
+  } else {
+    push(resistance, 1); // 种子为低点，向上推阻力
+    push(support, -1);
+  }
+  // 就近过滤：≤0 已排除；同一侧内排序
+  resistance.sort((a, b) => a.price - b.price);
+  support.sort((a, b) => b.price - a.price);
+  return {
+    seed, seedLabel: s.direction === 'up' ? '波段高点' : '波段低点',
+    seedIndex, seedTime: klines[seedIndex].time, direction: s.direction,
+    resistance, support,
+  };
+}
+
+export interface GannThirdLevel { ratio: number; label: string; price: number; }
+
+/** 江恩三分位：1/3、2/3（百分比轴与八分并行的三分补充） */
+export function calcGannThirds(klines: KlineData[]): GannThirdLevel[] | null {
+  const ab = resolveABPoints(klines);
+  if (!ab) return null;
+  const s = ab.selected;
+  const H = s.range;
+  const lo = s.startPrice, hi = s.endPrice;
+  const val = (r: number): number => (s.direction === 'up' ? lo + H * r : hi - H * r);
+  return [
+    { ratio: 1 / 3, label: '1/3', price: val(1 / 3) },
+    { ratio: 2 / 3, label: '2/3', price: val(2 / 3) },
+  ];
+}
+
+export interface GannBundle {
+  fan: GannFan | null;
+  timeCycles: GannTimeCycles | null;
+  square: GannSquare | null;
+  squareOfNine: GannSquareOfNine | null;
+  thirds: GannThirdLevel[] | null;
+}
+
+export function calcGannAll(klines: KlineData[]): GannBundle {
+  if (!klines || klines.length < 30) {
+    return { fan: null, timeCycles: null, square: null, squareOfNine: null, thirds: null };
+  }
+  return {
+    fan: calcGannFan(klines),
+    timeCycles: calcGannTimeCycles(klines),
+    square: calcGannSquare(klines),
+    squareOfNine: calcGannSquareOfNine(klines),
+    thirds: calcGannThirds(klines),
+  };
+}
+
 // 以道氏结构定大方向，缠论最近笔方向做共振确认，AB9 下降趋势破坏做否决。
 // 用途：给用户一个明确的「现在做多 / 做空 / 观望」执行参考（决策辅助，非带单）。
 // 回测结论(真实行情, 不含交易成本, 触发带宽0.5×ATR, 窗口12根)：

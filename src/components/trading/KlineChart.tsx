@@ -6,6 +6,7 @@ import {
   calcEMAArray,
   calcRSIArray,
   calcAB9Lines,
+  calcGannAll,
   calcVWAPArray,
   calcKDJ,
   calcATRArray,
@@ -118,7 +119,7 @@ function saveIndicatorPrefs(next: typeof DEFAULT_INDICATORS) {
 // 会员用户额外同步到后端（跨设备），非会员仅本地
 // 版本号：默认值变更时递增，旧 localStorage 自动失效
   const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v6';
-const DEFAULT_OVERLAY = { AB9: false, CHANNEL: false, VALUEAREA: false, ICHIMOKU: false, SYNTH: false };
+const DEFAULT_OVERLAY = { AB9: false, CHANNEL: false, VALUEAREA: false, ICHIMOKU: false, SYNTH: false, GANN: false };
 
 function loadOverlayPrefs() {
   if (typeof window === 'undefined') return { ...DEFAULT_OVERLAY };
@@ -132,6 +133,7 @@ function loadOverlayPrefs() {
       VALUEAREA: parsed.VALUEAREA !== undefined ? !!parsed.VALUEAREA : DEFAULT_OVERLAY.VALUEAREA,
       ICHIMOKU: parsed.ICHIMOKU !== undefined ? !!parsed.ICHIMOKU : DEFAULT_OVERLAY.ICHIMOKU,
       SYNTH: parsed.SYNTH !== undefined ? !!parsed.SYNTH : DEFAULT_OVERLAY.SYNTH,
+      GANN: parsed.GANN !== undefined ? !!parsed.GANN : DEFAULT_OVERLAY.GANN,
     };
   } catch {
     return { ...DEFAULT_OVERLAY };
@@ -144,6 +146,114 @@ function saveOverlayPrefs(next: typeof DEFAULT_OVERLAY) {
   } catch {}
 }
 
+// ========== 江恩工具箱绘制（canvas 叠层，跟随滚动/缩放重绘） ==========
+// xOf: 时间→x（已支持未来时间外推）；yOf: 价格→y；width/height: 画布 CSS 尺寸
+function drawGannSuite(
+  ctx: CanvasRenderingContext2D,
+  xOf: (t: number) => number | null,
+  yOf: (p: number) => number | null,
+  width: number,
+  height: number,
+  g: ReturnType<typeof calcGannAll>,
+): void {
+  if (!g) return;
+  const dash = (arr: number[]) => { ctx.setLineDash(arr); };
+
+  // —— 江恩角度线（从波段锚点向未来发散，1x1 高亮） ——
+  if (g.fan) {
+    const f = g.fan;
+    const ax = xOf(f.anchorTime);
+    const ay = yOf(f.anchorPrice);
+    const interval = f.interval > 0 ? f.interval : 1;
+    const off = 1600; // 足够长的未来外推，保证射线穿越可视区
+    const ex = xOf(f.anchorTime + off * interval);
+    if (ax !== null && ay !== null && ex !== null) {
+      for (const ray of f.rays) {
+        const sign = f.direction === 'up' ? 1 : -1;
+        const ey = yOf(f.anchorPrice + sign * ray.ratio * f.unitPerBar * off);
+        if (ey === null) continue;
+        const is1x1 = ray.label === '1x1';
+        ctx.strokeStyle = is1x1 ? 'rgba(251, 191, 36, 0.85)' : 'rgba(148, 163, 184, 0.4)';
+        ctx.lineWidth = is1x1 ? 1.6 : 1;
+        dash(is1x1 ? [] : [3, 4]);
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+        dash([]);
+      }
+    }
+  }
+
+  // —— 江恩时价四方（矩形 + 1x1 对角线） ——
+  if (g.square) {
+    const sq = g.square;
+    const startT = sq.endTime - sq.bars * sq.interval;
+    const x0 = xOf(startT);
+    const x1 = xOf(sq.endTime);
+    const y0 = yOf(sq.priceLo);
+    const y1 = yOf(sq.priceHi);
+    if (x0 !== null && x1 !== null && y0 !== null && y1 !== null) {
+      ctx.strokeStyle = 'rgba(168, 85, 247, 0.55)';
+      ctx.lineWidth = 1;
+      dash([5, 4]);
+      ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+      ctx.strokeStyle = 'rgba(251, 191, 36, 0.6)';
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.stroke();
+      dash([]);
+    }
+  }
+
+  // —— 江恩时间周期（竖线转折窗口） ——
+  if (g.timeCycles) {
+    for (const m of g.timeCycles.markers) {
+      const x = xOf(m.time);
+      if (x === null) continue;
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.28)';
+      ctx.lineWidth = 1;
+      dash([2, 3]);
+      ctx.beginPath();
+      ctx.moveTo(x, 4);
+      ctx.lineTo(x, height - 4);
+      ctx.stroke();
+      dash([]);
+      ctx.fillStyle = 'rgba(226, 232, 240, 0.55)';
+      ctx.font = '9px -apple-system, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(`+${m.bars}`, x, 2);
+    }
+  }
+
+  // —— 江恩三分位 + 轮中轮档位（水平价线） ——
+  const drawHoriz = (price: number, label: string, color: string, strong: boolean) => {
+    const y = yOf(price);
+    if (y === null) return;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = strong ? 1.4 : 1;
+    dash(strong ? [] : [4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(width, y);
+    ctx.stroke();
+    dash([]);
+    ctx.fillStyle = color;
+    ctx.font = '9px -apple-system, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(label), 4, y);
+  };
+  if (g.thirds) {
+    for (const t of g.thirds) drawHoriz(t.price, t.label, 'rgba(168, 85, 247, 0.7)', true);
+  }
+  if (g.squareOfNine) {
+    for (const lvl of g.squareOfNine.resistance) drawHoriz(lvl.price, `${lvl.deg}°`, 'rgba(246, 70, 93, 0.5)', false);
+    for (const lvl of g.squareOfNine.support) drawHoriz(lvl.price, `${lvl.deg}°`, 'rgba(16, 185, 129, 0.5)', false);
+  }
+}
 
 
 export default function KlineChart({ isFullscreen = false, onToggleFullscreen }: KlineChartProps) {
@@ -213,6 +323,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const [showValueArea, setShowValueArea] = useState(overlayPrefsInit.VALUEAREA ?? false);
   const [showIchimoku, setShowIchimoku] = useState(overlayPrefsInit.ICHIMOKU ?? false);
   const [showSynth, setShowSynth] = useState(overlayPrefsInit.SYNTH ?? false);
+  const [showGann, setShowGann] = useState(overlayPrefsInit.GANN ?? false);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   // 信号面板：聚合所有指标/画线工具的多空震荡判定
   const [showSignalsPanel, setShowSignalsPanel] = useState(false);
@@ -234,6 +345,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   showIchimokuRef.current = showIchimoku;
   const showSynthRef = useRef(showSynth);
   showSynthRef.current = showSynth;
+  const showGannRef = useRef(showGann);
+  showGannRef.current = showGann;
+  // 江恩工具箱结果缓存（按 K 线签名懒重算）
+  const gannRef = useRef<ReturnType<typeof calcGannAll> | null>(null);
+  const gannSigRef = useRef<string>('');
   // 左上角 OHLC 图例：随十字线联动（悬停读历史K线，离开回落到最新一根，tick 实时刷新）
   interface LegendInfo { o: number; h: number; l: number; c: number; pct: number }
   const [legend, setLegend] = useState<LegendInfo | null>(null);
@@ -1220,7 +1336,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
         // 没有任何叠层数据时，清空后直接返回
-        if (!chanData && !trendChannelRef.current && !valueAreaRef.current && !ichimokuRef.current && !synthRef.current) return;
+        if (!chanData && !trendChannelRef.current && !valueAreaRef.current && !ichimokuRef.current && !synthRef.current && !showGannRef.current) return;
 
         ctx.save();
         ctx.scale(dpr, dpr);
@@ -1839,6 +1955,20 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           }
         }
 
+        // ========== 江恩工具箱（角度线/时间周期/时价四方/轮中轮/三分位）绘制 ==========
+        if (showGannRef.current) {
+          const ksG = allKlinesRef.current;
+          const sigG = ksG.length > 0 ? `${ksG.length}:${ksG[ksG.length - 1].time}` : '';
+          if (sigG !== gannSigRef.current) {
+            gannSigRef.current = sigG;
+            gannRef.current = calcGannAll(ksG);
+          }
+          const gr = gannRef.current;
+          if (gr) {
+            drawGannSuite(ctx, timeToX, (p) => candleSeries.current?.priceToCoordinate(p) ?? null, rect.width, rect.height, gr);
+          }
+        }
+
         ctx.restore();
       } catch (e) {
         console.warn('[Chan] render error:', e);
@@ -2026,7 +2156,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // 绘图/叠加图层菜单项（会员）
   const currentOverlayPrefs = () => ({
     AB9: showAutoAB9, CHANNEL: showTrendChannel, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku,
-    SYNTH: showSynth,
+    SYNTH: showSynth, GANN: showGann,
   });
   const layerMenu = [
     {
@@ -2048,6 +2178,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     {
       key: 'SYNTH', label: '预测合成器', active: showSynth,
       on: () => { const v = !showSynth; setShowSynth(v); saveOverlayPrefs({ ...currentOverlayPrefs(), SYNTH: v }); setOpenMenu(null); },
+    },
+    {
+      key: 'GANN', label: '江恩工具箱', active: showGann,
+      on: () => { const v = !showGann; setShowGann(v); saveOverlayPrefs({ ...currentOverlayPrefs(), GANN: v }); setOpenMenu(null); },
     },
   ];
 
