@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { KlineData } from '@/shared/lib/market-data';
-import { RapidAnalysis } from '@/shared/lib/rapid-strategy';
+
 import { calcFundingCrowding, FundingPoint } from '@/shared/lib/futures-signal';
 import {
   calcTrendChannel,
@@ -72,7 +72,6 @@ function fmtPrice(v: number | null | undefined, precision: number): string {
 
 interface Props {
   klines: KlineData[];
-  signal: RapidAnalysis | null;
   refreshKey: number;
   precision: number;
   symbol?: string;
@@ -86,7 +85,7 @@ interface FundingView {
   current: number;
 }
 
-export default function SignalPanel({ klines, signal, refreshKey, precision, symbol = 'ETHUSDT' }: Props) {
+export default function SignalPanel({ klines, refreshKey, precision, symbol = 'ETHUSDT' }: Props) {
   const [funding, setFunding] = useState<FundingView | null>(null);
   const [fFund, setFFund] = useState<FundingView | null>(null);
 
@@ -124,44 +123,6 @@ export default function SignalPanel({ klines, signal, refreshKey, precision, sym
     const price = last.close;
     const priceFmt = (p: number | null | undefined) => fmtPrice(p, precision);
     const items: Item[] = [];
-
-    // ---- 快速信号（Rapid）----
-    if (signal) {
-      const st = signal.suggestion;
-      let v: Verdict = 'osc';
-      if (signal.rangeInfo.isRange) {
-        v = 'osc';
-        items.push({
-          key: 'rapid', name: '快速信号', verdict: v,
-          value: `区间模式 · 支撑${priceFmt(signal.rangeInfo.support)}`,
-          note: signal.rangeInfo.position === 'near-support' ? '贴近区间下沿' : signal.rangeInfo.position === 'near-resistance' ? '贴近区间上沿' : '区间中部',
-          pct: st.score,
-        });
-      } else if (st.direction === 'long') {
-        v = 'bull';
-        items.push({
-          key: 'rapid', name: '快速信号', verdict: v,
-          value: `得分 ${st.score} · 置信 ${st.confidence}%`,
-          note: `目标 ${priceFmt(st.target)}`,
-          pct: st.score,
-        });
-      } else if (st.direction === 'short') {
-        v = 'bear';
-        items.push({
-          key: 'rapid', name: '快速信号', verdict: v,
-          value: `得分 ${st.score} · 置信 ${st.confidence}%`,
-          note: `目标 ${priceFmt(st.target)}`,
-          pct: st.score,
-        });
-      } else {
-        items.push({
-          key: 'rapid', name: '快速信号', verdict: 'osc',
-          value: `得分 ${st.score}（低于阈值）`,
-          note: st.mode === 'range' ? '趋势/区间过滤中' : '多空信号未达阈值',
-          pct: st.score,
-        });
-      }
-    }
 
     // ---- 当前方向（结构顺趋势为主；盈亏比优先；仅建议，不含带单承诺） ----
     const dirSig = calcDirectionSignal(klines);
@@ -328,35 +289,6 @@ export default function SignalPanel({ klines, signal, refreshKey, precision, sym
       });
     }
 
-    // ---- EMA ----
-    const hid = signal?.indicatorState;
-    const emaCross = hid?.emaCross;
-    items.push({
-      key: 'ema', name: 'EMA',
-      verdict: emaCross === 'up' ? 'bull' : emaCross === 'down' ? 'bear' : 'osc',
-      value: emaCross === 'up' ? '金叉' : emaCross === 'down' ? '死叉' : '粘合/平走',
-      note: hid ? `EMA9 ${priceFmt(hid.ema9)} · EMA21 ${priceFmt(hid.ema21)}` : '数据未就绪',
-    });
-
-    // ---- MACD ----
-    const macdCross = hid?.macdCross;
-    items.push({
-      key: 'macd', name: 'MACD',
-      verdict: macdCross === 'golden' ? 'bull' : macdCross === 'death' ? 'bear' : (hid?.macdHist ?? 0) > 0 ? 'bull' : (hid?.macdHist ?? 0) < 0 ? 'bear' : 'osc',
-      value: macdCross === 'golden' ? '金叉' : macdCross === 'death' ? '死叉' : (hid?.macdHist ?? 0) > 0 ? '柱体为正' : (hid?.macdHist ?? 0) < 0 ? '柱体为负' : '柱体归零',
-      note: hid ? `DIF ${fmt(hid.macdDif)} · DEA ${fmt(hid.macdDea)}` : '数据未就绪',
-    });
-
-    // ---- RSI ----
-    const rsiVal = hid?.rsi;
-    items.push({
-      key: 'rsi', name: 'RSI',
-      verdict: rsiVal == null ? 'osc' : rsiVal > 60 ? 'bull' : rsiVal < 40 ? 'bear' : 'osc',
-      value: rsiVal == null ? '--' : `值 ${rsiVal.toFixed(0)}`,
-      note: rsiVal == null ? '' : rsiVal > 70 ? '超买' : rsiVal < 30 ? '超卖' : '中性区',
-      pct: rsiVal ?? 50,
-    });
-
     // ---- KDJ ----
     const kdj = calcKDJ(klines, 9, 3, 3);
     if (kdj) {
@@ -373,8 +305,8 @@ export default function SignalPanel({ klines, signal, refreshKey, precision, sym
     const bb = calcBollinger(klines, 20);
     if (bb) {
       let v: Verdict = 'osc'; let txt = '';
-      if (hid?.bollingerPosition === 'above-upper') { v = 'bull'; txt = '上轨上方'; }
-      else if (hid?.bollingerPosition === 'below-lower') { v = 'bear'; txt = '下轨下方'; }
+      if (price > bb.upper) { v = 'bull'; txt = '上轨上方'; }
+      else if (price < bb.lower) { v = 'bear'; txt = '下轨下方'; }
       else { v = 'osc'; txt = '轨道内'; }
       items.push({
         key: 'boll', name: 'BOLL',
@@ -419,7 +351,7 @@ export default function SignalPanel({ klines, signal, refreshKey, precision, sym
     }
 
     return items;
-  }, [klines, signal, refreshKey, precision, funding, fFund]);
+  }, [klines, refreshKey, precision, funding, fFund]);
 
   const counts = useMemo(() => {
     const c = { bull: 0, bear: 0, osc: 0 };

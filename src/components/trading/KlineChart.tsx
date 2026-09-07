@@ -30,7 +30,7 @@ import {
   type CompositeLine,
   type PullbackBands,
 } from '@/shared/lib/indicators';
-import { analyzeRapid, type RapidAnalysis } from '@/shared/lib/rapid-strategy';
+
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import {
@@ -216,13 +216,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const compositeRef = useRef<CompositeLine | null>(null);
   const compositeSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const drawChanRef = useRef<() => void>(() => {});
-
-  // 多空信号箭头画布
-  const signalCanvasRef = useRef<HTMLCanvasElement>(null);
-  const signalDataRef = useRef<RapidAnalysis | null>(null);
-  const drawSignalsRef = useRef<() => void>(() => {});
-  // 震荡区间价格线
-  const rangePriceLinesRef = useRef<any[]>([]);
 
   const allKlinesRef = useRef<KlineData[]>([]);
   const pendingTickRef = useRef<number | null>(null);
@@ -620,46 +613,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
     requestAnimationFrame(() => {
       try { drawChanRef.current(); } catch (e) { console.warn('[Chan] raf error:', e); }
-    });
-
-    // 多空信号：基于当前K线计算快速策略信号
-    try {
-      signalDataRef.current = analyzeRapid(symbol, klines);
-
-      // 支撑/阻力线（始终显示）
-      const ri = signalDataRef.current?.rangeInfo;
-      for (const pl of rangePriceLinesRef.current) {
-        try { candleSeries.current?.removePriceLine(pl); } catch {}
-      }
-      rangePriceLinesRef.current = [];
-
-      if (ri && ri.support > 0 && ri.resistance > 0 && candleSeries.current) {
-        try {
-          const isRange = ri.isRange;
-          const supportLine = candleSeries.current.createPriceLine({
-            price: ri.support,
-            color: isRange ? 'rgba(34, 197, 94, 0.8)' : 'rgba(34, 197, 94, 0.5)',
-            lineWidth: 1,
-            lineStyle: 2,
-            axisLabelVisible: true,
-            title: isRange ? ' 支撑' : ' 近端支撑',
-          });
-          const resistanceLine = candleSeries.current.createPriceLine({
-            price: ri.resistance,
-            color: isRange ? 'rgba(246, 70, 93, 0.8)' : 'rgba(246, 70, 93, 0.5)',
-            lineWidth: 1,
-            lineStyle: 2,
-            axisLabelVisible: true,
-            title: isRange ? ' 阻力' : ' 近端阻力',
-          });
-          rangePriceLinesRef.current = [supportLine, resistanceLine];
-        } catch {}
-      }
-    } catch (e) {
-      console.warn('[Signals] analyze error:', e);
-    }
-    requestAnimationFrame(() => {
-      try { drawSignalsRef.current(); } catch (e) { console.warn('[Signals] raf error:', e); }
     });
 
     // KDJ 副图
@@ -1241,8 +1194,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       try { drawNineTurnRef.current(); } catch (e) { console.warn('[NineTurn] update error:', e); }
       try { drawChanRef.current(); } catch (e) { console.warn('[Chan] update error:', e); }
     }
-    // 多空信号箭头每次tick都重绘（跟随最新价格）
-    try { drawSignalsRef.current(); } catch (e) { console.warn('[Signals] update error:', e); }
   }, [updateIndicators, redrawOverlayLines, legendOf, indicators.NINE, indicators.CHAN]);
 
   // 获取K线 — 用 ref 引用最新的 updateChart，避免指标切换导致重新拉取K线和重连WS
@@ -2352,12 +2303,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     };
     drawChanRef.current = drawChan;
 
-    // ===== 多空信号箭头绘制（透明框版） =====
-    const drawSignals = () => {
-      // 止盈止损框已移除（信息在右侧快速信号卡片中查看）
-    };
-    drawSignalsRef.current = drawSignals;
-
     // 主图和所有副图联动（平移/缩放时保持时间轴同步）
     chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
       if (range) {
@@ -2370,8 +2315,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       try { drawNineTurnNumbers(); } catch (e) { console.warn('[NineTurn] scroll error:', e); }
       // 缠论随视图滚动重绘
       try { drawChan(); } catch (e) { console.warn('[Chan] scroll error:', e); }
-      // 多空信号随视图滚动重绘
-      try { drawSignals(); } catch (e) { console.warn('[Signals] scroll error:', e); }
     });
 
     mainChart.current = chart;
@@ -2848,7 +2791,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       {showSignalsPanel && (
         <SignalPanel
           klines={allKlinesRef.current}
-          signal={signalDataRef.current}
           refreshKey={panelTick}
           precision={pricePrecision}
           symbol={symbol}
