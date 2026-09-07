@@ -2230,6 +2230,14 @@ export interface DirectionSignal {
   ab9Strength: string | null;
   /** 当前价就近的 AB9 支撑/阻力参考线号 */
   refLine: number | null;
+  /** 建议入场参考价（当前收盘） */
+  entry: number;
+  /** 窄止损位（AB9 就近内部线，过低时以 0.3×ATR 兜底，绝不虚构） */
+  stop: number | null;
+  /** 顺势目标位（下一档 AB9 线，尽力保证盈亏比≥1；区间外可能无目标） */
+  target: number | null;
+  /** 盈亏比 ≈ |target-entry| / |entry-stop|，>0 越高越划算；null=区间外无目标 */
+  rewardRisk: number | null;
 }
 
 export function calcDirectionSignal(klines: KlineData[]): DirectionSignal | null {
@@ -2303,6 +2311,40 @@ export function calcDirectionSignal(klines: KlineData[]): DirectionSignal | null
   if (decision === 'neutral') confidence = Math.min(confidence, 45);
   confidence = Math.max(15, Math.min(90, Math.round(confidence)));
 
+  // 盈亏比优先：用 AB9 内部线给出窄止损 + 顺势目标（真实几何，绝不虚构）
+  const entry = klines[klines.length - 1].close;
+  const atrArr = calcATRArray(klines, 14);
+  const atr = atrArr.length ? (atrArr[atrArr.length - 1] || 0) : 0;
+  let stop: number | null = null;
+  let target: number | null = null;
+  if (ab9 && ab9.lines.length && decision !== 'neutral') {
+    const upLines = ab9.lines.filter((ln) => ln.price > entry).sort((a, b) => a.price - b.price);
+    const dnLines = ab9.lines.filter((ln) => ln.price < entry).sort((a, b) => b.price - a.price);
+    if (decision === 'long') {
+      target = upLines.length ? upLines[0].price : null;
+      stop = dnLines.length ? dnLines[0].price : (atr ? entry - 1.2 * atr : null);
+    } else {
+      target = dnLines.length ? dnLines[0].price : null;
+      stop = upLines.length ? upLines[0].price : (atr ? entry + 1.2 * atr : null);
+    }
+    // 窄止损下限保护（避免贴着入场被噪声扫掉），目标若太近则向上找满足盈亏比≥1的档位
+    if (stop !== null) {
+      const minGap = Math.max(0.3 * atr, entry * 1e-4);
+      if (decision === 'long' && entry - stop < minGap) stop = entry - minGap;
+      if (decision === 'short' && stop - entry < minGap) stop = entry + minGap;
+    }
+    if (target !== null && stop !== null) {
+      const stopGap = Math.abs(entry - stop);
+      const pool = decision === 'long' ? upLines : dnLines;
+      const better = pool.find((ln) => Math.abs(ln.price - entry) >= stopGap);
+      target = better ? better.price : null; // 无满足档位则不报目标
+    }
+  }
+  let rewardRisk: number | null = null;
+  if (target !== null && stop !== null) {
+    rewardRisk = Math.min(3, Math.abs(target - entry) / Math.max(1e-9, Math.abs(entry - stop)));
+  }
+
   return {
     decision,
     label,
@@ -2312,6 +2354,10 @@ export function calcDirectionSignal(klines: KlineData[]): DirectionSignal | null
     biDir,
     ab9Strength,
     refLine: ab9 ? ab9.refLine : null,
+    entry,
+    stop,
+    target,
+    rewardRisk,
   };
 }
 

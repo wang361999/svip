@@ -163,14 +163,18 @@ export default function SignalPanel({ klines, signal, refreshKey, precision, sym
       }
     }
 
-    // ---- 当前方向（结构顺趋势为主；仅建议，不含带单承诺） ----
+    // ---- 当前方向（结构顺趋势为主；盈亏比优先；仅建议，不含带单承诺） ----
     const dirSig = calcDirectionSignal(klines);
     if (dirSig) {
       const dv: Verdict = dirSig.decision === 'long' ? 'bull' : dirSig.decision === 'short' ? 'bear' : 'osc';
+      const rr = dirSig.rewardRisk != null ? ` · 盈亏比 ${dirSig.rewardRisk.toFixed(2)}` : '';
+      const stopTxt = dirSig.stop != null ? `止${fmtPrice(dirSig.stop, precision)}` : '止损--';
+      const tgtTxt = dirSig.target != null ? `标${fmtPrice(dirSig.target, precision)}` : '目标--';
+      const shortWarn = dirSig.decision === 'short' ? ' · 空头置信偏低' : '';
       items.push({
         key: 'dirSignal', name: '当前方向', verdict: dv,
-        value: dirSig.label,
-        note: `趋势${dirSig.trendLabel} · ${dirSig.basis}`,
+        value: `${dirSig.label}${rr}${shortWarn}`,
+        note: `${stopTxt}/${tgtTxt} · 趋势${dirSig.trendLabel} · ${dirSig.basis}`,
         pct: dirSig.confidence,
       });
     }
