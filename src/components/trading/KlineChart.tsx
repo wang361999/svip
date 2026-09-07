@@ -2850,6 +2850,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           signal={signalDataRef.current}
           refreshKey={panelTick}
           precision={pricePrecision}
+          symbol={symbol}
         />
       )}
     </div>

@@ -1,8 +1,9 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { KlineData } from '@/shared/lib/market-data';
 import { RapidAnalysis } from '@/shared/lib/rapid-strategy';
+import { calcFundingCrowding, FundingPoint } from '@/shared/lib/futures-signal';
 import {
   calcTrendChannel,
   calcPitchfork,
@@ -36,6 +37,7 @@ interface Item {
 }
 
 const VERDICT_LABEL: Record<Verdict, string> = { bull: '多', bear: '空', osc: '震荡' };
+const FUNDING_LEVEL: Record<string, string> = { none: '', mild: '轻度拥挤', strong: '明显拥挤', extreme: '极端拥挤' };
 const VERDICT_COLOR: Record<Verdict, { chip: string; text: string; bar: string; barBg: string }> = {
   bull: {
     chip: 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400',
@@ -72,9 +74,47 @@ interface Props {
   signal: RapidAnalysis | null;
   refreshKey: number;
   precision: number;
+  symbol?: string;
 }
 
-export default function SignalPanel({ klines, signal, refreshKey, precision }: Props) {
+interface FundingView {
+  tilt: 'bull' | 'bear' | 'osc';
+  level: string;
+  annualized: number;
+  z: number;
+  current: number;
+}
+
+export default function SignalPanel({ klines, signal, refreshKey, precision, symbol = 'ETHUSDT' }: Props) {
+  const [funding, setFunding] = useState<FundingView | null>(null);
+  const [fFund, setFFund] = useState<FundingView | null>(null);
+
+  // 外源资金费率：独立拉取（ETH/USDT、BTC/USDT），用于资金面视角，绝不影响价格类判定
+  useEffect(() => {
+    let alive = true;
+    const load = async (sym: string, setter: (v: FundingView | null) => void) => {
+      try {
+        const resp = await fetch(`/api/futures-data?symbol=${sym}&period=1d&limit=500`);
+        if (!resp.ok) { setter(null); return; }
+        const j = await resp.json();
+        const pts: FundingPoint[] | undefined = j?.funding;
+        if (!pts || pts.length < 60) { setter(null); return; }
+        const c = calcFundingCrowding(pts);
+        if (!c) { setter(null); return; }
+        setter({
+          tilt: c.tilt,
+          level: c.level,
+          annualized: c.annualizedPct,
+          z: c.z,
+          current: c.currentRate,
+        });
+      } catch { setter(null); }
+    };
+    void load(symbol, setFunding);
+    void load(symbol.includes('BTC') ? 'ETHUSDT' : 'BTCUSDT', setFFund);
+    return () => { alive = false; };
+  }, [refreshKey, symbol]);
+
   const rows = useMemo<Item[]>(() => {
     void refreshKey; // 触发重算：tick 版本号变化时刷新面板
     const n = klines.length;
@@ -343,8 +383,19 @@ export default function SignalPanel({ klines, signal, refreshKey, precision }: P
       });
     }
 
+    // ---- 资金费率（外部非价格数据，逆向拥挤，已实测验证）----
+    if (funding) {
+      const tiltText = funding.tilt === 'bear' ? '逆向·偏空(多单拥挤)' : funding.tilt === 'bull' ? '逆向·偏多(空单拥挤)' : '中性·无拥挤';
+      items.push({
+        key: 'funding', name: '资金费率·外源',
+        verdict: funding.tilt,
+        value: `年化 ${fmt(funding.annualized, 2)}% · z=${fmt(funding.z, 2)}`,
+        note: `${FUNDING_LEVEL[funding.level]}${tiltText}；实测|z|≥0.7 五日逆向命中：ETH70.7%/BTC59.1%，样本58/66，仅风控参考`,
+      });
+    }
+
     return items;
-  }, [klines, signal, refreshKey, precision]);
+  }, [klines, signal, refreshKey, precision, funding, fFund]);
 
   const counts = useMemo(() => {
     const c = { bull: 0, bear: 0, osc: 0 };
