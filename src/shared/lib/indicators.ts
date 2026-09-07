@@ -2089,6 +2089,48 @@ export function calcAB9Lines(klines: KlineData[]): AB9Analysis | null {
   };
 }
 
+/**
+ * 近端支撑/阻力：就近的 swing 高低点（独立于策略引擎，供主图画绿支撑/红阻力参考线）
+ */
+export interface SRLines {
+  /** 当前价下方最近的支撑位 */
+  support: number;
+  /** 当前价上方最近的阻力位 */
+  resistance: number;
+}
+export function calcSRLines(klines: KlineData[], lookback = 20): SRLines | null {
+  const n = klines.length;
+  if (n < 6) return null;
+  const last = klines[n - 1].close;
+  const win = klines.slice(Math.max(0, n - lookback), n);
+  let support: number | null = null;
+  let resistance: number | null = null;
+  for (let i = 1; i < win.length - 1; i++) {
+    const a = win[i - 1], c = win[i], b = win[i + 1];
+    // 局部 swing high（3 根判别：中间最高）→ 当前价上方最近的阻力
+    if (c.high >= a.high && c.high >= b.high) {
+      if (c.high > last && (resistance === null || c.high < resistance)) resistance = c.high;
+    }
+    // 局部 swing low（3 根判别：中间最低）→ 当前价下方最近的支撑
+    if (c.low <= a.low && c.low <= b.low) {
+      if (c.low < last && (support === null || c.low > support)) support = c.low;
+    }
+  }
+  // 兜底：窗口内无单侧分型时取窗口极值
+  if (resistance === null) {
+    let mh = -Infinity;
+    for (const k of win) mh = Math.max(mh, k.high);
+    if (mh > -Infinity) resistance = mh;
+  }
+  if (support === null) {
+    let ml = Infinity;
+    for (const k of win) ml = Math.min(ml, k.low);
+    if (ml < Infinity) support = ml;
+  }
+  if (support === null || resistance === null || support >= resistance) return null;
+  return { support, resistance };
+}
+
 // ========== 多周期趋势（结构法）==========
 
 /** 趋势方向 */

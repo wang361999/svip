@@ -20,6 +20,7 @@ import {
   calcPredictionSynth,
   calcCompositeLine,
   calcPullbackBands,
+  calcSRLines,
   type ChanResult,
   type TrendChannel,
   type Pitchfork,
@@ -216,6 +217,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const compositeRef = useRef<CompositeLine | null>(null);
   const compositeSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const drawChanRef = useRef<() => void>(() => {});
+
+  const srLinesRef = useRef<any[]>([]);
 
   const allKlinesRef = useRef<KlineData[]>([]);
   const pendingTickRef = useRef<number | null>(null);
@@ -751,6 +754,35 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       try { series.removePriceLine(pl); } catch {}
     }
     pullbackPriceLinesRef.current = [];
+
+    // —— 近端支撑/阻力（就近 swing 高低点；恢复快信号版本的原画法，独立于策略引擎） ——
+    for (const pl of srLinesRef.current) {
+      try { series.removePriceLine(pl); } catch {}
+    }
+    srLinesRef.current = [];
+    if (isMember && klines.length >= 6) {
+      const sr = calcSRLines(klines);
+      if (sr) {
+        try {
+          srLinesRef.current.push(series.createPriceLine({
+            price: sr.support,
+            color: 'rgba(34, 197, 94, 0.5)',
+            lineWidth: 1,
+            lineStyle: 2,
+            axisLabelVisible: true,
+            title: ' 支撑',
+          }));
+          srLinesRef.current.push(series.createPriceLine({
+            price: sr.resistance,
+            color: 'rgba(246, 70, 93, 0.5)',
+            lineWidth: 1,
+            lineStyle: 2,
+            axisLabelVisible: true,
+            title: ' 阻力',
+          }));
+        } catch {}
+      }
+    }
 
     // —— AB9线（原生满宽价格线，价格轴可读数；应反馈恢复原画法） ——
     if (showAutoAB9 && isMember) {
