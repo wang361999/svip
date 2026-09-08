@@ -17,6 +17,7 @@ import {
   calcIchimoku,
   calcPredictionSynth,
   calcRangeBox,
+  detectFractals,
   calcSuperTrend,
   type ChanResult,
   type TrendChannel,
@@ -37,6 +38,7 @@ import {
   Time,
   CrosshairMode,
   LineStyle,
+  type SeriesMarker,
 } from 'lightweight-charts';
 import {
   INTERVALS,
@@ -394,6 +396,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const [error, setError] = useState<string | null>(null);
   const [dataStatus, setDataStatus] = useState('连接中');
   const isMember = useAuthStore((s) => s.isMember);
+  const isMemberRef = useRef(isMember);
+  isMemberRef.current = isMember;
+  const showAutoAB9Ref = useRef(showAutoAB9);
+  showAutoAB9Ref.current = showAutoAB9;
   const interval = useChartStore((s) => s.interval);
   const setIntervalState = useChartStore((s) => s.setInterval);
   const symbol = useSymbolStore((s) => s.symbol);
@@ -898,6 +904,25 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
     if (candleSeries.current) {
       candleSeries.current.setMarkers([]);
+    }
+
+    // AB9 顶/底分型标记（复用 AB9 swing 的 detectFractals，仅最近若干根避免过密）
+    if (candleSeries.current && showAutoAB9Ref.current && isMemberRef.current) {
+      const fs = detectFractals(klines);
+      if (fs && (fs.fractalHighs.length || fs.fractalLows.length)) {
+        const mk: SeriesMarker<Time>[] = [];
+        const lastIdx = klines.length - 1;
+        const win = 90;
+        for (const h of fs.fractalHighs) {
+          if (h.idx < 0 || h.idx >= klines.length || lastIdx - h.idx > win) continue;
+          mk.push({ time: klines[h.idx].time as Time, position: 'aboveBar', color: '#f87171', shape: 'arrowDown', size: 1 });
+        }
+        for (const l of fs.fractalLows) {
+          if (l.idx < 0 || l.idx >= klines.length || lastIdx - l.idx > win) continue;
+          mk.push({ time: klines[l.idx].time as Time, position: 'belowBar', color: '#34d399', shape: 'arrowUp', size: 1 });
+        }
+        candleSeries.current.setMarkers(mk);
+      }
     }
 
     // 图例初始化为最新一根K线

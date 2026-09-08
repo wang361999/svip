@@ -1577,7 +1577,7 @@ function fractalPrice(k: KlineData, dir: 'high' | 'low'): number {
   return total > 0 && wick / total > SPIKE_WICK_RATIO ? bodyLow : k.low;
 }
 
-function detectFractals(klines: KlineData[], strength = 3): {
+export function detectFractals(klines: KlineData[], strength = 3): {
   fractalHighs: { idx: number; price: number }[];
   fractalLows: { idx: number; price: number }[];
 } {
