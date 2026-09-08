@@ -894,7 +894,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
   // 重算并绘制顶/底分型 + 顶/底背离标记。
   // 复用自 updateChart 原逻辑，抽成独立函数以便实时 tick（flushTick / updateLastKline）也能动态刷新。
-  // 仅显示最近 win 根，避免过密；分型需左右各 2 根确认，故最新未定型 K 线不会产生抖动标记。
+  // 分型/背离标记覆盖整段已加载K线（不做近端90根窗口裁剪），滑动查看历史同样可见；
+  // 分型需左右各 2 根确认，故最新未定型 K 线不会产生抖动标记。
   const drawFractalDivergMarkers = useCallback((klines: KlineData[]) => {
     if (!candleSeries.current) return;
     candleSeries.current.setMarkers([]);
@@ -902,15 +903,13 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
     const fs = detectFractals(klines);
     const mk: SeriesMarker<Time>[] = [];
-    const lastIdx = klines.length - 1;
-    const win = 90;
     if (showFractalRef.current) {
       for (const h of fs.fractalHighs) {
-        if (h.idx < 0 || h.idx >= klines.length || lastIdx - h.idx > win) continue;
+        if (h.idx < 0 || h.idx >= klines.length) continue;
         mk.push({ time: klines[h.idx].time as Time, position: 'aboveBar', color: '#f87171', shape: 'arrowDown', size: 1 });
       }
       for (const l of fs.fractalLows) {
-        if (l.idx < 0 || l.idx >= klines.length || lastIdx - l.idx > win) continue;
+        if (l.idx < 0 || l.idx >= klines.length) continue;
         mk.push({ time: klines[l.idx].time as Time, position: 'belowBar', color: '#34d399', shape: 'arrowUp', size: 1 });
       }
     }
@@ -921,7 +920,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       for (let k = 1; k < highs.length; k++) {
         const a = highs[k - 1], b = highs[k];
         if (b.idx + 1 >= klines.length) break;
-        if (lastIdx - b.idx > win) continue;
         const da = macd.dif[a.idx], db = macd.dif[b.idx];
         if (da == null || db == null) continue;
         if (cl[b.idx] > cl[a.idx] && db < da) mk.push({ time: klines[b.idx].time as Time, position: 'aboveBar', color: '#f97316', shape: 'circle', size: 2 });
@@ -930,7 +928,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       for (let k = 1; k < lows.length; k++) {
         const a = lows[k - 1], b = lows[k];
         if (b.idx + 1 >= klines.length) break;
-        if (lastIdx - b.idx > win) continue;
         const da = macd.dif[a.idx], db = macd.dif[b.idx];
         if (da == null || db == null) continue;
         if (cl[b.idx] < cl[a.idx] && db > da) mk.push({ time: klines[b.idx].time as Time, position: 'belowBar', color: '#06b6d4', shape: 'circle', size: 2 });
