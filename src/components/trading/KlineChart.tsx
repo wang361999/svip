@@ -881,6 +881,51 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
     }, [isMember, symbol]);
 
+  // 重算并绘制顶/底分型 + 顶/底背离标记。
+  // 复用自 updateChart 原逻辑，抽成独立函数以便实时 tick（flushTick / updateLastKline）也能动态刷新。
+  // 仅显示最近 win 根，避免过密；分型需左右各 2 根确认，故最新未定型 K 线不会产生抖动标记。
+  const drawFractalDivergMarkers = useCallback((klines: KlineData[]) => {
+    if (!candleSeries.current) return;
+    candleSeries.current.setMarkers([]);
+    if (!isMemberRef.current) return;
+
+    const fs = detectFractals(klines);
+    const mk: SeriesMarker<Time>[] = [];
+    const lastIdx = klines.length - 1;
+    const win = 90;
+    if (showFractalRef.current) {
+      for (const h of fs.fractalHighs) {
+        if (h.idx < 0 || h.idx >= klines.length || lastIdx - h.idx > win) continue;
+        mk.push({ time: klines[h.idx].time as Time, position: 'aboveBar', color: '#f87171', shape: 'arrowDown', size: 1 });
+      }
+      for (const l of fs.fractalLows) {
+        if (l.idx < 0 || l.idx >= klines.length || lastIdx - l.idx > win) continue;
+        mk.push({ time: klines[l.idx].time as Time, position: 'belowBar', color: '#34d399', shape: 'arrowUp', size: 1 });
+      }
+    }
+    const macd = calcMACD(klines, 12, 26, 9);
+    if (showDivergRef.current && macd) {
+      const cl = klines.map((k) => k.close);
+      const highs = [...fs.fractalHighs].sort((a, b) => a.idx - b.idx);
+      for (let k = 1; k < highs.length; k++) {
+        const a = highs[k - 1], b = highs[k];
+        if (b.idx + 1 >= klines.length) break;
+        const da = macd.dif[a.idx], db = macd.dif[b.idx];
+        if (da == null || db == null) continue;
+        if (cl[b.idx] > cl[a.idx] && db < da) mk.push({ time: klines[b.idx].time as Time, position: 'aboveBar', color: '#f97316', shape: 'circle', size: 2 });
+      }
+      const lows = [...fs.fractalLows].sort((a, b) => a.idx - b.idx);
+      for (let k = 1; k < lows.length; k++) {
+        const a = lows[k - 1], b = lows[k];
+        if (b.idx + 1 >= klines.length) break;
+        const da = macd.dif[a.idx], db = macd.dif[b.idx];
+        if (da == null || db == null) continue;
+        if (cl[b.idx] < cl[a.idx] && db > da) mk.push({ time: klines[b.idx].time as Time, position: 'belowBar', color: '#06b6d4', shape: 'circle', size: 2 });
+      }
+    }
+    candleSeries.current.setMarkers(mk);
+  }, []); // 全部引用 ref，无需依赖
+
   // 更新K线数据
   const updateChart = useCallback((klines: KlineData[], intv?: string) => {
     allKlinesRef.current = klines;
@@ -910,48 +955,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     // === 趋势通道 + 预测延伸线 + 音叉 ===
     drawTrendOverlays();
 
-    if (candleSeries.current) {
-      candleSeries.current.setMarkers([]);
-    }
-
-    // 顶/底分型标记（独立开关，可记忆）+ 顶/底背离标记（MACD DIF 值，独立开关），仅最近若干根避免过密
-    if (candleSeries.current && isMemberRef.current) {
-      const fs = detectFractals(klines);
-      const mk: SeriesMarker<Time>[] = [];
-      const lastIdx = klines.length - 1;
-      const win = 90;
-      if (showFractalRef.current) {
-        for (const h of fs.fractalHighs) {
-          if (h.idx < 0 || h.idx >= klines.length || lastIdx - h.idx > win) continue;
-          mk.push({ time: klines[h.idx].time as Time, position: 'aboveBar', color: '#f87171', shape: 'arrowDown', size: 1 });
-        }
-        for (const l of fs.fractalLows) {
-          if (l.idx < 0 || l.idx >= klines.length || lastIdx - l.idx > win) continue;
-          mk.push({ time: klines[l.idx].time as Time, position: 'belowBar', color: '#34d399', shape: 'arrowUp', size: 1 });
-        }
-      }
-      const macd = calcMACD(klines, 12, 26, 9);
-      if (showDivergRef.current && macd) {
-        const cl = klines.map((k) => k.close);
-        const highs = [...fs.fractalHighs].sort((a, b) => a.idx - b.idx);
-        for (let k = 1; k < highs.length; k++) {
-          const a = highs[k - 1], b = highs[k];
-          if (b.idx + 1 >= klines.length) break;
-          const da = macd.dif[a.idx], db = macd.dif[b.idx];
-          if (da == null || db == null) continue;
-          if (cl[b.idx] > cl[a.idx] && db < da) mk.push({ time: klines[b.idx].time as Time, position: 'aboveBar', color: '#f97316', shape: 'circle', size: 2 });
-        }
-        const lows = [...fs.fractalLows].sort((a, b) => a.idx - b.idx);
-        for (let k = 1; k < lows.length; k++) {
-          const a = lows[k - 1], b = lows[k];
-          if (b.idx + 1 >= klines.length) break;
-          const da = macd.dif[a.idx], db = macd.dif[b.idx];
-          if (da == null || db == null) continue;
-          if (cl[b.idx] < cl[a.idx] && db > da) mk.push({ time: klines[b.idx].time as Time, position: 'belowBar', color: '#06b6d4', shape: 'circle', size: 2 });
-        }
-      }
-      candleSeries.current.setMarkers(mk);
-    }
+    // 顶/底分型 + 顶/底背离标记（实时 tick 也复用 drawFractalDivergMarkers 动态刷新）
+    drawFractalDivergMarkers(klines);
 
     // 图例初始化为最新一根K线
     const lk = klines[klines.length - 1];
@@ -975,7 +980,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       if (kdjChart.current) kdjChart.current.timeScale().setVisibleLogicalRange(range);
       if (atrChart.current) atrChart.current.timeScale().setVisibleLogicalRange(range);
     }
-  }, [updateIndicators, redrawOverlayLines, drawTrendOverlays, legendOf]);
+  }, [updateIndicators, redrawOverlayLines, drawTrendOverlays, legendOf, drawFractalDivergMarkers]);
 
   // 切换画线开关时仅重画线（不再整图重载、不重置视图）
   useEffect(() => {
@@ -1012,7 +1017,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     });
     // 图例跟随实时价（50ms 节流内更新，开销可忽略）
     setLegend(legendOf(last.open, last.high, last.low, last.close));
-  }, [legendOf]);
+    // 实时 tick 动态刷新分型/背离标记（分型需2侧确认，其内为稳定值，不产生抖动）
+    drawFractalDivergMarkers(klines);
+  }, [legendOf, drawFractalDivergMarkers]);
 
   const updateTick = useCallback((price: number) => {
     pendingTickRef.current = price;
@@ -1072,6 +1079,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       updateIndicators();
       // K线收盘后重算 AB9 / 斐波那契画线：新分形确认、突破换段都能及时反映
       redrawOverlayLines();
+      // K线收盘后重算分型/背离标记（新分形确认 / 窗口滑动后及时更新）
+      drawFractalDivergMarkers(klines);
       // K线收盘后重算九转序列
       if (indicators.NINE) {
         nineTurnDataRef.current = calcNineTurn(klines);
@@ -1082,7 +1091,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       try { drawNineTurnRef.current(); } catch (e) { console.warn('[NineTurn] update error:', e); }
       try { drawChanRef.current(); } catch (e) { console.warn('[Chan] update error:', e); }
     }
-  }, [updateIndicators, redrawOverlayLines, legendOf, indicators.NINE, indicators.CHAN]);
+  }, [updateIndicators, redrawOverlayLines, legendOf, drawFractalDivergMarkers, indicators.NINE, indicators.CHAN]);
 
   // 获取K线 — 用 ref 引用最新的 updateChart，避免指标切换导致重新拉取K线和重连WS
   const updateChartRef = useRef(updateChart);
