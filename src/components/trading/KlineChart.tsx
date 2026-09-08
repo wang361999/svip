@@ -933,6 +933,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         if (cl[b.idx] < cl[a.idx] && db > da) mk.push({ time: klines[b.idx].time as Time, position: 'belowBar', color: '#06b6d4', shape: 'circle', size: 2 });
       }
     }
+    // lightweight-charts 契约：markers 必须按时间升序排列。
+    // 内部用二分查找（visibleTimedValues）计算可见标记范围，乱序数组会导致区间计算错误、
+    // 标记被静默跳过（表现为部分/全部箭头消失、需滑动才出现）。
+    mk.sort((a, b) => (a.time as number) - (b.time as number));
     candleSeries.current.setMarkers(mk);
   }, []); // 全部引用 ref，无需依赖
 
