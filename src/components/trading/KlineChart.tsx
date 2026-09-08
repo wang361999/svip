@@ -124,7 +124,7 @@ function saveIndicatorPrefs(next: typeof DEFAULT_INDICATORS) {
 // 会员用户额外同步到后端（跨设备），非会员仅本地
 // 版本号：默认值变更时递增，旧 localStorage 自动失效
   const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v6';
-const DEFAULT_OVERLAY = { AB9: false, CHANNEL: false, VALUEAREA: false, ICHIMOKU: false, SYNTH: false, GANN: false, SUPER: false };
+const DEFAULT_OVERLAY = { AB9: false, CHANNEL: false, VALUEAREA: false, ICHIMOKU: false, SYNTH: false, GANN: false, SUPER: false, FRACTAL: false, DIVERG: false };
 
 function loadOverlayPrefs() {
   if (typeof window === 'undefined') return { ...DEFAULT_OVERLAY };
@@ -140,6 +140,8 @@ function loadOverlayPrefs() {
       SYNTH: parsed.SYNTH !== undefined ? !!parsed.SYNTH : DEFAULT_OVERLAY.SYNTH,
       GANN: parsed.GANN !== undefined ? !!parsed.GANN : DEFAULT_OVERLAY.GANN,
       SUPER: parsed.SUPER !== undefined ? !!parsed.SUPER : DEFAULT_OVERLAY.SUPER,
+      FRACTAL: parsed.FRACTAL !== undefined ? !!parsed.FRACTAL : DEFAULT_OVERLAY.FRACTAL,
+      DIVERG: parsed.DIVERG !== undefined ? !!parsed.DIVERG : DEFAULT_OVERLAY.DIVERG,
     };
   } catch {
     return { ...DEFAULT_OVERLAY };
@@ -331,6 +333,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const [showSynth, setShowSynth] = useState(overlayPrefsInit.SYNTH ?? false);
   const [showGann, setShowGann] = useState(overlayPrefsInit.GANN ?? false);
   const [showSuperTrend, setShowSuperTrend] = useState(overlayPrefsInit.SUPER ?? false);
+  const [showFractal, setShowFractal] = useState(overlayPrefsInit.FRACTAL ?? false);
+  const [showDiverg, setShowDiverg] = useState(overlayPrefsInit.DIVERG ?? false);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   // 信号面板：聚合所有指标/画线工具的多空震荡判定
   const [showSignalsPanel, setShowSignalsPanel] = useState(false);
@@ -400,6 +404,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   isMemberRef.current = isMember;
   const showAutoAB9Ref = useRef(showAutoAB9);
   showAutoAB9Ref.current = showAutoAB9;
+  const showFractalRef = useRef(showFractal);
+  showFractalRef.current = showFractal;
+  const showDivergRef = useRef(showDiverg);
+  showDivergRef.current = showDiverg;
   const interval = useChartStore((s) => s.interval);
   const setIntervalState = useChartStore((s) => s.setInterval);
   const symbol = useSymbolStore((s) => s.symbol);
@@ -906,13 +914,13 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       candleSeries.current.setMarkers([]);
     }
 
-    // AB9 顶/底分型标记（复用 AB9 swing 的 detectFractals，仅最近若干根避免过密）
-    if (candleSeries.current && showAutoAB9Ref.current && isMemberRef.current) {
+    // 顶/底分型标记（独立开关，可记忆）+ 顶/底背离标记（MACD DIF 值，独立开关），仅最近若干根避免过密
+    if (candleSeries.current && isMemberRef.current) {
       const fs = detectFractals(klines);
-      if (fs && (fs.fractalHighs.length || fs.fractalLows.length)) {
-        const mk: SeriesMarker<Time>[] = [];
-        const lastIdx = klines.length - 1;
-        const win = 90;
+      const mk: SeriesMarker<Time>[] = [];
+      const lastIdx = klines.length - 1;
+      const win = 90;
+      if (showFractalRef.current) {
         for (const h of fs.fractalHighs) {
           if (h.idx < 0 || h.idx >= klines.length || lastIdx - h.idx > win) continue;
           mk.push({ time: klines[h.idx].time as Time, position: 'aboveBar', color: '#f87171', shape: 'arrowDown', size: 1 });
@@ -921,8 +929,28 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           if (l.idx < 0 || l.idx >= klines.length || lastIdx - l.idx > win) continue;
           mk.push({ time: klines[l.idx].time as Time, position: 'belowBar', color: '#34d399', shape: 'arrowUp', size: 1 });
         }
-        candleSeries.current.setMarkers(mk);
       }
+      const macd = calcMACD(klines, 12, 26, 9);
+      if (showDivergRef.current && macd) {
+        const cl = klines.map((k) => k.close);
+        const highs = [...fs.fractalHighs].sort((a, b) => a.idx - b.idx);
+        for (let k = 1; k < highs.length; k++) {
+          const a = highs[k - 1], b = highs[k];
+          if (b.idx + 1 >= klines.length) break;
+          const da = macd.dif[a.idx], db = macd.dif[b.idx];
+          if (da == null || db == null) continue;
+          if (cl[b.idx] > cl[a.idx] && db < da) mk.push({ time: klines[b.idx].time as Time, position: 'aboveBar', color: '#f97316', shape: 'circle', size: 2 });
+        }
+        const lows = [...fs.fractalLows].sort((a, b) => a.idx - b.idx);
+        for (let k = 1; k < lows.length; k++) {
+          const a = lows[k - 1], b = lows[k];
+          if (b.idx + 1 >= klines.length) break;
+          const da = macd.dif[a.idx], db = macd.dif[b.idx];
+          if (da == null || db == null) continue;
+          if (cl[b.idx] < cl[a.idx] && db > da) mk.push({ time: klines[b.idx].time as Time, position: 'belowBar', color: '#06b6d4', shape: 'circle', size: 2 });
+        }
+      }
+      candleSeries.current.setMarkers(mk);
     }
 
     // 图例初始化为最新一根K线
@@ -2225,7 +2253,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // 绘图/叠加图层菜单项（会员）
   const currentOverlayPrefs = () => ({
     AB9: showAutoAB9, CHANNEL: showTrendChannel, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku,
-    SYNTH: showSynth, GANN: showGann, SUPER: showSuperTrend,
+    SYNTH: showSynth, GANN: showGann, SUPER: showSuperTrend, FRACTAL: showFractal, DIVERG: showDiverg,
   });
   const layerMenu = [
     {
@@ -2255,6 +2283,14 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     {
       key: 'SUPER', label: 'SuperTrend', active: showSuperTrend,
       on: () => { const v = !showSuperTrend; setShowSuperTrend(v); saveOverlayPrefs({ ...currentOverlayPrefs(), SUPER: v }); setOpenMenu(null); },
+    },
+    {
+      key: 'FRACTAL', label: '顶/底分型', active: showFractal,
+      on: () => { const v = !showFractal; setShowFractal(v); saveOverlayPrefs({ ...currentOverlayPrefs(), FRACTAL: v }); setOpenMenu(null); },
+    },
+    {
+      key: 'DIVERG', label: 'MACD背离', active: showDiverg,
+      on: () => { const v = !showDiverg; setShowDiverg(v); saveOverlayPrefs({ ...currentOverlayPrefs(), DIVERG: v }); setOpenMenu(null); },
     },
   ];
 

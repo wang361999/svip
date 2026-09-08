@@ -336,7 +336,13 @@ export default function SignalPanel({ klines, refreshKey, precision, symbol = 'E
   // 加权综合：回测实证（BTC/ETH 4h+1d 组合）——多头信号重、空头降权(多空不对称)、资金费率逆向高优
   const weighted = useMemo(() => {
     if (!rows.length) return null;
-    const w = (r: Item) => (r.key === 'funding' ? 1.6 : r.verdict === 'bull' ? 1.0 : r.verdict === 'bear' ? 0.6 : 0.3);
+    const w = (r: Item) => {
+      if (r.key === 'funding') return 1.6; // 资金费率逆向：外部情绪，另计量实证的高优因子
+      if (r.key === 'chan') return r.verdict === 'bull' ? 1.3 : 1.1; // 缠论(含结构背驰/买卖点)：摆动极值类，综合读数加权
+      if (r.verdict === 'bull') return 1.0; // 多头侧重（回测：多头期望回报 > 空头）
+      if (r.verdict === 'bear') return 0.6;
+      return 0.3;
+    };
     let b = 0, s = 0;
     for (const r of rows) { if (r.verdict === 'bull') b += w(r); else if (r.verdict === 'bear') s += w(r); }
     const tot = b + s;
