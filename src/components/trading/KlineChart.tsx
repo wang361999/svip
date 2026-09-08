@@ -123,8 +123,9 @@ function saveIndicatorPrefs(next: typeof DEFAULT_INDICATORS) {
 // 同样存于浏览器本地，刷新/换币种/换周期后保持用户的选择
 // 会员用户额外同步到后端（跨设备），非会员仅本地
 // 版本号：默认值变更时递增，旧 localStorage 自动失效
-  const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v6';
-const DEFAULT_OVERLAY = { AB9: false, CHANNEL: false, VALUEAREA: false, ICHIMOKU: false, SYNTH: false, GANN: false, SUPER: false, FRACTAL: false, DIVERG: false };
+  const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v7';
+// 分型 + 背离为默认可见的核心信号（默认开启），版本号递增使旧缓存失效，避免已保存的关闭状态覆盖新默认
+const DEFAULT_OVERLAY = { AB9: false, CHANNEL: false, VALUEAREA: false, ICHIMOKU: false, SYNTH: false, GANN: false, SUPER: false, FRACTAL: true, DIVERG: true };
 
 function loadOverlayPrefs() {
   if (typeof window === 'undefined') return { ...DEFAULT_OVERLAY };
