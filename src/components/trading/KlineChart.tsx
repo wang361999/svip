@@ -907,11 +907,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     if (showFractalRef.current) {
       for (const h of fs.fractalHighs) {
         if (h.idx < 0 || h.idx >= klines.length || lastIdx - h.idx > win) continue;
-        mk.push({ time: klines[h.idx].time as Time, position: 'aboveBar', color: '#f87171', shape: 'arrowDown', size: 2 });
+        mk.push({ time: klines[h.idx].time as Time, position: 'aboveBar', color: '#f87171', shape: 'arrowDown', size: 1 });
       }
       for (const l of fs.fractalLows) {
         if (l.idx < 0 || l.idx >= klines.length || lastIdx - l.idx > win) continue;
-        mk.push({ time: klines[l.idx].time as Time, position: 'belowBar', color: '#34d399', shape: 'arrowUp', size: 2 });
+        mk.push({ time: klines[l.idx].time as Time, position: 'belowBar', color: '#34d399', shape: 'arrowUp', size: 1 });
       }
     }
     const macd = showDivergRef.current ? calcMACD(klines, 12, 26, 9) : null;
