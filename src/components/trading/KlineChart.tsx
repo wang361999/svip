@@ -941,6 +941,13 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     drawFractalDivergMarkers(allKlinesRef.current);
   }, [showFractal, showDiverg, drawFractalDivergMarkers]);
 
+  // 会员状态异步加载（isMember 初始为 false，/api/auth/me 返回后才变 true）。
+  // 若首屏 updateChart 时会员尚未就绪，标记会被跳过；此处会员状态变化时立即补画，
+  // 避免"刷新才有信号"。会员降级时也会自动清空标记。
+  useEffect(() => {
+    drawFractalDivergMarkers(allKlinesRef.current);
+  }, [isMember, drawFractalDivergMarkers]);
+
   // 更新K线数据
   const updateChart = useCallback((klines: KlineData[], intv?: string) => {
     allKlinesRef.current = klines;
