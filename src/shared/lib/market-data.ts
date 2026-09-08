@@ -294,7 +294,7 @@ export async function fetch24hStats(symbol: string, okxId: string) {
 // ========== WebSocket 实时数据 ==========
 
 export interface WSCallbacks {
-  onTrade?: (price: number) => void;
+  onTrade?: (price: number, ts?: number) => void;
   onKline?: (interval: string, kline: KlineData, isFinal: boolean) => void;
   onConnect?: (source: string) => void;
   onDisconnect?: () => void;
@@ -328,7 +328,8 @@ export function createMarketWS(callbacks: WSCallbacks, symbol: string, okxId: st
 
     if (stream === `${streamPrefix}@trade`) {
       const price = parseFloat(data.p);
-      if (price > 0) callbacks.onTrade?.(price);
+      // 传递成交时间戳（秒）：E=事件时间, T=成交时间，供前端做过期/乱序过滤，避免重连回放撑出假针
+      if (price > 0) callbacks.onTrade?.(price, Math.floor((data.T ?? data.E ?? 0) / 1000));
     } else if (stream.includes('kline_')) {
       const k = data.k;
       if (!k) return;
@@ -353,7 +354,8 @@ export function createMarketWS(callbacks: WSCallbacks, symbol: string, okxId: st
       if (channel === 'tickers') {
         const t = msg.data[0];
         const price = parseFloat(t.last);
-        if (price > 0) callbacks.onTrade?.(price);
+        // 传递行情时间戳（t.ts 服务端毫秒）：供前端过期/乱序过滤
+        if (price > 0) callbacks.onTrade?.(price, Math.floor(+t.ts / 1000));
       } else if (channel.startsWith('candle')) {
         const d = msg.data[0];
         const intervalMap: Record<string, string> = {
@@ -512,7 +514,8 @@ export function createMarketWS(callbacks: WSCallbacks, symbol: string, okxId: st
       if (closed || document.hidden) return;
       try {
         const price = await fetchPrice(symbol, okxId);
-        if (price) callbacks.onTrade?.(price);
+        // REST 降级无精确成交时刻，用本地当前时间兜底（仍参与新鲜度判定）
+        if (price) callbacks.onTrade?.(price, Math.floor(Date.now() / 1000));
       } catch {}
     };
 

@@ -319,6 +319,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
   const allKlinesRef = useRef<KlineData[]>([]);
   const pendingTickRef = useRef<number | null>(null);
+  const pendingTickTsRef = useRef<number | null>(null);
+  // 最近一次已应用 tick 的成交时间戳：用于过滤过期/乱序 tick（重连回放）
+  const lastTradeTsRef = useRef<number>(0);
   const rAFRef = useRef<number | null>(null);
   const lastTickAtRef = useRef<number>(0);
   // 最近一次已“收盘”的K线时间：用于在丢失 isFinal 消息时也能驱动缠论/九转刷新
@@ -1021,6 +1024,17 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     if (price == null) return;
 
     const last = klines[klines.length - 1];
+    // 过期/乱序 tick 过滤：重连回放或旧成交的时间戳早于当前根/晚于上一笔有效成交时丢弃，
+    // 既不撑高也不撑低，避免“假针”。不影响秒级实时 —— 当前根的实时撑高撑低照旧。
+    const ts = pendingTickTsRef.current;
+    if (ts != null && ts > 0) {
+      if (ts < lastTradeTsRef.current || ts < last.time) {
+        pendingTickRef.current = null;
+        pendingTickTsRef.current = null;
+        return;
+      }
+      lastTradeTsRef.current = ts;
+    }
     last.close = price;
     if (price > last.high) last.high = price;
     if (price < last.low) last.low = price;
@@ -1033,8 +1047,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     setLegend(legendOf(last.open, last.high, last.low, last.close));
   }, [legendOf]);
 
-  const updateTick = useCallback((price: number) => {
+  const updateTick = useCallback((price: number, ts?: number) => {
+    // 乱序保护：较旧的成交不清空已在等待刷新里的更新报价（避免旧 tick 覆盖新 tick）
+    const prevTs = pendingTickTsRef.current;
+    if (ts != null && ts > 0 && prevTs != null && ts < prevTs) return;
     pendingTickRef.current = price;
+    if (ts != null && ts > 0) pendingTickTsRef.current = ts;
     const now = performance.now();
     if (now - lastTickAtRef.current > 50) {
       lastTickAtRef.current = now;
@@ -2244,8 +2262,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     // 连接实时 WebSocket（按当前币种 + 周期订阅）
     const { updatePrice } = usePriceStore.getState();
     const ws = createMarketWS({
-      onTrade: (price) => {
-        updateTick(price);
+      onTrade: (price, ts) => {
+        updateTick(price, ts);
         updatePrice(price);
       },
       onKline: (intv, kline, isFinal) => {
