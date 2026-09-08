@@ -327,6 +327,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const lastTickAtRef = useRef<number>(0);
   // 最近一次已“收盘”的K线时间：用于在丢失 isFinal 消息时也能驱动缠论/九转刷新
   const lastBarTimeRef = useRef<number>(0);
+  // 最近一次分型/背离标记实时刷新时间（flushTick 内 300ms 节流，驱动未确认分型预览）
+  const lastMarkerDrawAtRef = useRef<number>(0);
   // 数据串扰守卫（切换周期/币种时避免新tick/kline写进旧数组造成混图闪跳）：
   //  loadedDataKey = allKlinesRef 当前真实装载的内存×周期签名；
   //  dataKeyRef    = 当前期望的内存×周期（镜像）；两者不一致时丢弃提前到达的实时消息。
@@ -894,8 +896,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
   // 重算并绘制顶/底分型 + 顶/底背离标记。
   // 复用自 updateChart 原逻辑，抽成独立函数以便实时 tick（flushTick / updateLastKline）也能动态刷新。
-  // 分型/背离标记覆盖整段已加载K线（不做近端90根窗口裁剪），滑动查看历史同样可见；
-  // 分型需左右各 2 根确认，故最新未定型 K 线不会产生抖动标记。
+  // 分型/背离标记覆盖整段已加载K线（不做近端90根窗口裁剪），滑动查看历史同样可见。
+  // 分型确认需右侧 3 根收盘（固有滞后）；尾部另叠加半透明“未确认分型”预览（见下），
+  // 价格回落即现、确认后转实心、形态破坏自动消失，缓解确认滞后导致的“标记出现太晚”。
   const drawFractalDivergMarkers = useCallback((klines: KlineData[]) => {
     if (!candleSeries.current) return;
     candleSeries.current.setMarkers([]);
@@ -933,6 +936,33 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         if (cl[b.idx] < cl[a.idx] && db > da) mk.push({ time: klines[b.idx].time as Time, position: 'belowBar', color: '#06b6d4', shape: 'circle', size: 2 });
       }
     }
+    // —— 尾部未确认分型预览（半透明）——
+    // 确认分型需右侧 3 根收盘，固有滞后最多 3 根；此处对“右确认不足但形态已成”的尾部
+    // 局部极值打半透明预览箭头：至少已有 1 根右侧K线回落（价格停止创新高/新低）才显示，
+    // 配合 flushTick 的 300ms 节流刷新，回落瞬间即现、确认后转实心、形态破坏自动消失。
+    const used = new Set(mk.map((m) => m.time as number));
+    const PROV = 3;
+    const provStart = klines.length - PROV;
+    if (provStart > PROV && showFractalRef.current) {
+      for (let i = provStart; i <= klines.length - 2; i++) {
+        let topOk = true, botOk = true;
+        for (let j = 1; j <= PROV; j++) {
+          const li = i - j, ri = i + j;
+          if (li >= 0) {
+            if (klines[i].high < klines[li].high) topOk = false;
+            if (klines[i].low > klines[li].low) botOk = false;
+          }
+          if (ri < klines.length) {
+            if (klines[i].high <= klines[ri].high) topOk = false;
+            if (klines[i].low >= klines[ri].low) botOk = false;
+          }
+        }
+        const t = klines[i].time as number;
+        if (topOk && !used.has(t)) mk.push({ time: t as Time, position: 'aboveBar', color: 'rgba(248,113,113,0.40)', shape: 'arrowDown', size: 1 });
+        if (botOk && !used.has(t)) mk.push({ time: t as Time, position: 'belowBar', color: 'rgba(52,211,153,0.40)', shape: 'arrowUp', size: 1 });
+      }
+    }
+
     // lightweight-charts 契约：markers 必须按时间升序排列。
     // 内部用二分查找（visibleTimedValues）计算可见标记范围，乱序数组会导致区间计算错误、
     // 标记被静默跳过（表现为部分/全部箭头消失、需滑动才出现）。
@@ -1056,7 +1086,15 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     });
     // 图例跟随实时价（50ms 节流内更新，开销可忽略）
     setLegend(legendOf(last.open, last.high, last.low, last.close));
-  }, [legendOf]);
+
+    // 分型/背离标记实时刷新（300ms 节流）：尾部未确认分型预览随 tick 即时呈现/消失，
+    // 重算 300 根K线的分型+MACD 开销可忽略；确认区标记不随盘中波动变化，无抖动。
+    const nowMs = performance.now();
+    if (nowMs - lastMarkerDrawAtRef.current > 300) {
+      lastMarkerDrawAtRef.current = nowMs;
+      drawFractalDivergMarkers(klines);
+    }
+  }, [legendOf, drawFractalDivergMarkers]);
 
   const updateTick = useCallback((price: number, ts?: number) => {
     // 乱序保护：较旧的成交不清空已在等待刷新里的更新报价（避免旧 tick 覆盖新 tick）
