@@ -903,8 +903,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         mk.push({ time: klines[l.idx].time as Time, position: 'belowBar', color: '#34d399', shape: 'arrowUp', size: 1 });
       }
     }
-    const macd = calcMACD(klines, 12, 26, 9);
-    if (showDivergRef.current && macd) {
+    const macd = showDivergRef.current ? calcMACD(klines, 12, 26, 9) : null;
+    if (macd && showDivergRef.current) {
       const cl = klines.map((k) => k.close);
       const highs = [...fs.fractalHighs].sort((a, b) => a.idx - b.idx);
       for (let k = 1; k < highs.length; k++) {
@@ -925,6 +925,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     }
     candleSeries.current.setMarkers(mk);
   }, []); // 全部引用 ref，无需依赖
+
+  // 开关切换（顶/底分型、MACD背离）时立即刷新标记，无需等待下一次 tick/收盘
+  useEffect(() => {
+    drawFractalDivergMarkers(allKlinesRef.current);
+  }, [showFractal, showDiverg, drawFractalDivergMarkers]);
 
   // 更新K线数据
   const updateChart = useCallback((klines: KlineData[], intv?: string) => {
@@ -1017,9 +1022,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     });
     // 图例跟随实时价（50ms 节流内更新，开销可忽略）
     setLegend(legendOf(last.open, last.high, last.low, last.close));
-    // 实时 tick 动态刷新分型/背离标记（分型需2侧确认，其内为稳定值，不产生抖动）
-    drawFractalDivergMarkers(klines);
-  }, [legendOf, drawFractalDivergMarkers]);
+  }, [legendOf]);
 
   const updateTick = useCallback((price: number) => {
     pendingTickRef.current = price;
