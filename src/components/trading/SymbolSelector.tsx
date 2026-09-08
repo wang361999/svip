@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo, type FormEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import useSymbolStore, { SymbolOption } from '@/store/symbolStore';
 import usePriceStore from '@/store/priceStore';
 
@@ -157,6 +157,16 @@ export default function SymbolSelector({
   const priceDirection = usePriceStore((s) => s.priceDirection);
   /** 当前币种价格精度（下拉当前价按此显示） */
   const priceDigits = Math.max(0, Math.min(8, useSymbolStore((s) => s.pricePrecision)));
+  const addCustomSymbol = useSymbolStore((s) => s.addCustomSymbol);
+  const removeCustomSymbol = useSymbolStore((s) => s.removeCustomSymbol);
+  const customSymbols = useSymbolStore((s) => s.customSymbols);
+
+  // ===== 添加自选币种 =====
+  const [addMode, setAddMode] = useState(false);
+  const [addInput, setAddInput] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState('');
+  const [addedOk, setAddedOk] = useState(false);
 
   // 热门币种（按市值/交易量排序的常用币种）
   const HOT_SYMBOLS = useMemo(() => new Set([
@@ -218,6 +228,36 @@ export default function SymbolSelector({
       setSearch('');
     },
     [onChange]
+  );
+
+  const handleAdd = useCallback(
+    async (e: FormEvent) => {
+      e.preventDefault();
+      if (adding || !addInput.trim()) return;
+      setAdding(true);
+      setAddError('');
+      setAddedOk(false);
+      const res = await addCustomSymbol(addInput);
+      setAdding(false);
+      if (res.ok) {
+        setAddInput('');
+        setAddMode(false);
+        setAddedOk(true);
+        setSearch('');
+        window.setTimeout(() => setAddedOk(false), 2200);
+      } else {
+        setAddError(res.error || '添加失败');
+      }
+    },
+    [adding, addInput, addCustomSymbol]
+  );
+
+  const handleRemoveCustom = useCallback(
+    (e: ReactMouseEvent, value: string) => {
+      e.stopPropagation();
+      removeCustomSymbol(value);
+    },
+    [removeCustomSymbol]
   );
 
   const currentSymbol = symbolList.find((s) => s.value === symbol);
@@ -342,6 +382,48 @@ export default function SymbolSelector({
               </div>
             </div>
 
+            {/* 添加自选币种 */}
+            <div className="px-2.5 pt-2">
+              {!addMode ? (
+                <button
+                  onClick={() => setAddMode(true)}
+                  className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11px] font-medium text-blue-400 hover:text-blue-300 rounded-lg border border-dashed border-dark-600/50 hover:border-blue-500/40 transition-colors"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                  </svg>
+                  添加自选币种
+                </button>
+              ) : (
+                <>
+                  <form onSubmit={handleAdd} className="flex gap-1.5">
+                    <input
+                      value={addInput}
+                      onChange={(e) => {
+                        setAddInput(e.target.value);
+                        setAddError('');
+                      }}
+                      placeholder="交易对，如 SOL / SOLUSDT"
+                      className="flex-1 min-w-0 bg-dark-800/60 text-white text-base rounded-lg px-2.5 py-1.5 border border-dark-700/50 focus:outline-none focus:border-blue-500/50 placeholder-dark-500"
+                      autoFocus
+                    />
+                    <button
+                      type="submit"
+                      disabled={adding}
+                      className="px-3 py-1.5 text-[11px] font-semibold text-white rounded-lg bg-blue-600/80 hover:bg-blue-500 transition-colors disabled:opacity-50"
+                    >
+                      {adding ? '校验中' : '添加'}
+                    </button>
+                  </form>
+                  {addError ? (
+                    <div className="mt-1 px-1 text-[10px] text-red-400">{addError}</div>
+                  ) : addedOk ? (
+                    <div className="mt-1 px-1 text-[10px] text-green-400">已添加并切换到该币种</div>
+                  ) : null}
+                </>
+              )}
+            </div>
+
             {/* 分类标签 */}
             <div className="flex px-2.5 pt-2 gap-1">
               {(['hot', 'all'] as const).map((tab) => (
@@ -369,6 +451,7 @@ export default function SymbolSelector({
                 filteredSymbols.map((s) => {
                   const isActive = s.value === symbol;
                   const base = s.baseAsset || s.value.replace('USDT', '');
+                  const isCustom = customSymbols.some((c) => c.value === s.value);
                   const [color1, color2] = getCoinColor(base);
                   return (
                     <button
@@ -414,6 +497,17 @@ export default function SymbolSelector({
                                 d="M5 13l4 4L19 7"
                               />
                             </svg>
+                          )}
+                          {isCustom && (
+                            <span
+                              onClick={(e) => handleRemoveCustom(e, s.value)}
+                              title="移除自选币种"
+                              className="ml-1 flex-shrink-0 text-dark-500 hover:text-red-400 cursor-pointer p-0.5"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                            </span>
                           )}
                         </div>
                         <span className="text-[10px] text-dark-500 block">
