@@ -920,6 +920,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       for (let k = 1; k < highs.length; k++) {
         const a = highs[k - 1], b = highs[k];
         if (b.idx + 1 >= klines.length) break;
+        if (lastIdx - b.idx > win) continue;
         const da = macd.dif[a.idx], db = macd.dif[b.idx];
         if (da == null || db == null) continue;
         if (cl[b.idx] > cl[a.idx] && db < da) mk.push({ time: klines[b.idx].time as Time, position: 'aboveBar', color: '#f97316', shape: 'circle', size: 2 });
@@ -928,6 +929,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       for (let k = 1; k < lows.length; k++) {
         const a = lows[k - 1], b = lows[k];
         if (b.idx + 1 >= klines.length) break;
+        if (lastIdx - b.idx > win) continue;
         const da = macd.dif[a.idx], db = macd.dif[b.idx];
         if (da == null || db == null) continue;
         if (cl[b.idx] < cl[a.idx] && db > da) mk.push({ time: klines[b.idx].time as Time, position: 'belowBar', color: '#06b6d4', shape: 'circle', size: 2 });
