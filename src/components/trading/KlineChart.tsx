@@ -323,9 +323,14 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const lastTickAtRef = useRef<number>(0);
   // 最近一次已“收盘”的K线时间：用于在丢失 isFinal 消息时也能驱动缠论/九转刷新
   const lastBarTimeRef = useRef<number>(0);
+  // 数据串扰守卫（切换周期/币种时避免新tick/kline写进旧数组造成混图闪跳）：
+  //  loadedDataKey = allKlinesRef 当前真实装载的内存×周期签名；
+  //  dataKeyRef    = 当前期望的内存×周期（镜像）；两者不一致时丢弃提前到达的实时消息。
+  const loadedDataKeyRef = useRef<string>('');
+  const dataKeyRef = useRef<string>('');
 
-  // AB9线 + 斐波那契回调线 + 趋势通道 + 安德鲁音叉：从 localStorage 初始化
-  const overlayPrefsInit = loadOverlayPrefs();
+  // AB9线 + 斐波那契回调线 + 趋势通道 + 安德鲁音叉：从 localStorage 初始化（需惰性执行，避免每次渲染读 localStorage）
+  const [overlayPrefsInit] = useState(loadOverlayPrefs);
   const [showAutoAB9, setShowAutoAB9] = useState(overlayPrefsInit.AB9);
   const [showTrendChannel, setShowTrendChannel] = useState(overlayPrefsInit.CHANNEL);
   const [showValueArea, setShowValueArea] = useState(overlayPrefsInit.VALUEAREA ?? false);
@@ -418,6 +423,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const fetchSymbols = useSymbolStore((s) => s.fetchSymbols);
   /** 当前币种价格精度（K线价格轴/十字线按此格式化 — 低价币不再显示成 0.00） */
   const pricePrecision = useSymbolStore((s) => s.pricePrecision);
+  // 期望加载的数据签名（镜像）：切换周期/币种时渲染即更新，供 tick/kline 守卫比对
+  dataKeyRef.current = `${symbol}|${interval}`;
 
   // 切换币种时更新价格轴精度（K线主图 + MACD 快慢线，值随币价量级变化）
   useEffect(() => {
@@ -1008,6 +1015,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     if (!candleSeries.current || !volumeSeries.current) return;
     const klines = allKlinesRef.current;
     if (klines.length === 0) return;
+    // 数据串扰守卫：切换周期/币种且新数据尚未装载完成时，跳过 tick（不写旧数组）
+    if (loadedDataKeyRef.current !== dataKeyRef.current) return;
     const price = pendingTickRef.current;
     if (price == null) return;
 
@@ -1044,6 +1053,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     if (!candleSeries.current || !volumeSeries.current) return;
     const klines = allKlinesRef.current;
     if (klines.length === 0) return;
+    // 数据串扰守卫：切换周期/币种且新数据尚未装载完成时，跳过 K 线消息（写旧数组会造成混图）
+    if (loadedDataKeyRef.current !== dataKeyRef.current) return;
 
     const last = klines[klines.length - 1];
     if (kline.time === last.time) {
@@ -1112,6 +1123,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       // 300 根：OKX 直连上限（Binance/代理均支持更多），大级别波段的 A 点更不容易落在窗口外
       const klines = await fetchKlinesApi(symbol, okxId, intv, 300);
       updateChartRef.current(klines, intv);
+      // 装载完成后打上数据签名：此后新内存/周期的实时 tick 才允许应用到图表
+      loadedDataKeyRef.current = `${symbol}|${intv}`;
     } catch (err: any) {
       setError(err.message || '获取K线数据失败');
     } finally {
@@ -2157,8 +2170,15 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     };
     window.addEventListener('resize', handleResize);
     handleResize();
+    // 容器尺寸变化时跟随重排（面板开合 / 侧栏 / 响应式回流不触发 window.resize，需 ResizeObserver）
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && mainChartRef.current) {
+      ro = new ResizeObserver(() => handleResize());
+      ro.observe(mainChartRef.current);
+    }
 
     return () => {
+      if (ro) ro.disconnect();
       window.removeEventListener('resize', handleResize);
       chart.remove();
       mChart.remove();
@@ -2274,35 +2294,35 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     },
     {
       key: 'CHANNEL', label: '趋势通道', active: showTrendChannel,
-      on: () => { const v = !showTrendChannel; setShowTrendChannel(v); saveOverlayPrefs({ ...currentOverlayPrefs(), CHANNEL: v }); setOpenMenu(null); },
+      on: () => { const v = !showTrendChannel; setShowTrendChannel(v); saveOverlayPrefs({ ...currentOverlayPrefs(), CHANNEL: v }); saveUserPref('prefCHANNEL', v); setOpenMenu(null); },
     },
     {
       key: 'VALUEAREA', label: '价值区域 VA', active: showValueArea,
-      on: () => { const v = !showValueArea; setShowValueArea(v); saveOverlayPrefs({ ...currentOverlayPrefs(), VALUEAREA: v }); setOpenMenu(null); },
+      on: () => { const v = !showValueArea; setShowValueArea(v); saveOverlayPrefs({ ...currentOverlayPrefs(), VALUEAREA: v }); saveUserPref('prefVALUEAREA', v); setOpenMenu(null); },
     },
     {
       key: 'ICHIMOKU', label: '一目云图', active: showIchimoku,
-      on: () => { const v = !showIchimoku; setShowIchimoku(v); saveOverlayPrefs({ ...currentOverlayPrefs(), ICHIMOKU: v }); setOpenMenu(null); },
+      on: () => { const v = !showIchimoku; setShowIchimoku(v); saveOverlayPrefs({ ...currentOverlayPrefs(), ICHIMOKU: v }); saveUserPref('prefICHIMOKU', v); setOpenMenu(null); },
     },
     {
       key: 'SYNTH', label: '预测合成器', active: showSynth,
-      on: () => { const v = !showSynth; setShowSynth(v); saveOverlayPrefs({ ...currentOverlayPrefs(), SYNTH: v }); setOpenMenu(null); },
+      on: () => { const v = !showSynth; setShowSynth(v); saveOverlayPrefs({ ...currentOverlayPrefs(), SYNTH: v }); saveUserPref('prefSYNTH', v); setOpenMenu(null); },
     },
     {
       key: 'GANN', label: '江恩工具箱', active: showGann,
-      on: () => { const v = !showGann; setShowGann(v); saveOverlayPrefs({ ...currentOverlayPrefs(), GANN: v }); setOpenMenu(null); },
+      on: () => { const v = !showGann; setShowGann(v); saveOverlayPrefs({ ...currentOverlayPrefs(), GANN: v }); saveUserPref('prefGANN', v); setOpenMenu(null); },
     },
     {
       key: 'SUPER', label: 'SuperTrend', active: showSuperTrend,
-      on: () => { const v = !showSuperTrend; setShowSuperTrend(v); saveOverlayPrefs({ ...currentOverlayPrefs(), SUPER: v }); setOpenMenu(null); },
+      on: () => { const v = !showSuperTrend; setShowSuperTrend(v); saveOverlayPrefs({ ...currentOverlayPrefs(), SUPER: v }); saveUserPref('prefSUPER', v); setOpenMenu(null); },
     },
     {
       key: 'FRACTAL', label: '顶/底分型', active: showFractal,
-      on: () => { const v = !showFractal; setShowFractal(v); saveOverlayPrefs({ ...currentOverlayPrefs(), FRACTAL: v }); setOpenMenu(null); },
+      on: () => { const v = !showFractal; setShowFractal(v); saveOverlayPrefs({ ...currentOverlayPrefs(), FRACTAL: v }); saveUserPref('prefFRACTAL', v); setOpenMenu(null); },
     },
     {
       key: 'DIVERG', label: 'MACD背离', active: showDiverg,
-      on: () => { const v = !showDiverg; setShowDiverg(v); saveOverlayPrefs({ ...currentOverlayPrefs(), DIVERG: v }); setOpenMenu(null); },
+      on: () => { const v = !showDiverg; setShowDiverg(v); saveOverlayPrefs({ ...currentOverlayPrefs(), DIVERG: v }); saveUserPref('prefDIVERG', v); setOpenMenu(null); },
     },
   ];
 
