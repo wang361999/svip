@@ -7,7 +7,6 @@ import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
 import PriceTicker from '@/components/trading/PriceTicker';
 import MultiTrendCard from '@/components/trading/MultiTrendCard';
-import TradingSimCard from '@/components/trading/TradingSimCard';
 import useAuthStore from '@/store/authStore';
 import { apiGet } from '@/shared/api/client';
 
@@ -129,9 +128,6 @@ export default function TradingPage() {
 
           {/* 多周期趋势卡片（15m/1h/4h/1d 趋势一览，点击标题栏折叠） */}
           {!isFullscreen && <MultiTrendCard />}
-
-          {/* 预分型模拟盘卡片（跟随当前币种+周期，本金/杠杆可自定） */}
-          {!isFullscreen && <TradingSimCard />}
 
           {/* 底部声明 */}
           {!isFullscreen && (
