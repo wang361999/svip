@@ -809,7 +809,8 @@ export function calcPitchfork(klines: KlineData[], lookback: number = 80): Pitch
 // ========== 缠论（Chanlun）K线合并→分型→笔→中枢→买卖点 ==========
 
 export interface ChanFractal {
-  index: number;
+  index: number;      // 原始K线索引
+  mergedIndex: number; // 合并后K线索引（笔的间隔判断必须用此坐标，避免坐标系混用）
   time: number;
   price: number;
   type: 'top' | 'bottom';
@@ -890,6 +891,7 @@ function mergeKlines(klines: KlineData[]): MergedKline[] {
   const merged: MergedKline[] = [{
     index: 0, time: klines[0].time, high: klines[0].high, low: klines[0].low,
     open: klines[0].open, close: klines[0].close, volume: klines[0].volume,
+    // 首根方向仅用于应对“(第一、二根即包含)”的情况：按涨跌做一个合理初值，随后无包含即更准
     direction: klines[0].close >= klines[0].open ? 'up' : 'down',
   }];
   for (let i = 1; i < klines.length; i++) {
@@ -900,7 +902,7 @@ function mergeKlines(klines: KlineData[]): MergedKline[] {
       (last.high >= curr.high && last.low <= curr.low) ||
       (curr.high >= last.high && curr.low <= last.low);
     if (hasInclusion) {
-      // 按趋势方向合并
+      // 按趋势方向合并（方向保持：向上合并取高高，向下合并取低低）
       if (last.direction === 'up') {
         last.high = Math.max(last.high, curr.high);
         last.low = Math.max(last.low, curr.low);
@@ -910,9 +912,8 @@ function mergeKlines(klines: KlineData[]): MergedKline[] {
       }
       last.volume += curr.volume;
     } else {
-      // 无包含，新增，方向由高低点关系确定
-      const newDir: 'up' | 'down' =
-        curr.high > last.high ? 'up' : curr.low < last.low ? 'down' : last.direction;
+      // 无包含，新增：方向由“当前K线相对上一根合并K线的高低点”决定（无包含时非升即降）
+      const newDir: 'up' | 'down' = curr.high > last.high ? 'up' : 'down';
       merged.push({
         index: i, time: curr.time, high: curr.high, low: curr.low,
         open: curr.open, close: curr.close, volume: curr.volume, direction: newDir,
@@ -932,18 +933,26 @@ function detectChanFractals(merged: MergedKline[]): ChanFractal[] {
     // 顶分型：高点最高 + 低点也最高
     if (curr.high > prev.high && curr.high > next.high &&
         curr.low > prev.low && curr.low > next.low) {
-      fractals.push({ index: curr.index, time: curr.time, price: curr.high, type: 'top' });
+      // 与上一分型在合并K线上至少间隔 2 根（避免紧邻伪分型）
+      const last = fractals[fractals.length - 1];
+      if (!last || i - last.mergedIndex >= 2) {
+        fractals.push({ index: curr.index, mergedIndex: i, time: curr.time, price: curr.high, type: 'top' });
+      }
     }
     // 底分型：低点最低 + 高点也最低
     if (curr.low < prev.low && curr.low < next.low &&
         curr.high < prev.high && curr.high < next.high) {
-      fractals.push({ index: curr.index, time: curr.time, price: curr.low, type: 'bottom' });
+      const last = fractals[fractals.length - 1];
+      if (!last || i - last.mergedIndex >= 2) {
+        fractals.push({ index: curr.index, mergedIndex: i, time: curr.time, price: curr.low, type: 'bottom' });
+      }
     }
   }
   return fractals;
 }
 
-// 笔：连接相邻的顶底分型，要求至少间隔4根K线，中间不能有同向更优分型
+// 笔：连接相邻的顶底分型。
+// 标准要求：顶底分型之间在【合并K线】上至少间隔 4 根；中间不能有同向更优分型。
 function buildBi(fractals: ChanFractal[], klines: KlineData[]): ChanBi[] {
   const bis: ChanBi[] = [];
   if (fractals.length < 2) return bis;
@@ -957,8 +966,8 @@ function buildBi(fractals: ChanFractal[], klines: KlineData[]): ChanBi[] {
       const candidate = fractals[j];
       // 必须是相反类型
       if (candidate.type === start.type) continue;
-      // 间隔至少4根K线
-      if (candidate.index - start.index < 4) continue;
+      // 间隔至少4根合并K线（用 mergedIndex，避免与原始K线坐标系混用）
+      if (candidate.mergedIndex - start.mergedIndex < 4) continue;
       // 对于顶→底（下降笔）：中间不能有比start更高的顶分型
       // 对于底→顶（上升笔）：中间不能有比start更低的底分型
       let valid = true;
@@ -998,6 +1007,8 @@ function buildZhongshu(bis: ChanBi[]): ChanZhongshu[] {
   const zhongshus: ChanZhongshu[] = [];
   if (bis.length < 3) return zhongshus;
 
+  // 相邻两个中枢不允许在时间上重叠：新中枢必须完全在最近一个中枢结束之后才开始。
+  // 否则滑动扫描会生成大量时间重叠、进而产生重复买卖点信号的重复中枢。
   for (let i = 0; i <= bis.length - 3; i++) {
     const b1 = bis[i], b2 = bis[i + 1], b3 = bis[i + 2];
     const r1Low = Math.min(b1.startPrice, b1.endPrice);
@@ -1008,46 +1019,31 @@ function buildZhongshu(bis: ChanBi[]): ChanZhongshu[] {
     const r3High = Math.max(b3.startPrice, b3.endPrice);
     const overlapLow = Math.max(r1Low, r2Low, r3Low);
     const overlapHigh = Math.min(r1High, r2High, r3High);
-    if (overlapLow < overlapHigh) {
-      const last = zhongshus[zhongshus.length - 1];
-      if (last && b1.startTime <= last.endTime) {
-        // 延伸已有中枢前，检查新边界是否仍然有效
-        const newHigh = Math.min(last.high, overlapHigh);
-        const newLow = Math.max(last.low, overlapLow);
-        if (newHigh > newLow) {
-          // 边界仍然有效，延伸中枢
-          last.endTime = b3.endTime;
-          last.high = newHigh;
-          last.low = newLow;
-          last.biCount += 1;
-          // 延伸判断：超过6笔标记延伸
-          last.isExtended = last.biCount >= 6;
-          // 升级判断：超过9笔级别+1
-          if (last.biCount >= 9) last.level = 2;
-        } else {
-          // 边界交叉，中枢被破坏，创建新中枢
-          zhongshus.push({
-            startTime: b1.startTime,
-            endTime: b3.endTime,
-            high: overlapHigh,
-            low: overlapLow,
-            biCount: 3,
-            level: 1,
-            isExtended: false,
-          });
-        }
-      } else {
-        zhongshus.push({
-          startTime: b1.startTime,
-          endTime: b3.endTime,
-          high: overlapHigh,
-          low: overlapLow,
-          biCount: 3,
-          level: 1,
-          isExtended: false,
-        });
+    if (overlapLow >= overlapHigh) continue; // 三笔无重叠区间，不成中枢
+
+    const last = zhongshus[zhongshus.length - 1];
+    if (last && b1.startTime <= last.endTime) {
+      // 窗口仍落在最近中枢的时间跨度内：优先尝试延伸（允许持续吸收后续笔）
+      const newHigh = Math.min(last.high, overlapHigh);
+      const newLow = Math.max(last.low, overlapLow);
+      if (newHigh > newLow) {
+        // 边界仍有效，延伸中枢
+        last.endTime = b3.endTime;
+        last.high = newHigh;
+        last.low = newLow;
+        last.biCount += 1;
+        // 延伸判断：超过6笔标记延伸；超过9笔级别+1
+        last.isExtended = last.biCount >= 6;
+        if (last.biCount >= 9) last.level = 2;
       }
+      // 边界交叉则中枢结构被破坏，跳过该窗口，等窗口完全离开后再开新中枢
+      continue;
     }
+    // 窗口已完全在最近中枢结束之后 → 开新中枢（不与旧中枢时间重叠）
+    zhongshus.push({
+      startTime: b1.startTime, endTime: b3.endTime,
+      high: overlapHigh, low: overlapLow, biCount: 3, level: 1, isExtended: false,
+    });
   }
   return zhongshus;
 }
@@ -1066,125 +1062,110 @@ function detectChanSignals(
   if (zhongshus.length === 0 || bis.length === 0 || klines.length === 0) return signals;
 
   // 遍历每个中枢，检测各自的买卖点
+  // 记录上一段“同方向离开段”，用于背驰两段比较（一买/一卖）
+  const lastSameDirSeg: Record<string, { startIdx: number; endIdx: number; range: number; time: number } | undefined> = {};
+
   for (let zi = 0; zi < zhongshus.length; zi++) {
     const zs = zhongshus[zi];
-    const isLast = zi === zhongshus.length - 1;
 
-    // 找该中枢之后的笔
-    const bisAfterZs = bis.filter(b => b.endTime >= zs.startTime && b.startTime <= (isLast ? Infinity : zhongshus[zi + 1].startTime));
-    if (bisAfterZs.length === 0) continue;
+    // 依时间序收集本中枢结束之后的所有笔（离开段与回抽均取自这些笔）
+    const after: ChanBi[] = [];
+    for (const b of bis) if (b.startTime > zs.endTime) after.push(b);
 
-    // 对每个中枢，检查其后的笔是否形成买卖点
-    for (let bi = 0; bi < bisAfterZs.length; bi++) {
-      const cb = bisAfterZs[bi];
-      const lastPrice = cb.endPrice;
-      const lastTime = cb.endTime;
-      const lastBiLow = Math.min(cb.startPrice, cb.endPrice);
-      const lastBiHigh = Math.max(cb.startPrice, cb.endPrice);
-
-      // 三买：中枢之后某笔的最低点在中枢上沿之上
-      if (lastBiLow > zs.high) {
-        signals.push({
-          type: 'thirdBuy', price: lastPrice, time: lastTime,
-          description: `三买：${zi + 1}#中枢后回踩不破上沿`,
-        });
-        break; // 每个中枢只标第一个三买
-      }
-      // 三卖：中枢之后某笔的最高点在中枢下沿之下
-      if (lastBiHigh < zs.low) {
-        signals.push({
-          type: 'thirdSell', price: lastPrice, time: lastTime,
-          description: `三卖：${zi + 1}#中枢后反弹不破下沿`,
-        });
-        break;
+    // ---- 三类买卖点：离开 + 回抽确认 ----
+    // 标准：向上离开中枢（离开笔高点>上沿），随之回抽一笔向下且其低点不破上沿 → 三买（取回抽低点）；
+    //       向下离开（离开笔低点<下沿），回抽一笔向上且其高点不破下沿 → 三卖（取回抽高点）。
+    for (let bi = 0; bi < after.length - 1; bi++) {
+      const leave = after[bi];
+      const pull = after[bi + 1];
+      const leaveHigh = Math.max(leave.startPrice, leave.endPrice);
+      const leaveLow = Math.min(leave.startPrice, leave.endPrice);
+      if (leave.direction === 'up' && leaveHigh > zs.high) {
+        // 向上离开后，回抽笔必须是向下，且回抽低点不回中枢上沿
+        if (pull.direction === 'down') {
+          const pullLow = Math.min(pull.startPrice, pull.endPrice);
+          if (pullLow > zs.high) {
+            signals.push({
+              type: 'thirdBuy', price: pullLow, time: pull.endTime,
+              description: `三买：${zi + 1}#中枢向上离开后回抽不破上沿`,
+            });
+            break; // 每个中枢只标第一个三买
+          }
+        }
+      } else if (leave.direction === 'down' && leaveLow < zs.low) {
+        // 向下离开后，回抽笔必须是向上，且回抽高点不回中枢下沿
+        if (pull.direction === 'up') {
+          const pullHigh = Math.max(pull.startPrice, pull.endPrice);
+          if (pullHigh < zs.low) {
+            signals.push({
+              type: 'thirdSell', price: pullHigh, time: pull.endTime,
+              description: `三卖：${zi + 1}#中枢向下离开后回抽不破下沿`,
+            });
+            break;
+          }
+        }
       }
     }
 
-    // 对最后一个中枢，额外检测当前价格的买卖点
-    if (isLast) {
-      const lastPrice = klines[klines.length - 1].close;
-      const lastTime = klines[klines.length - 1].time;
-      const bisForLast = bis.filter(b => b.endTime >= zs.startTime);
-      if (bisForLast.length === 0) continue;
-      const lastBi = bisForLast[bisForLast.length - 1];
-      const lastBiLow = Math.min(lastBi.startPrice, lastBi.endPrice);
-      const lastBiHigh = Math.max(lastBi.startPrice, lastBi.endPrice);
+    // ---- 背驰判断（一买/一卖）：对比本中枢离开段与上一段同方向离开段的动能 ----
+    // 将本中枢后连续同向的笔合并为一个离开段，与更早的同方向离开段比较：
+    // MACD 柱面积衰减为第一判据，价格幅度收窄为第二判据。
+    // 相比原实现，不再把一、二类买卖点锁死在最后一根K线，而是随每个中枢逐段确认。
+    if (after.length > 0) {
+      const leave0 = after[0];
+      const dir = leave0.direction;
+      let leaveStartIdx = leave0.startIndex;
+      let leaveEndIdx = leave0.endIndex;
+      let k = 1;
+      while (k < after.length && after[k].direction === dir) { leaveEndIdx = after[k].endIndex; k++; }
+      const leaveStartP = leave0.startPrice;
+      const leaveEndP = after[k - 1].endPrice;
+      const leaveRange = Math.abs(leaveEndP - leaveStartP);
+      const leaveTime = after[k - 1].endTime;
 
-      // 一买：中枢下方，最后一笔下降背驰（MACD 柱面积衰减为第一判据，价格幅度为第二判据）
-      if (lastPrice < zs.low) {
-        const downBis = bisForLast.filter(b => b.direction === 'down');
-        if (downBis.length >= 2) {
-          const lastDown = downBis[downBis.length - 1];
-          const prevDown = downBis[downBis.length - 2];
-          const lastRange = Math.abs(lastDown.endPrice - lastDown.startPrice);
-          const prevRange = Math.abs(prevDown.endPrice - prevDown.startPrice);
-          // MACD 柱面积背驰：后段向下面积(负)绝对值相比前段收缩
-          let macdDiverge: boolean | null = null;
-          if (macdHist) {
-            const aPrev = chanBiMacdArea(macdHist, prevDown.startIndex, prevDown.endIndex);
-            const aLast = chanBiMacdArea(macdHist, lastDown.startIndex, lastDown.endIndex);
-            // 面积有效(两段都非零且方向为负)时才启用面积判据；
-            // 若落在 MACD 预热区(面积为0)则视为无法判定，退回价格幅度。
-            if (aPrev !== 0 && aLast !== 0 && aPrev < 0 && aLast < 0)
-              macdDiverge = Math.abs(aLast) < Math.abs(aPrev) * 0.8;
-            else macdDiverge = null;
-          }
-          // 因:以面积衰减为准(缠论标准)；面积无法判定时退回价格幅度
-          const diverge = macdDiverge !== null ? macdDiverge : lastRange < prevRange * 0.8;
-          if (diverge) {
-            signals.push({
-              type: 'firstBuy', price: lastPrice, time: lastTime,
-              description: macdDiverge !== null
-                ? '一买：中枢下方下降笔 MACD 面积背驰'
-                : '一买：中枢下方下降笔背驰',
-            });
-          }
+      const prevSeg = lastSameDirSeg[dir];
+      if (prevSeg) {
+        let macdDiverge: boolean | null = null;
+        if (macdHist) {
+          const aPrev = chanBiMacdArea(macdHist, prevSeg.startIdx, prevSeg.endIdx);
+          const aLast = chanBiMacdArea(macdHist, leaveStartIdx, leaveEndIdx);
+          // 面积需同号且非零（up 段>0、down 段<0）才启用面积判据；
+          // 落入 MACD 预热区(面积为0)时退回价格幅度。
+          const sameSign = dir === 'up' ? (aPrev > 0 && aLast > 0) : (aPrev < 0 && aLast < 0);
+          if (aPrev !== 0 && aLast !== 0 && sameSign)
+            macdDiverge = Math.abs(aLast) < Math.abs(aPrev) * 0.8;
+          else macdDiverge = null;
         }
-      }
-      // 一卖：中枢上方，最后一笔上升背驰（MACD 柱面积衰减为第一判据）
-      if (lastPrice > zs.high) {
-        const upBis = bisForLast.filter(b => b.direction === 'up');
-        if (upBis.length >= 2) {
-          const lastUp = upBis[upBis.length - 1];
-          const prevUp = upBis[upBis.length - 2];
-          const lastRange = Math.abs(lastUp.endPrice - lastUp.startPrice);
-          const prevRange = Math.abs(prevUp.endPrice - prevUp.startPrice);
-          let macdDiverge: boolean | null = null;
-          if (macdHist) {
-            const aPrev = chanBiMacdArea(macdHist, prevUp.startIndex, prevUp.endIndex);
-            const aLast = chanBiMacdArea(macdHist, lastUp.startIndex, lastUp.endIndex);
-            if (aPrev !== 0 && aLast !== 0 && aPrev > 0 && aLast > 0)
-              macdDiverge = Math.abs(aLast) < Math.abs(aPrev) * 0.8;
-            else macdDiverge = null;
-          }
-          const diverge = macdDiverge !== null ? macdDiverge : lastRange < prevRange * 0.8;
-          if (diverge) {
-            signals.push({
-              type: 'firstSell', price: lastPrice, time: lastTime,
-              description: macdDiverge !== null
-                ? '一卖：中枢上方上升笔 MACD 面积背驰'
-                : '一卖：中枢上方上升笔背驰',
-            });
-          }
-        }
-      }
-      // 二买：中枢内偏上，回踩未破下沿
-      if (lastPrice > zs.low && lastPrice < zs.high && lastBi.direction === 'down') {
-        if (lastBi.endPrice > zs.low) {
+        const diverge = macdDiverge !== null ? macdDiverge : leaveRange < prevSeg.range * 0.8;
+        if (diverge) {
+          const isBuy = dir === 'down';
           signals.push({
-            type: 'secondBuy', price: lastPrice, time: lastTime,
-            description: '二买：中枢内回踩未破下沿',
+            type: isBuy ? 'firstBuy' : 'firstSell',
+            price: leaveEndP, time: leaveTime,
+            description: `${isBuy ? '一买' : '一卖'}：${zi + 1}#中枢离开段 ${macdDiverge !== null ? 'MACD 面积背驰' : '价格幅度背驰'}`,
           });
         }
       }
-      // 二卖：中枢内偏下，反弹未破上沿
-      if (lastPrice > zs.low && lastPrice < zs.high && lastBi.direction === 'up') {
-        if (lastBi.endPrice < zs.high) {
-          signals.push({
-            type: 'secondSell', price: lastPrice, time: lastTime,
-            description: '二卖：中枢内反弹未破上沿',
-          });
-        }
+      lastSameDirSeg[dir] = { startIdx: leaveStartIdx, endIdx: leaveEndIdx, range: leaveRange, time: leaveTime };
+    }
+
+    // ---- 二类买卖点：离开段后的第一次回试未回到中枢边界（次级别确认） ----
+    // 用「中枢结束后的第一笔」作为回试笔：回试笔向下且其低点不破下沿 → 二买；
+    // 回试笔向上且其高点不破上沿 → 二卖。不再取整段末尾最后一笔，避免重复信号。
+    if (after.length > 0) {
+      const retest = after[0];
+      const low = Math.min(retest.startPrice, retest.endPrice);
+      const high = Math.max(retest.startPrice, retest.endPrice);
+      if (retest.direction === 'down' && low > zs.low) {
+        signals.push({
+          type: 'secondBuy', price: retest.endPrice, time: retest.endTime,
+          description: `二买：${zi + 1}#中枢离开后回试未破下沿`,
+        });
+      } else if (retest.direction === 'up' && high < zs.high) {
+        signals.push({
+          type: 'secondSell', price: retest.endPrice, time: retest.endTime,
+          description: `二卖：${zi + 1}#中枢离开后回试未破上沿`,
+        });
       }
     }
   }
