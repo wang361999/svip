@@ -69,6 +69,13 @@ const AB9_COLORS: Record<number, string> = {
   9: 'rgba(168, 85, 247, 0.85)',
 };
 
+// 周期 → 毫秒（R4 跨周期投射用）
+const INTERVAL_MS: Record<string, number> = {
+  '1m': 60_000, '5m': 300_000, '15m': 900_000, '30m': 1_800_000,
+  '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000,
+};
+const FOUR_H_MS = 14_400_000;
+
 // ===== 图表视觉主题（全局统一：Binance 色系 + 点状淡网格 + 统一字体） =====
 const CHART_FONT = '-apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif';
 const CANDLE_UP = '#0ecb81';    // 涨·Binance 绿
@@ -319,6 +326,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const srLinesRef = useRef<any[]>([]);
 
   const allKlinesRef = useRef<KlineData[]>([]);
+  // 4h 级别K线缓存（R4 跨周期分型投射用）：独立于当前显示周期拉取，fetchKlines TTL 缓存 5 分钟
+  const k4hRef = useRef<KlineData[]>([]);
   const pendingTickRef = useRef<number | null>(null);
   const pendingTickTsRef = useRef<number | null>(null);
   // 最近一次已应用 tick 的成交时间戳：用于过滤过期/乱序 tick（重连回放）
@@ -420,6 +429,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const showDivergRef = useRef(showDiverg);
   showDivergRef.current = showDiverg;
   const interval = useChartStore((s) => s.interval);
+  // 当前周期镜像 ref：drawFractalDivergMarkers（空依赖 useCallback）内读取，判断 R4 投射方式
+  const intervalRef = useRef(interval);
+  intervalRef.current = interval;
   const setIntervalState = useChartStore((s) => s.setInterval);
   const symbol = useSymbolStore((s) => s.symbol);
   const okxId = useSymbolStore((s) => s.okxId);
@@ -906,14 +918,17 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
     const fs = detectFractals(klines);
     const mk: SeriesMarker<Time>[] = [];
+    // 4h 周期图上的分型箭头本身就是 4h 级别信号（回测中唯一「每笔毛优势>费用」的周期），
+    // 直接在箭头上方/下方标注 R4；其余周期的箭头保持无文本，R4 由下方跨周期投射逻辑单独绘制。
+    const r4 = intervalRef.current === '4h' ? 'R4' : undefined;
     if (showFractalRef.current) {
       for (const h of fs.fractalHighs) {
         if (h.idx < 0 || h.idx >= klines.length) continue;
-        mk.push({ time: klines[h.idx].time as Time, position: 'aboveBar', color: '#f87171', shape: 'arrowDown', size: 1 });
+        mk.push({ time: klines[h.idx].time as Time, position: 'aboveBar', color: '#f87171', shape: 'arrowDown', size: 1, text: r4 });
       }
       for (const l of fs.fractalLows) {
         if (l.idx < 0 || l.idx >= klines.length) continue;
-        mk.push({ time: klines[l.idx].time as Time, position: 'belowBar', color: '#34d399', shape: 'arrowUp', size: 1 });
+        mk.push({ time: klines[l.idx].time as Time, position: 'belowBar', color: '#34d399', shape: 'arrowUp', size: 1, text: r4 });
       }
     }
     const macd = showDivergRef.current ? calcMACD(klines, 12, 26, 9) : null;
@@ -962,8 +977,84 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         }
         const alpha = inProgress ? 0.30 : 0.45;
         const t = klines[i].time as number;
-        if (topOk && !used.has(t)) mk.push({ time: t as Time, position: 'aboveBar', color: `rgba(248,113,113,${alpha})`, shape: 'arrowDown', size: 1 });
-        if (botOk && !used.has(t)) mk.push({ time: t as Time, position: 'belowBar', color: `rgba(52,211,153,${alpha})`, shape: 'arrowUp', size: 1 });
+        if (topOk && !used.has(t)) mk.push({ time: t as Time, position: 'aboveBar', color: `rgba(248,113,113,${alpha})`, shape: 'arrowDown', size: 1, text: r4 });
+        if (botOk && !used.has(t)) mk.push({ time: t as Time, position: 'belowBar', color: `rgba(52,211,153,${alpha})`, shape: 'arrowUp', size: 1, text: r4 });
+      }
+    }
+
+    // —— R4：4h 级别分型信号跨周期投射（非 4h 周期图上）——
+    // 在 15m/1h 等低周期图上也能一眼看到 4h 级别的顶/底分型（含未确认预览），
+    // 标注 R4 与当前周期自己的箭头区分。数据源为独立拉取的 4h K线（k4hRef）。
+    if (showFractalRef.current && intervalRef.current !== '4h') {
+      const base4 = k4hRef.current;
+      if (base4.length > 10) {
+        // 实时合并：当前周期 < 4h 时，把当前图表实时K线（含 tick）并入最后一个 4h 根，
+        // 让 4h 预览分型随实时价即时演化（high/low 取极值、close 取最新；1d 周期跨度大于
+        // 4h 窗口，合并会引入窗口外价格，故不合并，直接用 4h 缓存数据）。
+        let k4 = base4;
+        const curMs = INTERVAL_MS[intervalRef.current ?? ''] ?? FOUR_H_MS;
+        if (curMs < FOUR_H_MS) {
+          const last = base4[base4.length - 1];
+          let hi = last.high, lo = last.low, cl = last.close;
+          for (let i = klines.length - 1; i >= 0; i--) {
+            const tk = klines[i].time;
+            if (tk < last.time || tk >= last.time + FOUR_H_MS) break;
+            hi = Math.max(hi, klines[i].high);
+            lo = Math.min(lo, klines[i].low);
+            cl = klines[i].close;
+          }
+          k4 = base4.slice(0, -1).concat([{ ...last, high: hi, low: lo, close: cl }]);
+        }
+        // 定位：4h 根时间 → 当前图表「最后一个 time ≤ t」的K线（即包含该 4h 窗口的根；
+        // 4h 边界时刻与 1m/5m/15m/30m/1h 网格对齐，通常精确命中同刻K线）
+        const placeR4 = (t4: number, pos: 'aboveBar' | 'belowBar', color: string) => {
+          let a = 0, b = klines.length - 1, r = -1;
+          while (a <= b) {
+            const m = (a + b) >> 1;
+            if (klines[m].time <= t4) { r = m; a = m + 1; } else b = m - 1;
+          }
+          if (r < 0) return;
+          mk.push({ time: klines[r].time as Time, position: pos, color, shape: pos === 'aboveBar' ? 'arrowDown' : 'arrowUp', size: 1, text: 'R4' });
+        };
+        const fs4 = detectFractals(k4);
+        const confirmed4 = new Set<number>();
+        for (const h of fs4.fractalHighs) {
+          const t = k4[h.idx]?.time;
+          if (t == null) continue;
+          confirmed4.add(t);
+          placeR4(t, 'aboveBar', '#f87171');
+        }
+        for (const l of fs4.fractalLows) {
+          const t = k4[l.idx]?.time;
+          if (t == null) continue;
+          confirmed4.add(t);
+          placeR4(t, 'belowBar', '#34d399');
+        }
+        // 4h 尾部未确认分型预览（半透明 R4，与当前周期预览同口径）
+        const PROV4 = 3;
+        const ps4 = k4.length - PROV4;
+        if (ps4 > PROV4) {
+          for (let i = ps4; i <= k4.length - 1; i++) {
+            const t = k4[i].time;
+            if (confirmed4.has(t)) continue;
+            const inProgress = i === k4.length - 1;
+            let topOk = true, botOk = true;
+            for (let j = 1; j <= PROV4; j++) {
+              const li = i - j, ri = i + j;
+              if (li >= 0) {
+                if (k4[i].high < k4[li].high) topOk = false;
+                if (k4[i].low > k4[li].low) botOk = false;
+              }
+              if (ri < k4.length) {
+                if (k4[i].high <= k4[ri].high) topOk = false;
+                if (k4[i].low >= k4[ri].low) botOk = false;
+              }
+            }
+            const alpha = inProgress ? 0.30 : 0.45;
+            if (topOk) placeR4(t, 'aboveBar', `rgba(248,113,113,${alpha})`);
+            if (botOk) placeR4(t, 'belowBar', `rgba(52,211,153,${alpha})`);
+          }
+        }
       }
     }
 
@@ -2335,6 +2426,26 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
 
     return () => ws.disconnect();
   }, [interval, symbol, okxId, loadKlines, updateTick]);
+
+  // R4 数据源：独立拉取 4h 级别K线（与当前显示周期无关，切周期不重复请求）。
+  // fetchKlines 对 4h 有 5 分钟 TTL 缓存，此处到点静默刷新形成K线数据；
+  // 数据就绪/刷新后立即重画标记（drawFractalDivergMarkers 内读取 k4hRef 投射 R4）。
+  useEffect(() => {
+    let alive = true;
+    const load4h = () => {
+      fetchKlinesApi(symbol, okxId, '4h', 300)
+        .then((k4) => {
+          if (alive && k4.length > 0) {
+            k4hRef.current = k4;
+            drawFractalDivergMarkers(allKlinesRef.current);
+          }
+        })
+        .catch(() => {});
+    };
+    load4h();
+    const t = setInterval(load4h, 300_000);
+    return () => { alive = false; clearInterval(t); };
+  }, [symbol, okxId, drawFractalDivergMarkers]);
 
   // 菜单点击外部时关闭（用 ref 判断是否点在工具栏内，避免 stopPropagation 时序导致开关点不上）
   useEffect(() => {
