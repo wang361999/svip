@@ -220,7 +220,8 @@ export default function TradingSimCard() {
     setCap(c); setLev(cl); setInLev(String(cl));
     // 持久化订单设置（刷新后依然生效）
     try { window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({ cap: c, lev: cl })); } catch {}
-    setReset(false); // 重新运行，恢复数据
+    // 注意：不 setReset(false)——若已一键清空，应用参数后仍保持清空态（权益按新本金显示），
+    // 不自动恢复历史回放；需要回放时由用户主动点"恢复数据"。
   };
 
   const ivLabel = INTERVALS.find((i) => i.value === interval)?.label ?? interval;
@@ -429,7 +430,7 @@ export default function TradingSimCard() {
                       onClick={() => setReset((c) => !c)}
                       className="text-[11px] rounded-md border border-white/15 px-2 py-0.5 text-dark-300 hover:bg-white/10"
                     >
-                      {reset ? '恢复' : '一键清空'}
+                      {reset ? '恢复数据' : '一键清空'}
                     </button>
                   </div>
                 </div>
