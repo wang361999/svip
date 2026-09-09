@@ -2189,40 +2189,94 @@ export interface RangeBox {
   touches: number;
   /** 当前价在箱体内的位置 */
   position: 'near-support' | 'near-resistance' | 'middle';
+  /** 突破状态：null=区间内；'up'=当前价已站上原阻力（该阻力转为潜在支撑观察位）；'down'=已跌破原支撑 */
+  breakout: 'up' | 'down' | null;
 }
-export function calcRangeBox(klines: KlineData[], lookback = 20): RangeBox | null {
+
+/**
+ * 轻量价位聚类：把相近价位（相对容差 tol）归为一组，返回满足最少点数的组中心。
+ * 用于把散落的摆动高/低点聚成"被多次确认的真实支撑/压力位"，孤立 spike 无法成组。
+ */
+function clusterPriceLevels(
+  prices: number[],
+  tol: number,
+  minCount: number,
+): { center: number; count: number }[] {
+  const sorted = [...prices].sort((a, b) => a - b);
+  const groups: { sum: number; count: number; center: number }[] = [];
+  for (const p of sorted) {
+    let hit = -1;
+    for (let i = 0; i < groups.length; i++) {
+      if (Math.abs(p - groups[i].center) / groups[i].center <= tol) {
+        hit = i;
+        break;
+      }
+    }
+    if (hit >= 0) {
+      groups[hit].sum += p;
+      groups[hit].count++;
+      groups[hit].center = groups[hit].sum / groups[hit].count;
+    } else {
+      groups.push({ sum: p, count: 1, center: p });
+    }
+  }
+  return groups.filter((g) => g.count >= minCount).map((g) => ({ center: g.center, count: g.count }));
+}
+
+export function calcRangeBox(klines: KlineData[], lookback = 80): RangeBox | null {
   const n = klines.length;
-  if (n < 8) return null;
+  if (n < 10) return null;
   const last = klines[n - 1];
   const win = klines.slice(Math.max(0, n - lookback), n);
+  if (win.length < 10) return null;
+
+  // 摆动高低点：左右各一根确认的局部极值
   const swHigh: number[] = [], swLow: number[] = [];
   for (let i = 1; i < win.length - 1; i++) {
     const a = win[i - 1], c = win[i], b = win[i + 1];
     if (c.high >= a.high && c.high >= b.high) swHigh.push(c.high);
     if (c.low <= a.low && c.low <= b.low) swLow.push(c.low);
   }
-  if (swHigh.length < 2 || swLow.length < 2) return null;
-  swHigh.sort((x, y) => x - y);
-  swLow.sort((x, y) => x - y);
-  // 箱体上下沿：取高低点群的稳健代表（排除单一极端 spike）
-  const hiHi = swHigh[Math.min(swHigh.length - 1, Math.floor(swHigh.length * 0.85))];
-  const loLo = swLow[Math.min(swLow.length - 1, Math.floor(swLow.length * 0.15))];
-  const resistance = hiHi > last.close ? hiHi : (swHigh[swHigh.length - 1] || hiHi);
-  const support = loLo < last.close ? loLo : (swLow[0] || loLo);
+  if (swHigh.length + swLow.length < 4) return null;
+
+  // 聚类（1.5% 容差、至少 2 个摆动点确认），生成"被多次触及"的真实价位
+  const tol = 0.015;
+  const highLevels = clusterPriceLevels(swHigh, tol, 2);
+  const lowLevels = clusterPriceLevels(swLow, tol, 2);
+
+  // 压力：当前价上方最近的密集区；支撑：当前价下方最近的密集区。
+  // 高低点聚类合并参与，因为"前高"和"前低"都可能成为后续的支撑/压力（角色可转换）。
+  const resCandidates = [...highLevels, ...lowLevels]
+    .filter((l) => l.center > last.close)
+    .sort((a, b) => a.center - b.center);
+  const supCandidates = [...highLevels, ...lowLevels]
+    .filter((l) => l.center < last.close)
+    .sort((a, b) => b.center - a.center);
+
+  const resistance =
+    resCandidates.length > 0 ? resCandidates[0].center : Math.max(...win.map((k) => k.high));
+  const support =
+    supCandidates.length > 0 ? supCandidates[0].center : Math.min(...win.map((k) => k.low));
   if (support >= resistance) return null;
+
   const mid = (support + resistance) / 2;
   const widthPct = (resistance - support) / Math.max(1e-9, mid) * 100;
   const inside = last.close >= support && last.close <= resistance;
+
   // 触及次数：价格接近上/下沿的K线数（±1.2% 判为一次触及）
   let touches = 0;
   for (const k of win) {
     if (Math.abs(k.high - resistance) / resistance <= 0.012) touches++;
     if (Math.abs(k.low - support) / support <= 0.012) touches++;
   }
+
+  const breakout: 'up' | 'down' | null =
+    last.close > resistance ? 'up' : last.close < support ? 'down' : null;
   const isRange = inside && widthPct >= 0.8 && widthPct <= 12 && touches >= 2;
   const pos = (resistance - support) > 0 ? (last.close - support) / (resistance - support) : 0.5;
   const position = pos < 0.35 ? 'near-support' : pos > 0.65 ? 'near-resistance' : 'middle';
-  return { support, resistance, isRange, widthPct, touches, position };
+
+  return { support, resistance, isRange, widthPct, touches, position, breakout };
 }
 
 // ========== 多周期趋势（结构法）==========
