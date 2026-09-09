@@ -1,6 +1,6 @@
 /**
  * 对拍脚本：真实 K 线 → 规则引擎 → 输出关键数字
- * 验证与手动分析的一致性（腿识别 / 斐波那契 / 预案 / 盈亏比）
+ * 验证与手动分析的一致性（腿识别 / 回调结构 / 预案 / 盈亏比）
  */
 import { analyzeStructure } from '../src/shared/lib/structure-analysis';
 
@@ -37,8 +37,6 @@ async function main() {
   console.log('\n===== 本腿 =====');
   if (a.leg) {
     console.log(`${a.leg.direction === 'up' ? '上涨腿' : '下跌腿'}: ${a.leg.startPrice.toFixed(1)} → ${a.leg.endPrice.toFixed(1)} (${a.leg.rangePct}%), 当前回撤 ${Math.round(a.leg.retracement * 100)}%`);
-    console.log('斐波那契回撤:', a.leg.fibRetracements.map((f) => `${f.ratio * 100}%=${f.price.toFixed(1)}`).join(' '));
-    console.log('斐波那契扩展:', a.leg.fibExtensions.map((f) => `${f.ratio}=${f.price.toFixed(1)}`).join(' '));
   } else {
     console.log('无显著腿');
   }

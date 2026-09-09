@@ -1524,10 +1524,10 @@ export function calcKDJ(klines: KlineData[], n: number = 9, kPeriod: number = 3,
 }
 
 // ========== 共享：分形检测与波段筛选 ==========
-// AB9线（江恩八分法）与斐波那契回调线共用同一套 A/B 点检测逻辑，
-// 保证两套画线在任何行情下始终锚定同一个波段、永不互相矛盾。
+// AB9线（江恩八分法）使用统一的 A/B 点检测逻辑，
+// 保证画线在任何行情下始终锚定同一个波段。
 
-/** AB 波段最小幅度门槛（%，A/B 点检测与 AB9、斐波那契共用，消除多处魔数漂移） */
+/** AB 波段最小幅度门槛（%，A/B 点检测与 AB9 共用，消除多处魔数漂移） */
 const AB_MIN_SWING_PCT = 2;
 
 interface SwingCandidate {
@@ -1555,7 +1555,7 @@ interface SwingCandidate {
  * 已在函数尾部对"未确认运行极值"做投影补齐（仅在创新高/新低时追加），缓解该滞后。
  */
 // 分形点价格 = K线原始最高/最低价（含影线）。
-// 缠论标准定义如此；插针极值处堆积着真实的挂单与止损，AB9/斐波那契/江恩
+// 缠论标准定义如此；插针极值处堆积着真实的挂单与止损，AB9/江恩
 // 的锚定恰恰应取图上可见的真实极值。曾有的"影线过滤"（插针时改用实体价）
 // 会悄悄替换 1/3 以上分形点的价格（ETH 日线实测：顶 39.5%、底 32.5%，
 // 偏移最大 $176），且与"分形判定用原始 high/low 比较"自相矛盾，已删除。
@@ -1637,7 +1637,7 @@ function buildSwings(
  * 选定用于画线的波段：
  * 1. 常规：当前价包含于波段区间内 → 取幅度最大者（与原行为一致）；
  * 2. 向上突破（价格高于所有波段高点）→ 取被突破的、终点最高的上升波段。
- *    其 9线/斐波扩展位恰好构成突破后的目标参考。
+ *    其 9线扩展位恰好构成突破后的目标参考。
  *    修复：此前会一律回退到窗口内"幅度最大"的波段 —— 可能是久远的无关
  *    大波段，甚至是方向相反的下降波段，导致突破后画线整体跳走；
  * 3. 向下跌破（价格低于所有波段低点）→ 镜像取终点最低的下降波段；
@@ -1659,7 +1659,7 @@ function selectSwing(
   //    沿分形序列从最新往回逐波扫描：B=当前分形，A=其前最近的反向分形，
   //    幅度 ≥2% 即命中。此前逻辑只看"最后一个顶分形+最后一个底分形"这一对，
   //    当最近一对是噪声（如 0.1% 的微幅震荡）时会直接放弃，落入下方回退分支，
-  //    导致 9 线/斐波那契整组画在远古价格区间（如全窗口最高→最古老低点）上。
+  //    导致 9 线整组画在远古价格区间（如全窗口最高→最古老低点）上。
   //    修复后跳过噪声波，取最近一段满足幅度阈值的已完成波段，既保持锚定
   //    最近结构，又避免画在远古区间上失去参考意义。
   const sorted: { idx: number; price: number; type: 'H' | 'L' }[] = [
@@ -1760,10 +1760,10 @@ interface ResolvedAB {
 
 /**
  * 一次完成 AB 点检测（分形 → 候选 → 选定），并按“尾部内容签名”做缓存。
- * AB9 与斐波那契共用同一组 A/B 点，避免每条 K 线重复跑 O(n²) 波段筛选。
+ * AB9 与江恩共用同一组 A/B 点，避免每条 K 线重复跑 O(n²) 波段筛选。
  *
  * 注意：不能用数组引用做缓存 key——实时路径会原地改写同一数组（push / 改 last，不换引用），
- * 引用级缓存会让 AB9/斐波那契/江恩画线在整个会话内冻结在首载值，直到切币种/周期。
+ * 引用级缓存会让 AB9/江恩画线在整个会话内冻结在首载值，直到切币种/周期。
  * 改为按 length + 最后一根 time/close 生成内容签名，且仅缓存最近一条（Map 始终 O(1)）。
  */
 const abPointCache = new Map<string, ResolvedAB>();
@@ -1790,137 +1790,6 @@ function resolveABPoints(klines: KlineData[]): ResolvedAB | null {
   abPointCache.clear(); // 仅保留最近一条，防 Map 无限增长
   abPointCache.set(sig, result);
   return result;
-}
-
-// ========== 斐波那契回调线 ==========
-
-export interface FibonacciLevel {
-  /** 比例系数，如 0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.618, 2.618 */
-  ratio: number;
-  /** 对应价格 */
-  price: number;
-  /** 标签，如 "0.0", "23.6", "38.2", "50.0", "61.8", "78.6", "100.0", "161.8", "261.8" */
-  label: string;
-  /** 类型：回调（0-1之间）或扩展（>1） */
-  type: 'retracement' | 'extension';
-}
-
-export interface FibonacciAnalysis {
-  /** A点价格（波段起点） */
-  pointA: number;
-  /** B点价格（波段终点） */
-  pointB: number;
-  /** A点时间 */
-  timeA: number;
-  /** B点时间 */
-  timeB: number;
-  /** AB段高度（绝对值） */
-  height: number;
-  /** 方向 */
-  direction: 'up' | 'down';
-  /** 斐波那契水平线 */
-  levels: FibonacciLevel[];
-  /** 当前价靠近哪个水平（null=不在任何线附近） */
-  nearLevel: number | null;
-  /** 当前价在哪个区间 */
-  betweenLevels: string;
-}
-
-/**
- * 斐波那契回调线算法
- *
- * 基于 AB9 线的分形检测找到最大波段，然后计算斐波那契水平：
- * - 回调位：0%, 23.6%, 38.2%, 50%, 61.8%, 78.6%, 100%
- * - 扩展位：161.8%, 261.8%
- *
- * 上升趋势（A=低点, B=高点）：
- *   回调位价格 = B - height * ratio
- *   扩展位价格 = B + height * (ratio - 1)
- *
- * 下降趋势（A=高点, B=低点）：
- *   回调位价格 = B + height * ratio
- *   扩展位价格 = B - height * (ratio - 1)
- */
-export function calcFibonacci(klines: KlineData[]): FibonacciAnalysis | null {
-  if (!klines || klines.length < 30) return null;
-
-  const currentPrice = klines[klines.length - 1].close;
-
-  // 1. AB 点检测（与 AB9线 共享同一套逻辑 + 引用级缓存，两套画线始终锚定同一组 A/B 点）
-  const resolved = resolveABPoints(klines);
-  if (!resolved) return null;
-  const selected = resolved.selected;
-
-  // 3. 计算斐波那契水平
-  const pointA = selected.startPrice;
-  const pointB = selected.endPrice;
-  const height = Math.abs(pointB - pointA);
-
-  // 斐波那契比例：回调 + 扩展
-  const fibRatios = [
-    { ratio: 0, label: '0.0', type: 'retracement' as const },
-    { ratio: 0.236, label: '23.6', type: 'retracement' as const },
-    { ratio: 0.382, label: '38.2', type: 'retracement' as const },
-    { ratio: 0.5, label: '50.0', type: 'retracement' as const },
-    { ratio: 0.618, label: '61.8', type: 'retracement' as const },
-    { ratio: 0.786, label: '78.6', type: 'retracement' as const },
-    { ratio: 1.0, label: '100.0', type: 'retracement' as const },
-    { ratio: 1.618, label: '161.8', type: 'extension' as const },
-    { ratio: 2.618, label: '261.8', type: 'extension' as const },
-  ];
-
-  const levels: FibonacciLevel[] = fibRatios.map(({ ratio, label, type }) => {
-    let price: number;
-    if (selected.direction === 'up') {
-      // 上升趋势：0%~100% 回调位从高点 B 往回算（0% = B，100% = A）；
-      // >100% 扩展位从 B 向上投影：161.8% = B + H×0.618（即 A + H×1.618）
-      price = ratio <= 1 ? pointB - height * ratio : pointB + height * (ratio - 1);
-    } else {
-      // 下降趋势：0%~100% 回调位从低点 B 往回算（0% = B，100% = A）；
-      // >100% 扩展位从 B 向下投影：161.8% = B − H×0.618（即 A − H×1.618）
-      price = ratio <= 1 ? pointB + height * ratio : pointB - height * (ratio - 1);
-    }
-    return { ratio, price, label, type };
-  });
-
-  // 4. 判断当前价靠近哪个水平
-  const threshold = height * 0.01; // 1% of AB height
-  let nearLevel: number | null = null;
-  for (const level of levels) {
-    if (Math.abs(currentPrice - level.price) <= threshold) {
-      nearLevel = level.ratio;
-      break;
-    }
-  }
-
-  // 5. 判断当前价在哪个区间
-  let betweenLevels = '';
-  const sortedLevels = [...levels].sort((a, b) => a.price - b.price);
-  for (let i = 0; i < sortedLevels.length - 1; i++) {
-    if (currentPrice >= sortedLevels[i].price && currentPrice <= sortedLevels[i + 1].price) {
-      betweenLevels = `${sortedLevels[i].label}% - ${sortedLevels[i + 1].label}%`;
-      break;
-    }
-  }
-  if (!betweenLevels) {
-    if (currentPrice > sortedLevels[sortedLevels.length - 1].price) {
-      betweenLevels = `${sortedLevels[sortedLevels.length - 1].label}% 之上`;
-    } else {
-      betweenLevels = `${sortedLevels[0].label}% 之下`;
-    }
-  }
-
-  return {
-    pointA,
-    pointB,
-    timeA: klines[selected.startIdx].time,
-    timeB: klines[selected.endIdx].time,
-    height,
-    direction: selected.direction,
-    levels,
-    nearLevel,
-    betweenLevels,
-  };
 }
 
 // ========== AB9线（江恩八分法趋势强度）==========
@@ -2009,7 +1878,7 @@ export function calcAB9Lines(klines: KlineData[]): AB9Analysis | null {
 
   const currentPrice = klines[klines.length - 1].close;
 
-  // 1. AB 点检测（与斐波那契共享同一套逻辑 + 引用级缓存，两套画线锚定同一组 A/B 点）
+  // 1. AB 点检测（AB9 与江恩共用同一套逻辑 + 内容签名缓存，画线锚定同一组 A/B 点）
   const resolved = resolveABPoints(klines);
   if (!resolved) return null;
   const selected = resolved.selected;
@@ -2407,8 +2276,8 @@ export function calcTrendSignal(klines: KlineData[]): TrendSignal | null {
 
 // ========== 常驻多空方向信号（结构顺趋势为主） ==========
 // ========== 江恩工具箱（角度线 / 时间周期 / 时价四方 / 轮中轮 / 三分位）==========
-// 全部复用 AB9 的同一组 A/B 波段（resolveABPoints），价格轴各工具与 AB9、
-// 斐波那契锚定完全一致。lib 只产出几何量，像素化由图表层完成。
+// 全部复用 AB9 的同一组 A/B 波段（resolveABPoints），价格轴各工具与 AB9
+// 锚定完全一致。lib 只产出几何量，像素化由图表层完成。
 
 export interface GannFanRay { label: string; ratio: number; }
 

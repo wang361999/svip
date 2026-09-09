@@ -14,7 +14,6 @@ type UpdatePreferencesInput = z.infer<typeof updatePreferencesSchema>;
 function safePreferences(fallback: Partial<UserPreferences> = {}): UserPreferences {
   return {
     prefAB9: true,
-    prefFibonacci: false,
     ...fallback,
   };
 }
@@ -25,14 +24,13 @@ export const userService = {
     try {
       const record = await prisma.user.findUnique({
         where: { id: userId },
-        select: { prefAB9: true, prefFibonacci: true },
+        select: { prefAB9: true },
       });
       if (!record) {
         throw new NotFoundError('USER_NOT_FOUND', '用户不存在');
       }
       return {
         prefAB9: record.prefAB9 === 'true',
-        prefFibonacci: record.prefFibonacci === 'true',
       };
     } catch {
       // 数据库列不同步时，返回安全默认值
@@ -52,19 +50,15 @@ export const userService = {
       if (input.prefAB9 !== undefined) {
         updateData.prefAB9 = input.prefAB9 ? 'true' : 'false';
       }
-      if (input.prefFibonacci !== undefined) {
-        updateData.prefFibonacci = input.prefFibonacci ? 'true' : 'false';
-      }
 
       const record = await prisma.user.update({
         where: { id: userId },
         data: updateData,
-        select: { prefAB9: true, prefFibonacci: true },
+        select: { prefAB9: true },
       });
 
       return {
         prefAB9: record.prefAB9 === 'true',
-        prefFibonacci: record.prefFibonacci === 'true',
       };
     } catch {
       // 数据库列不同步时，返回内存中的值

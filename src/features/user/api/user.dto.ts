@@ -5,5 +5,4 @@
 /** 用户画线偏好 */
 export interface UserPreferences {
   prefAB9: boolean;
-  prefFibonacci: boolean;
 }

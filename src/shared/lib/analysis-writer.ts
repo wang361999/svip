@@ -66,8 +66,6 @@ function numbersMatchAnalysis(text: string, analysis: StructureAnalysis): boolea
   if (analysis.leg) {
     add(analysis.leg.startPrice);
     add(analysis.leg.endPrice);
-    for (const f of analysis.leg.fibRetracements) add(f.price);
-    for (const e of analysis.leg.fibExtensions) add(e.price);
   }
   for (const p of analysis.plans) {
     add(p.entry);
@@ -163,14 +161,12 @@ function buildLlmInput(a: StructureAnalysis): Record<string, unknown> {
       : undefined,
     当前推动腿: a.leg
       ? {
-          术语定义: '推动腿（Impulse Leg）＝最近一段单方向显著推动行情，由 ZigZag(4%) 识别的摆动端点界定；是全部回撤/扩展测算的锚定结构',
+          术语定义: '推动腿（Impulse Leg）＝最近一段单方向显著推动行情，由 ZigZag(4%) 识别的摆动端点界定；是全部回调结构测算的锚定结构',
           方向: a.leg.direction === 'up' ? '上行推动（摆动低点→摆动高点）' : '下行推动（摆动高点→摆动低点）',
           起点价: round2(a.leg.startPrice),
           端点价: round2(a.leg.endPrice),
           推动幅度百分比: a.leg.rangePct,
           当前回撤比例: Math.round(a.leg.retracement * 1000) / 10,
-          斐波那契回撤位: a.leg.fibRetracements.map((f) => ({ [Math.round(f.ratio * 100) + '%']: round2(f.price) })),
-          斐波那契扩展位: a.leg.fibExtensions.map((e) => ({ [String(e.ratio)]: round2(e.price) })),
         }
       : null,
     预案: a.plans.map(planBrief),

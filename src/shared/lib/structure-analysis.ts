@@ -4,7 +4,7 @@
  * 职责：把三周期 K 线算成结构化分析数据（所有数字都在这里产生）
  * - 三周期趋势判定（4h/1h/15m：EMA20/60 + MACD + 高低点结构）
  * - 本腿识别（最近的显著推动腿）
- * - 斐波那契回撤/扩展 + 江恩八分位 + 成交密集区
+ * - 摆动点回撤结构 + 江恩八分位 + 成交密集区
  * - D/E 双预案生成（短线·时间退出档 + 波段·ATR结构档） + 盈亏比测算 + 失效条件
  *
  * 设计原则：纯函数、零副作用、确定性 —— 同样的 K 线永远算出同样的数字。
@@ -167,8 +167,6 @@ export interface Leg {
   rangePct: number;
   /** 当前价相对腿的回撤比例（0=在终点，1=回到起点） */
   retracement: number;
-  fibRetracements: { ratio: number; price: number }[];
-  fibExtensions: { ratio: number; price: number }[];
 }
 
 /** ZigZag 摆动点（振幅阈值过滤，只保留显著推动结构的端点） */
@@ -315,15 +313,6 @@ function identifyLeg(klines: KlineData[], currentPrice: number): Leg | null {
       ? (extreme - currentPrice) / legSize
       : (currentPrice - extreme) / legSize;
 
-  const fibRetracements = [0.236, 0.382, 0.5, 0.618, 0.786].map((r) => ({
-    ratio: r,
-    price: direction === 'up' ? extreme - legSize * r : extreme + legSize * r,
-  }));
-  const fibExtensions = [1.272, 1.618].map((r) => ({
-    ratio: r,
-    price: base + legSize * r * (direction === 'up' ? 1 : -1),
-  }));
-
   return {
     direction,
     startPrice: base,
@@ -333,8 +322,6 @@ function identifyLeg(klines: KlineData[], currentPrice: number): Leg | null {
     range: legSize,
     rangePct: Math.round((legSize / base) * 1000) / 10,
     retracement: Math.round(retracement * 1000) / 1000,
-    fibRetracements,
-    fibExtensions,
   };
 }
 
@@ -518,9 +505,9 @@ function findFairValueGaps(klines: KlineData[], currentPrice: number, atrValue: 
 const PROB_BARS = 30;
 
 export interface ProfitTarget {
-  /** 方法标识（measured-move / fib-1272 / ...） */
+  /** 方法标识（measured-move / structure / ...） */
   method: string;
-  /** 中文标签（等距测量 / 1.272 扩展 / ...） */
+  /** 中文标签（等距测量 / 前高结构位 / ...） */
   label: string;
   price: number;
   /** 自现价起 N 根 4h 内触及的估算概率（0-100） */
@@ -1115,7 +1102,7 @@ function calcRealtimeSignal(
 export interface PullbackLevel {
   price: number;
   label: string;
-  source: 'fib382' | 'fib500' | 'fib618' | 'fib786' | 'key' | 'volume' | 'ema200' | 'pool';
+  source: 'key' | 'volume' | 'ema200' | 'pool';
 }
 
 export interface DailyPlan {
@@ -1125,7 +1112,7 @@ export interface DailyPlan {
   biasText: string;
   /** 回调参考位（方向侧潜在回调目标，按离现价由近到远，最多6个） */
   pullbackLevels: PullbackLevel[];
-  /** 最佳进场区：2+ 位重叠聚类（容差0.8%）；无重叠时回落到 fib 0.5–0.618 段 */
+  /** 最佳进场区：2+ 位重叠聚类（容差0.8%）；无重叠时回落到方向侧最近回调参考位 */
   entryZone: { low: number; high: number; mid: number; methods: string[] } | null;
   /** 进场区保护位：区域外沿留 0.6% 缓冲 */
   stopHint: number | null;
@@ -1154,18 +1141,6 @@ function calcDailyPlan(a: {
   };
   const onSide = (p: number) => (isLong ? p < currentPrice : p > currentPrice);
 
-  if (leg) {
-    const fibMap: [number, PullbackLevel['source'], string][] = [
-      [0.382, 'fib382', '回调38.2%'],
-      [0.5, 'fib500', '回调50%'],
-      [0.618, 'fib618', '回调61.8%'],
-      [0.786, 'fib786', '回调78.6%'],
-    ];
-    for (const [ratio, src, label] of fibMap) {
-      const f = leg.fibRetracements.find((x) => x.ratio === ratio);
-      if (f && onSide(f.price) && inBand(f.price)) cands.push({ price: f.price, label, source: src });
-    }
-  }
   for (const k of keyLevels) {
     if (onSide(k.price) && inBand(k.price)) cands.push({ price: k.price, label: k.label, source: 'key' });
   }
@@ -1179,8 +1154,8 @@ function calcDailyPlan(a: {
     }
   }
 
-  // 去重（同价位 0.3% 内只留一个，优先 fib > key > 其他）
-  const priority: Record<PullbackLevel['source'], number> = { fib382: 0, fib500: 0, fib618: 0, fib786: 0, key: 1, volume: 2, ema200: 3, pool: 4 };
+  // 去重（同价位 0.3% 内只留一个，优先 key > volume > 其他）
+  const priority: Record<PullbackLevel['source'], number> = { key: 0, volume: 1, ema200: 2, pool: 3 };
   cands.sort((x, y) => priority[x.source] - priority[y.source]);
   const dedup: PullbackLevel[] = [];
   for (const c of cands) {
@@ -1210,15 +1185,15 @@ function calcDailyPlan(a: {
       }
     }
   }
-  // 无重叠簇：回落到 fib 0.5–0.618 段（经典回调进场带）
-  if (!entryZone && leg) {
-    const f5 = leg.fibRetracements.find((x) => x.ratio === 0.5);
-    const f618 = leg.fibRetracements.find((x) => x.ratio === 0.618);
-    if (f5 && f618 && onSide(f5.price) && onSide(f618.price)) {
-      const lo = Math.min(f5.price, f618.price);
-      const hi = Math.max(f5.price, f618.price);
-      entryZone = { low: lo, high: hi, mid: (lo + hi) / 2, methods: ['回调50–61.8%带'] };
-    }
+  // 无重叠簇：回落到方向侧最近的回调参考位（单点 ± 0.3% 带）
+  if (!entryZone && pullbackLevels.length > 0) {
+    const nearest = pullbackLevels[0]; // 已按离现价由近到远排序
+    entryZone = {
+      low: roundPrice(nearest.price * 0.997),
+      high: roundPrice(nearest.price * 1.003),
+      mid: roundPrice(nearest.price),
+      methods: [nearest.label],
+    };
   }
 
   const stopHint = entryZone
@@ -1426,12 +1401,14 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
   let invalidation: { price: number; note: string } | null = null;
 
   if (leg) {
-    const fib = (r: number) => leg.fibRetracements.find((f) => f.ratio === r)!.price;
-    const ext = (r: number) => leg.fibExtensions.find((f) => f.ratio === r)!.price;
     const { highs, lows } = findSwings(k4h.slice(-60));
 
     const isUp = leg.direction === 'up';
     const dirSign: 1 | -1 = isUp ? 1 : -1;
+    // 方向侧最近的回调摆动点（等距测量的回调锚 C；无摆动点时回落到腿起点）
+    const retraceAnchor = isUp
+      ? lows.length > 0 ? lows[lows.length - 1].price : leg.startPrice
+      : highs.length > 0 ? highs[highs.length - 1].price : leg.startPrice;
 
     // ---- 1. 各方法独立投影目标位 ----
     const candidates: ProfitTarget[] = [];
@@ -1444,11 +1421,8 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
       });
     };
 
-    // 等距测量（Measured Move）：目标 = 回调锚 C + |AB|
-    pushTarget('measured-move', '等距测量', fib(0.618) + dirSign * leg.range);
-    // 斐波那契扩展
-    pushTarget('fib-1272', '1.272 扩展', ext(1.272));
-    pushTarget('fib-1618', '1.618 扩展', ext(1.618));
+    // 等距测量（Measured Move）：目标 = 回调摆动锚 C + |AB|
+    pushTarget('measured-move', '等距测量', retraceAnchor + dirSign * leg.range);
     // 前高/前低结构位
     pushTarget('structure', isUp ? '前高结构位' : '前低结构位', leg.endPrice);
     // 成交密集区（方向侧最近一档）
@@ -1473,10 +1447,9 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
 
     // ---- 2. 汇流聚类（≥2 方法重叠才算） ----
     const zones = clusterTargets(profitTargets, currentPrice, dirSign, sigmaPerBar);
-    const entryA = fib(0.618);
-    // 主汇流区：入场之外方向侧最近的区
+    // 主汇流区：入场（回调摆动锚）之外方向侧最近的区
     const beyondEntry = zones.filter((z) =>
-      dirSign === 1 ? z.low > entryA + currentPrice * 0.003 : z.high < entryA - currentPrice * 0.003,
+      dirSign === 1 ? z.low > retraceAnchor + currentPrice * 0.003 : z.high < retraceAnchor - currentPrice * 0.003,
     );
     const zoneA = beyondEntry.length > 0 ? beyondEntry[0] : null;
     confluence = zoneA;
@@ -1498,12 +1471,12 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
 
     // 方案 A/B（回调/突破）已按需求下线，仅保留结构失效位供 AI 解读引用
     if (isUp) {
-      const swingLow = lows.length > 0 ? lows[lows.length - 1].price : fib(0.786);
-      const stopA = Math.min(fib(0.786), swingLow) * 0.996;
+      const swingLow = lows.length > 0 ? lows[lows.length - 1].price : leg.startPrice;
+      const stopA = swingLow * 0.996;
       invalidation = { price: roundPrice(stopA), note: `4h 收盘跌破 ${roundPrice(stopA)} 则该推动腿结构失效` };
     } else {
-      const swingHigh = highs.length > 0 ? highs[highs.length - 1].price : fib(0.786);
-      const stopA = Math.max(fib(0.786), swingHigh) * 1.004;
+      const swingHigh = highs.length > 0 ? highs[highs.length - 1].price : leg.startPrice;
+      const stopA = swingHigh * 1.004;
       invalidation = { price: roundPrice(stopA), note: `4h 收盘升破 ${roundPrice(stopA)} 则该推动腿结构失效` };
     }
   }
@@ -1515,12 +1488,6 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
   if (leg) {
     rawLevels.push({ price: leg.endPrice, label: '推动腿端点' });
     rawLevels.push({ price: leg.startPrice, label: '推动腿起点' });
-    for (const f of leg.fibRetracements) {
-      rawLevels.push({ price: f.price, label: `推动腿${Math.round(f.ratio * 100)}%回撤` });
-    }
-    for (const e of leg.fibExtensions) {
-      rawLevels.push({ price: e.price, label: `推动腿${e.ratio}扩展` });
-    }
   }
   for (const g of gannLevels) {
     rawLevels.push({ price: g.price, label: g.label });
@@ -1547,7 +1514,7 @@ export function analyzeStructure(input: StructureInput): StructureAnalysis {
   for (const l of rawLevels) {
     const dup = merged.find((m) => Math.abs(m.price - l.price) < tol);
     if (dup) {
-      // 保留更具体的标签（斐波那契/江恩优先于 EMA）
+      // 保留更具体的标签（结构位/江恩优先于 EMA）
       if (l.label.length < dup.label.length) dup.label = l.label;
     } else {
       merged.push({
