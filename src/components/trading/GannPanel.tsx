@@ -49,7 +49,7 @@ export default function GannPanel({ klines, refreshKey = 0, precision = 2, symbo
     const cur = klines.length ? klines[klines.length - 1].close : null;
     const fmt = (v: number | null | undefined) => (v == null ? '--' : v.toFixed(precision));
 
-    // 回调位集合：AB9 八分关键档(3/4/5线) + 三分位(1/3、2/3)，按价升序
+    // 回调位集合：AB9 八分关键档(3/8、4/8、5/8) + 三分位(1/3、2/3)，按价升序
     let cl: { label: string; price: number }[] = [];
     if (ab9) for (const ln of ab9.lines) if (ln.lineNo === 3 || ln.lineNo === 4 || ln.lineNo === 5) cl.push({ label: ln.label, price: ln.price });
     if (g.thirds) for (const t of g.thirds) cl.push({ label: t.label, price: t.price });
@@ -138,8 +138,8 @@ export default function GannPanel({ klines, refreshKey = 0, precision = 2, symbo
       </Section>
 
       <Section title="回调位 · AB9 八分结合">
-        <Card name="AB9 回调位 3/4/5线" verdict="osc"
-          value={`3线 ${fmt(lineOf(3))} · 4线 ${fmt(lineOf(4))} · 5线 ${fmt(lineOf(5))}`}
+        <Card name="AB9 回调位 3/8·4/8·5/8" verdict="osc"
+          value={`3/8 ${fmt(lineOf(3))} · 4/8 ${fmt(lineOf(4))} · 5/8 ${fmt(lineOf(5))}`}
           note="江恩八分回调档（回落/反弹参考）" />
         <Card name="当前回调深度" verdict={depthVerdict}
           value={depthPct != null ? `${depthPct}%` : '--'}

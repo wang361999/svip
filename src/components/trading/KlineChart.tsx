@@ -57,8 +57,9 @@ import SignalPanel from './SignalPanel';
 import GannPanel from './GannPanel';
 import IndicatorPanel from './IndicatorPanel';
 
-// AB9线固定彩色（9种不同颜色）
+// AB9线固定彩色（12档：0/8~9/8 八分线 + 1/3、2/3 三分位辅助线；三分位统一灰虚线弱化，与八分线区分层级）
 const AB9_COLORS: Record<number, string> = {
+  0: 'rgba(127, 127, 127, 0.9)',
   1: 'rgba(239, 68, 68, 0.85)',
   2: 'rgba(249, 115, 22, 0.85)',
   3: 'rgba(245, 158, 11, 0.85)',
@@ -68,6 +69,8 @@ const AB9_COLORS: Record<number, string> = {
   7: 'rgba(6, 182, 212, 0.85)',
   8: 'rgba(59, 130, 246, 0.85)',
   9: 'rgba(168, 85, 247, 0.85)',
+  10: 'rgba(148, 163, 184, 0.75)',
+  11: 'rgba(148, 163, 184, 0.75)',
 };
 
 // 周期 → 毫秒（R4 跨周期投射用）
@@ -273,8 +276,9 @@ function drawGannSuite(
   }
 }
 
-// ========== AB9线绘制（斐波那契画法，canvas 叠层） ==========
-// 经典斐波那契回调的画法：A→B 波段虚线（含端点标记）+ 九档水平线从 B 点起向右延伸。
+// ========== AB9线绘制（江恩八分法·斐波那契画法，canvas 叠层） ==========
+// 标准江恩百分比线：A→B 波段按 1/8、2/8、1/3、3/8、4/8、5/8、2/3、6/8、7/8、8/8 分割，
+// 附 0/8（A）、9/8（扩展位）；画法沿用斐波那契回调惯例：A→B 波段虚线（含端点标记）+ 各档水平线从 B 点起向右延伸。
 // 此前用 createPriceLine 画满宽水平线，九线横贯整张图（含波段开始之前的历史区域），
 // 与斐波那契回调线的行业惯例不符；改为 canvas 后横线起于 B、终于右缘。
 
@@ -331,29 +335,38 @@ function drawAB9FibStyle(
     }
   }
 
-  // —— 九档水平线：从 B 向右延伸；标签画在每条线起点右侧（间距过近时跳过防重叠） ——
+  // —— 十二档水平线（0/8~9/8 八分线 + 1/3、2/3 三分位辅助线）：从 B 向右延伸；
+  //    标签画在每条线起点右侧（间距过近时跳过防重叠） ——
   let lastLabelY = -Infinity;
   for (const line of ab9.lines) {
     const y = yOf(line.price);
     if (y === null) continue;
-    const isAxis = line.lineNo === 4; // 中轴
-    const isExt = line.lineNo === 9;  // 1/8 扩展位
+    const isAxis = line.lineNo === 4;                    // 4/8 中轴（强弱分界）
+    const isExt = line.lineNo === 9;                     // 9/8 扩展位
+    const isEdge = line.lineNo === 0 || line.lineNo === 8; // 0/8·A、8/8·B 区间边缘
+    const isThird = line.lineNo === 10 || line.lineNo === 11; // 1/3、2/3 三分位辅助线
     const color = AB9_COLORS[line.lineNo] ?? 'rgba(148, 163, 184, 0.7)';
     ctx.strokeStyle = color;
-    ctx.lineWidth = isAxis ? 1.6 : 1;
-    dash(isExt ? [4, 4] : []);
+    ctx.lineWidth = isAxis || isEdge ? 1.6 : isThird ? 0.8 : 1;
+    dash(isExt || isThird ? [4, 4] : []);
     ctx.beginPath();
     ctx.moveTo(Math.max(0, lineStart), y);
     ctx.lineTo(width, y);
     ctx.stroke();
     dash([]);
-    if (y - lastLabelY >= 11) {
+    if (Math.abs(y - lastLabelY) >= 11) {
       lastLabelY = y;
       ctx.fillStyle = color;
-      ctx.font = `${isAxis ? 'bold ' : ''}9px -apple-system, sans-serif`;
+      ctx.font = `${(isAxis || isEdge) ? 'bold ' : ''}9px -apple-system, sans-serif`;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      const tag = isAxis ? `${line.label}·中轴` : line.label;
+      const tag = isAxis
+        ? `${line.label}·中轴`
+        : isEdge
+          ? (line.lineNo === 0 ? `${line.label}·A` : `${line.label}·B`)
+          : isExt
+            ? `${line.label}·扩展`
+            : line.label;
       ctx.fillText(`${tag} ${fmt(line.price)}`, Math.max(0, lineStart) + 4, y);
     }
   }
@@ -2338,7 +2351,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           }
         }
 
-        // ========== AB9线（斐波那契画法：A→B 波段线 + 自 B 点向右延伸的九档水平线）==========
+        // ========== AB9线（江恩八分法·斐波那契画法：A→B 波段线 + 自 B 点向右延伸的十二档水平线）==========
         if (showAutoAB9Ref.current && isMemberRef.current) {
           const ksA = allKlinesRef.current;
           // 签名含 close：尾部分形预览随最新K线演化，收盘价变化即触发重算（lib 内还有同签名二级缓存）

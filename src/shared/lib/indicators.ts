@@ -1926,14 +1926,16 @@ export function calcFibonacci(klines: KlineData[]): FibonacciAnalysis | null {
 // ========== AB9线（江恩八分法趋势强度）==========
 
 export interface AB9Line {
-  /** 线号 1-9 */
+  /** 线号 0-9（0线=波段起点 A/0/8，8线=波段终点 B/8/8，9线=9/8 扩展位）；10=1/3 三分位，11=2/3 三分位 */
   lineNo: number;
-  /** 比例系数（1/8 ~ 9/8） */
+  /** 比例系数（0/8 ~ 9/8，含 1/3、2/3 三分位） */
   ratio: number;
   /** 对应价格 */
   price: number;
-  /** 标签：1线、2线...9线 */
+  /** 标签：0/8、1/8、2/8、1/3、3/8、4/8、5/8、2/3、6/8、7/8、8/8、9/8 */
   label: string;
+  /** 百分比（0 ~ 112.5） */
+  pct: number;
 }
 
 export interface AB9Analysis {
@@ -1949,7 +1951,7 @@ export interface AB9Analysis {
   height: number;
   /** 方向 */
   direction: 'up' | 'down';
-  /** 9条线 */
+  /** 12条线（0/8~9/8 十条八分线 + 1/3、2/3 两条三分位辅助线） */
   lines: AB9Line[];
   /** 当前价在第几条线附近（null=不在任何线附近） */
   nearLine: number | null;
@@ -1975,7 +1977,7 @@ export interface AB9Analysis {
 export interface AB9Cross {
   /** 触发方向：'up'=向上穿越(升破) 'down'=向下穿越(跌破) */
   dir: 'up' | 'down';
-  /** 被穿越的线号 1-9 */
+  /** 被穿越的线号 0-11（10=1/3、11=2/3） */
   lineNo: number;
   /** 触发时的上一根K线价与当前价 */
   from: number;
@@ -1986,23 +1988,30 @@ export interface AB9Cross {
 }
 
 /**
- * AB9线算法（江恩八分法）
+ * AB9线算法（江恩八分法标准画法：百分比线）
  *
- * 上升趋势：A=低点，B=高点，9线从A往B方向画
- *   1线 = A + H × 1/8
- *   2线 = A + H × 2/8
- *   ...
- *   8线 = A + H × 8/8 = B
- *   9线 = A + H × 9/8（扩展）
+ * 标准江恩百分比线：把一段重要波段（A→B）的涨跌幅按
+ * 1/8、2/8、1/3、3/8、4/8、5/8、2/3、6/8、7/8、8/8 分割，所得横线即
+ * 支撑/压力位；其中 4/8（50%）为多空分界最重要，1/3、3/8、5/8、2/3 次之。
  *
- * 下降趋势：A=高点，B=低点，9线从A往B方向画
+ * 本实现 = 0/8~8/8 九条八分线 + 1/3、2/3 两条三分位辅助线 + 9/8 扩展位：
+ *   0/8 = A（波段起点，区间边缘，最强支撑/压力）
+ *   1/8 = 12.5%（弱位）       2/8 = 25%（强位）
+ *   1/3 = 33.3%（三分位·辅助） 3/8 = 37.5%（平衡区）
+ *   4/8 = 50% 中轴（最重要，强弱分界）
+ *   5/8 = 62.5%（平衡区）      2/3 = 66.7%（三分位·辅助）
+ *   6/8 = 75%（强位）         7/8 = 87.5%（弱位）
+ *   8/8 = B（波段终点，区间边缘，最强压力/支撑）
+ *   9/8 = 112.5%（扩展位，突破后的目标参考）
  *
- * 强度判断：
+ * 上升趋势：A=低点，B=高点，线自 A 向 B 分割；下降趋势：A=高点，B=低点，语义对称。
+ *
+ * 强度判断（回调/反弹相对位置，依江恩八分理论）：
  *   上升趋势回调时：
- *     - 在5线（5/8 = 0.625）之上企稳 = 较强趋势
- *     - 在4-5线之间 = 一般趋势
- *     - 跌破4线（中轴） = 较弱趋势
- *     - 跌破3线 = 趋势破坏
+ *     - 在5/8（0.625）之上企稳 = 较强趋势
+ *     - 在4/8-5/8之间 = 一般趋势
+ *     - 跌破4/8（中轴） = 较弱趋势
+ *     - 跌破3/8 = 趋势破坏
  */
 export function calcAB9Lines(klines: KlineData[]): AB9Analysis | null {
   if (!klines || klines.length < 30) return null;
@@ -2014,21 +2023,31 @@ export function calcAB9Lines(klines: KlineData[]): AB9Analysis | null {
   if (!resolved) return null;
   const selected = resolved.selected;
 
-  // 3. 计算9条线
+  // 3. 计算12条线：0/8~8/8 九条八分线 + 1/3、2/3 两条三分位辅助线 + 9/8 扩展位
+  //    标准江恩百分比线档位集合 = {1/8,2/8,1/3,3/8,4/8,5/8,2/3,6/8,7/8,8/8}，
+  //    4/8（50%）最重要，1/3、3/8、5/8、2/3 次之；0/8 与 8/8 为区间边缘（A/B 点本身）。
   const pointA = selected.startPrice;
   const pointB = selected.endPrice;
   const height = Math.abs(pointB - pointA);
+  // [ratio, lineNo, label]：按价格升序排列，1/3 位于 2/8 与 3/8 之间、2/3 位于 5/8 与 6/8 之间
+  const LINE_DEFS: [number, number, string][] = [
+    [0, 0, '0/8'],
+    [1 / 8, 1, '1/8'],
+    [2 / 8, 2, '2/8'],
+    [1 / 3, 10, '1/3'],
+    [3 / 8, 3, '3/8'],
+    [4 / 8, 4, '4/8'],
+    [5 / 8, 5, '5/8'],
+    [2 / 3, 11, '2/3'],
+    [6 / 8, 6, '6/8'],
+    [7 / 8, 7, '7/8'],
+    [8 / 8, 8, '8/8'],
+    [9 / 8, 9, '9/8'],
+  ];
   const lines: AB9Line[] = [];
-
-  for (let i = 1; i <= 9; i++) {
-    const ratio = i / 8;
-    let price: number;
-    if (selected.direction === 'up') {
-      price = pointA + height * ratio;
-    } else {
-      price = pointA - height * ratio;
-    }
-    lines.push({ lineNo: i, ratio, price, label: `${i}线` });
+  for (const [ratio, lineNo, label] of LINE_DEFS) {
+    const price = selected.direction === 'up' ? pointA + height * ratio : pointA - height * ratio;
+    lines.push({ lineNo, ratio, price, label, pct: Math.round(ratio * 1000) / 10 });
   }
 
   // 4. 判断当前价在哪条线附近
@@ -2057,56 +2076,57 @@ export function calcAB9Lines(klines: KlineData[]): AB9Analysis | null {
     }
   }
   if (!betweenLines) {
-    // 超出9线范围
+    // 超出 0/8~9/8 范围
     if (selected.direction === 'up' && currentPrice > lines[lines.length - 1].price) {
-      betweenLines = `9线之上（扩展区）`;
+      betweenLines = `9/8 之上（扩展区）`;
     } else if (selected.direction === 'up' && currentPrice < lines[0].price) {
-      betweenLines = `1线之下（破位）`;
+      betweenLines = `0/8 之下（破位）`;
     } else if (selected.direction === 'down' && currentPrice < lines[lines.length - 1].price) {
-      betweenLines = `9线之下（扩展区）`;
+      betweenLines = `9/8 之下（扩展区）`;
     } else {
-      betweenLines = `1线之上（破位）`;
+      betweenLines = `0/8 之上（破位）`;
     }
   }
 
   // 强度判定
+  const priceOf = (no: number) => lines.find((l) => l.lineNo === no)?.price ?? NaN;
   if (selected.direction === 'up') {
     // 上升趋势回调
-    const line5 = lines[4].price; // 5线 = 5/8 = 0.625
-    const line4 = lines[3].price; // 4线 = 4/8 = 0.500
-    const line3 = lines[2].price; // 3线 = 3/8 = 0.375
+    const line5 = priceOf(5); // 5/8 = 0.625
+    const line4 = priceOf(4); // 4/8 = 0.500（中轴）
+    const line3 = priceOf(3); // 3/8 = 0.375
 
     if (currentPrice >= line5) {
       trendStrength = '较强趋势';
-      advice = '回调在5线（5/8）之上，趋势强劲，积极做多';
+      advice = '回调在5/8之上，趋势强劲，积极做多';
     } else if (currentPrice >= line4) {
       trendStrength = '一般趋势';
-      advice = '回调在4-5线之间，趋势一般，谨慎做多';
+      advice = '回调在4/8-5/8之间，趋势一般，谨慎做多';
     } else if (currentPrice >= line3) {
       trendStrength = '较弱趋势';
-      advice = '跌破4线中轴，趋势转弱，观望或减仓';
+      advice = '跌破4/8中轴，趋势转弱，观望或减仓';
     } else {
       trendStrength = '趋势破坏';
-      advice = '跌破3线，上升趋势可能已破坏，离场观望';
+      advice = '跌破3/8，上升趋势可能已破坏，离场观望';
     }
   } else {
     // 下降趋势反弹
-    const line5 = lines[4].price;
-    const line4 = lines[3].price;
-    const line3 = lines[2].price;
+    const line5 = priceOf(5);
+    const line4 = priceOf(4);
+    const line3 = priceOf(3);
 
     if (currentPrice <= line5) {
       trendStrength = '较强趋势';
-      advice = '反弹在5线之下，下跌强劲，积极做空';
+      advice = '反弹在5/8之下，下跌强劲，积极做空';
     } else if (currentPrice <= line4) {
       trendStrength = '一般趋势';
-      advice = '反弹在4-5线之间，趋势一般，谨慎做空';
+      advice = '反弹在4/8-5/8之间，趋势一般，谨慎做空';
     } else if (currentPrice <= line3) {
       trendStrength = '较弱趋势';
-      advice = '突破4线中轴，下跌转弱，观望或减空';
+      advice = '突破4/8中轴，下跌转弱，观望或减空';
     } else {
       trendStrength = '趋势破坏';
-      advice = '突破3线，下降趋势可能已破坏，离场观望';
+      advice = '突破3/8，下降趋势可能已破坏，离场观望';
     }
   }
 
@@ -2139,9 +2159,11 @@ export function calcAB9Lines(klines: KlineData[]): AB9Analysis | null {
         const dir: 'up' | 'down' = isAbove ? 'up' : 'down';
         let label: string;
         if (line.lineNo === 4) label = '中轴';
+        else if (line.lineNo === 10) label = '1/3 位';
+        else if (line.lineNo === 11) label = '2/3 位';
         else if (line.lineNo <= 3) label = '趋势破坏区';
         else if (line.lineNo >= 8) label = '突破/扩展区';
-        else label = `${line.lineNo}线`;
+        else label = `${line.label}`;
         cross.push({ dir, lineNo: line.lineNo, from: prevClose, to: currentPrice, label, time: prevTime });
       }
     }
