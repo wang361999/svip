@@ -11,6 +11,8 @@ const BAR_COUNT = 300;
 const REFRESH_MS = 30_000;
 /** 折叠状态持久化 */
 const COLLAPSE_KEY = 'trading-sim-collapsed';
+/** 订单设置（本金/杠杆）持久化 */
+const SETTINGS_KEY = 'trading-sim-settings';
 /** 手续费单边 0.05% × 2，满仓保证金 */
 const FEE = 0.0005;
 const POSRATIO = 1;
@@ -123,6 +125,20 @@ function loadCollapsed(): boolean {
   try { return window.localStorage.getItem(COLLAPSE_KEY) === '1'; } catch { return false; }
 }
 
+/** 读取持久化的订单设置 */
+function loadSettings(): { cap: number; lev: number } {
+  try {
+    const raw = window.localStorage.getItem(SETTINGS_KEY);
+    if (raw) {
+      const o = JSON.parse(raw) as { cap?: number; lev?: number };
+      const cap = Number(o.cap) > 0 ? Number(o.cap) : 10000;
+      const lev = Number(o.lev) >= 1 ? Math.min(125, Number(o.lev)) : 1;
+      return { cap, lev };
+    }
+  } catch { /* 忽略解析错误，用默认值 */ }
+  return { cap: 10000, lev: 1 };
+}
+
 const fmtT = (t: number) => {
   const d = new Date(t * 1000), p = (x: number) => String(x).padStart(2, '0');
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
@@ -154,13 +170,16 @@ export default function TradingSimCard() {
 
   const [klines, setKlines] = useState<KT[] | null>(null);
   const [collapsed, setCollapsed] = useState(loadCollapsed);
-  const [cap, setCap] = useState(10000);
-  const [lev, setLev] = useState(1);
-  const [inCap, setInCap] = useState('10000');
-  const [inLev, setInLev] = useState('1');
+  // 订单设置从 localStorage 恢复
+  const [initSets] = useState(loadSettings);
+  const [cap, setCap] = useState(initSets.cap);
+  const [lev, setLev] = useState(initSets.lev);
+  const [inCap, setInCap] = useState(String(initSets.cap));
+  const [inLev, setInLev] = useState(String(initSets.lev));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [cleared, setCleared] = useState(false);
+  // 一键清空所有数据：true 时整卡显示空账户/清空态
+  const [reset, setReset] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -199,13 +218,18 @@ export default function TradingSimCard() {
     if (!(c > 0) || !(l >= 1)) return;
     const cl = Math.min(125, l);
     setCap(c); setLev(cl); setInLev(String(cl));
-    setCleared(false); // 重算恢复记录
+    // 持久化订单设置（刷新后依然生效）
+    try { window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({ cap: c, lev: cl })); } catch {}
+    setReset(false); // 重新运行，恢复数据
   };
 
   const ivLabel = INTERVALS.find((i) => i.value === interval)?.label ?? interval;
 
-  // 派生指标
+  // 派生指标（一键清空后以空账户统计替代）
   const stats = useMemo(() => {
+    if (reset) {
+      return { finalEquity: cap, ret: 0, closed: [] as Trade[], wins: 0, losses: 0, opens: 0, avgPnl: 0, liq: 0, lastOpen: undefined as Trade | undefined, holding: null as { dir: 'LONG' | 'SHORT'; price: number; size: number; time: number } | null };
+    }
     const r = result;
     if (!r) return null;
     const closed = r.trades.filter((t) => t.act === 'CLOSE');
@@ -222,11 +246,13 @@ export default function TradingSimCard() {
       if (t.act === 'OPEN') holding = { dir: t.dir, price: t.price, size: t.size, time: t.time };
       else if (t.act === 'CLOSE') holding = null;
     }
-    return { r, closed, wins, losses, opens, avgPnl, ret, liq, lastOpen, holding };
-  }, [result, cap]);
+    return { finalEquity: r.finalEquity, ret, closed, wins, losses, opens, avgPnl, liq, lastOpen, holding };
+  }, [result, cap, reset]);
 
   const priceFixed = (v: number) => v.toFixed(pricePrecision ?? 2);
-  const shownTrades = stats && !cleared ? stats.r.trades.slice().reverse() : [];
+  // 交易记录源数据：清空态为空
+  const allTrades = reset ? ([] as Trade[]) : (result?.trades ?? ([] as Trade[]));
+  const shownTrades = [...allTrades].reverse();
 
   return (
     <div className="glass-card overflow-hidden">
@@ -300,7 +326,7 @@ export default function TradingSimCard() {
                   <div>
                     <div className="text-[11px] text-dark-400">虚拟账户权益 (USDT)</div>
                     <div className="text-[32px] font-extrabold tracking-tight text-slate-100 tabular-nums leading-none mt-1">
-                      {money(result!.finalEquity)}
+                      {money(stats.finalEquity)}
                     </div>
                   </div>
                   <div className="text-[11px] text-dark-400 text-right">
@@ -312,8 +338,8 @@ export default function TradingSimCard() {
                   <span className="opacity-60 font-normal">vs {money(cap)} 本金 · {lev}x</span>
                 </div>
                 <div className="mt-3 h-1.5 rounded-full bg-white/[0.07] overflow-hidden">
-                  <div className={`h-full rounded-full transition-all duration-500 ${result!.finalEquity >= cap ? 'bg-gradient-to-r from-green-500 to-emerald-500' : 'bg-gradient-to-r from-red-500 to-rose-500'}`}
-                    style={{ width: `${Math.min(100, Math.max(3, (result!.finalEquity / cap - 1) * 100 + 100))}%` }} />
+                  <div className={`h-full rounded-full transition-all duration-500 ${stats.finalEquity >= cap ? 'bg-gradient-to-r from-green-500 to-emerald-500' : 'bg-gradient-to-r from-red-500 to-rose-500'}`}
+                    style={{ width: `${Math.min(100, Math.max(3, (stats.finalEquity / cap - 1) * 100 + 100))}%` }} />
                 </div>
                 <div className="grid grid-cols-3 gap-2 mt-3">
                   {[
@@ -351,7 +377,7 @@ export default function TradingSimCard() {
                       </div>
                       <div className="flex items-center justify-between text-[10px] text-dark-500 mt-1 border-t border-dashed border-white/10 pt-1">
                         <span>开仓：{fmtT(stats.holding.time)}</span>
-                        <span>交易 #{stats.r.trades.indexOf(stats.r.trades.find((t) => t.act === 'OPEN' && t.time === stats.holding!.time)!) + 1}</span>
+                        <span>交易 #{allTrades.findIndex((t) => t.act === 'OPEN' && t.time === stats.holding!.time) + 1}</span>
                       </div>
                     </div>
                   </div>
@@ -397,13 +423,13 @@ export default function TradingSimCard() {
                   <span className="text-sm font-semibold text-slate-100">交易记录</span>
                   <div className="flex items-center gap-2">
                     <span className="text-[11px] text-dark-400">
-                      {cleared ? '已清空' : `${stats.opens} 单 · ${stats.closed.length} 平（盈${stats.wins}/亏${stats.losses}）`}
+                      {reset ? '已清空' : `${stats.opens} 单 · ${stats.closed.length} 平（盈${stats.wins}/亏${stats.losses}）`}
                     </span>
                     <button
-                      onClick={() => setCleared((c) => !c)}
+                      onClick={() => setReset((c) => !c)}
                       className="text-[11px] rounded-md border border-white/15 px-2 py-0.5 text-dark-300 hover:bg-white/10"
                     >
-                      {cleared ? '恢复' : '一键清空'}
+                      {reset ? '恢复' : '一键清空'}
                     </button>
                   </div>
                 </div>
@@ -443,7 +469,7 @@ export default function TradingSimCard() {
                       </tbody>
                     </table>
                   ) : (
-                    <div className="text-center text-dark-500 text-xs py-5">{cleared ? '交易记录已清空' : '暂无交易记录'}</div>
+                    <div className="text-center text-dark-500 text-xs py-5">{reset ? '交易记录已清空' : '暂无交易记录'}</div>
                   )}
                 </div>
               </div>
