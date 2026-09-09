@@ -128,7 +128,7 @@ export function calcRSIArray(klines: KlineData[], period: number = 14): (number 
     const loss = diff < 0 ? -diff : 0;
     avgGain = (avgGain * (period - 1) + gain) / period;
     avgLoss = (avgLoss * (period - 1) + loss) / period;
-    if (avgLoss === 0) { result.push(100); continue; }
+    if (avgLoss === 0) { result.push(avgGain === 0 ? 50 : 100); continue; }
     const rs = avgGain / avgLoss;
     result.push(100 - 100 / (1 + rs));
   }
@@ -1750,14 +1750,19 @@ interface ResolvedAB {
 }
 
 /**
- * 一次完成 AB 点检测（分形 → 候选 → 选定），并按 klines 引用级缓存。
- * AB9 与斐波那契共用同一组 A/B 点，避免每条 K 线重复跑 O(n²) 波段筛选；
- * WeakMap 只持有弱引用，每次数据刷新传入新数组对象时缓存自然作废，无内存泄漏。
+ * 一次完成 AB 点检测（分形 → 候选 → 选定），并按“尾部内容签名”做缓存。
+ * AB9 与斐波那契共用同一组 A/B 点，避免每条 K 线重复跑 O(n²) 波段筛选。
+ *
+ * 注意：不能用数组引用做缓存 key——实时路径会原地改写同一数组（push / 改 last，不换引用），
+ * 引用级缓存会让 AB9/斐波那契/江恩画线在整个会话内冻结在首载值，直到切币种/周期。
+ * 改为按 length + 最后一根 time/close 生成内容签名，且仅缓存最近一条（Map 始终 O(1)）。
  */
-const abPointCache = new WeakMap<KlineData[], ResolvedAB>();
+const abPointCache = new Map<string, ResolvedAB>();
 
 function resolveABPoints(klines: KlineData[]): ResolvedAB | null {
-  const cached = abPointCache.get(klines);
+  const last = klines[klines.length - 1];
+  const sig = `${klines.length}:${last.time}:${last.close}`;
+  const cached = abPointCache.get(sig);
   if (cached) return cached;
 
   // 仅当两侧分形全为空才放弃：单边行情下一侧分形为空是常态，
@@ -1773,7 +1778,8 @@ function resolveABPoints(klines: KlineData[]): ResolvedAB | null {
   if (!selected) return null;
 
   const result: ResolvedAB = { fractalHighs, fractalLows, selected };
-  abPointCache.set(klines, result);
+  abPointCache.clear(); // 仅保留最近一条，防 Map 无限增长
+  abPointCache.set(sig, result);
   return result;
 }
 
