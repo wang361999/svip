@@ -906,7 +906,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // 分型确认需右侧 3 根收盘（固有滞后）；尾部另叠加半透明“未确认分型”预览（见下），
   // 价格回落即现、确认后转实心、形态破坏自动消失，缓解确认滞后导致的“标记出现太晚”。
   // 开启「分型质量过滤」时，5票超伸证据<2票的噪音分型不显示（回测胜率+3pt，触发时机不变）；
-  // 高置信信号(≥4票或RSI强极值)箭头加大并标「强」。
+  // 高置信信号(≥4票或RSI强极值)以「强」文本+更高不透明度区分，箭头尺寸统一最小(1)。
   const drawFractalDivergMarkers = useCallback((klines: KlineData[]) => {
     if (!candleSeries.current) return;
     candleSeries.current.setMarkers([]);
@@ -928,13 +928,13 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         if (h.idx < 0 || h.idx >= klines.length) continue;
         const q = pass(h.idx, 'high');
         if (q.votes < 2) continue;
-        mk.push({ time: klines[h.idx].time as Time, position: 'aboveBar', color: '#f87171', shape: 'arrowDown', size: q.strong ? 2 : 1, text: q.strong ? '强' : undefined });
+        mk.push({ time: klines[h.idx].time as Time, position: 'aboveBar', color: '#f87171', shape: 'arrowDown', size: 1, text: q.strong ? '强' : undefined });
       }
       for (const l of fs.fractalLows) {
         if (l.idx < 0 || l.idx >= klines.length) continue;
         const q = pass(l.idx, 'low');
         if (q.votes < 2) continue;
-        mk.push({ time: klines[l.idx].time as Time, position: 'belowBar', color: '#34d399', shape: 'arrowUp', size: q.strong ? 2 : 1, text: q.strong ? '强' : undefined });
+        mk.push({ time: klines[l.idx].time as Time, position: 'belowBar', color: '#34d399', shape: 'arrowUp', size: 1, text: q.strong ? '强' : undefined });
       }
     }
     const macd = showDivergRef.current ? calcMACD(klines, 12, 26, 9) : null;
@@ -990,8 +990,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         const qBot = pass(i, 'low');
         const aTop = qTop.strong ? 0.65 : alpha;
         const aBot = qBot.strong ? 0.65 : alpha;
-        if (topOk && !used.has(t) && qTop.votes >= 2) mk.push({ time: t as Time, position: 'aboveBar', color: `rgba(248,113,113,${aTop})`, shape: 'arrowDown', size: qTop.strong ? 2 : 1 });
-        if (botOk && !used.has(t) && qBot.votes >= 2) mk.push({ time: t as Time, position: 'belowBar', color: `rgba(52,211,153,${aBot})`, shape: 'arrowUp', size: qBot.strong ? 2 : 1 });
+        if (topOk && !used.has(t) && qTop.votes >= 2) mk.push({ time: t as Time, position: 'aboveBar', color: `rgba(248,113,113,${aTop})`, shape: 'arrowDown', size: 1 });
+        if (botOk && !used.has(t) && qBot.votes >= 2) mk.push({ time: t as Time, position: 'belowBar', color: `rgba(52,211,153,${aBot})`, shape: 'arrowUp', size: 1 });
       }
     }
 
