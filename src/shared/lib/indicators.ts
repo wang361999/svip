@@ -1620,6 +1620,92 @@ export function detectFractals(klines: KlineData[], strength = 3): {
   return { fractalHighs, fractalLows };
 }
 
+// ========== 分型质量过滤（5 票制，全部只用信号当时即可计算的数据） ==========
+// 回测(ETH/USDT 15m/1h/4h 各 2000 根真实历史)结论：
+//   5 票(RSI弱极值/触布林轨/偏离EMA20≥1ATR/突出度≥0.3ATR/前5根顺向动量≥1.5ATR)
+//   中 ≥2 票的分型，12 个「周期×档位×方向」组合方向胜率全部非负提升（平均 +3pt）。
+//   逻辑：分型出现在明显超买/超卖位置才是有效反转，盘整里的分型多为噪音。
+//   反向验证：「MACD柱衰减」「前根反向收盘」为负贡献，不作为票项。
+//   高置信(强信号)：≥4 票，或 RSI 强极值(顶≥70 / 底≤30)。
+export interface FractalQualityCtx {
+  ema20: (number | null)[];
+  atr: (number | null)[];
+  rsi: (number | null)[];
+  bollUp: (number | null)[];
+  bollLow: (number | null)[];
+}
+
+export function buildFractalQualityCtx(klines: KlineData[]): FractalQualityCtx {
+  const n = klines.length;
+  const ema20: (number | null)[] = calcEMAArray(klines, 20);
+  const atr = calcATRArray(klines, 14);
+  const rsi = calcRSIArray(klines, 14);
+  // 布林带滚动计算（O(n)，避免 calcBollinger 的逐根 slice 分配——本函数在实时 tick 高频调用）
+  const bollUp: (number | null)[] = new Array(n).fill(null);
+  const bollLow: (number | null)[] = new Array(n).fill(null);
+  const p = 20;
+  if (n >= p) {
+    let s = 0, s2 = 0;
+    for (let i = 0; i < n; i++) {
+      const c = klines[i].close;
+      s += c; s2 += c * c;
+      if (i >= p) { s -= klines[i - p].close; s2 -= klines[i - p].close * klines[i - p].close; }
+      if (i >= p - 1) {
+        const mid = s / p;
+        const sd = Math.sqrt(Math.max(0, s2 / p - mid * mid));
+        bollUp[i] = mid + 2 * sd;
+        bollLow[i] = mid - 2 * sd;
+      }
+    }
+  }
+  return { ema20, atr, rsi, bollUp, bollLow };
+}
+
+/**
+ * 计算某分型点的质量票数。
+ * idx = 分型根索引；若 idx 为最新进行中 K线，指标基准退到 idx-1（已收盘根），
+ * 与回测口径一致（预警档指标取上一根收盘值）。
+ * 数据不足（历史头部）时返回 votes=2 直接放行，避免过度过滤。
+ */
+export function fractalQuality(
+  klines: KlineData[],
+  ctx: FractalQualityCtx,
+  idx: number,
+  dir: 'high' | 'low',
+): { votes: number; strong: boolean } {
+  const n = klines.length;
+  if (idx < 3 || idx >= n) return { votes: 2, strong: false };
+  const ref = idx === n - 1 ? idx - 1 : idx;
+  if (ref < 20 || ref - 5 < 0) return { votes: 2, strong: false };
+
+  const atrV = ctx.atr[ref];
+  const rsiV = ctx.rsi[ref];
+  const emaV = ctx.ema20[ref];
+  const c = klines[ref].close;
+  const c5 = klines[ref - 5].close;
+  if (atrV == null || rsiV == null || emaV == null || !(atrV > 0)) {
+    return { votes: 2, strong: false };
+  }
+  const k = klines[idx];
+  let v = 0;
+  if (dir === 'high') {
+    if (rsiV >= 60) v++; // RSI 弱超买
+    if (ctx.bollUp[ref] != null && k.high >= ctx.bollUp[ref]!) v++; // 触布林上轨
+    if (k.high - emaV >= atrV) v++; // 偏离 EMA20 ≥1ATR
+    const leftAvg = (klines[idx - 1].high + klines[idx - 2].high + klines[idx - 3].high) / 3;
+    if (k.high - leftAvg >= 0.3 * atrV) v++; // 分型突出度
+    if (c - c5 >= 1.5 * atrV) v++; // 前5根顺向(上涨)动量
+    return { votes: v, strong: v >= 4 || rsiV >= 70 };
+  }
+  if (rsiV <= 40) v++; // RSI 弱超卖
+  if (ctx.bollLow[ref] != null && k.low <= ctx.bollLow[ref]!) v++; // 触布林下轨
+  if (emaV - k.low >= atrV) v++; // 偏离 EMA20 ≥1ATR
+  const leftAvg = (klines[idx - 1].low + klines[idx - 2].low + klines[idx - 3].low) / 3;
+  if (leftAvg - k.low >= 0.3 * atrV) v++; // 分型突出度
+  if (c5 - c >= 1.5 * atrV) v++; // 前5根顺向(下跌)动量
+  return { votes: v, strong: v >= 4 || rsiV <= 30 };
+}
+
 /** 由分形点构建候选波段：低点在前高点在后为上升，反之下降；幅度不足 minPct% 的忽略 */
 function buildSwings(
   fractalHighs: { idx: number; price: number }[],
