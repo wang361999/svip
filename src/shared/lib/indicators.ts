@@ -2335,32 +2335,6 @@ export interface TrendSignal {
  * 比较带 1e-6 相对容差，避免浮点噪声把"平顶/平底"误判。
  * 高点或低点不足 2 个分形时，对应侧视为"无法判定"。
  */
-/**
- * 信号层专用影线过滤：插针K线（单侧影线占「影线+实体」>70%）的极值视为
- * 流动性扫荡毛刺，HH/LH 结构比较时改用实体端点，避免一根插针被当成
- * "结构性新高/新低"而误报趋势转向。
- *
- * 适用范围（刻意收窄）：仅 calcTrendSignal 等 K 线信号层的结构比较。
- * 图层画线工具（AB9/斐波那契/江恩）的 A/B 锚点一律用 detectFractals 输出
- * 的原始极值——插针处堆积着真实挂单与止损，画线恰恰要锚定图上可见极值。
- * 注意：背离判定不过滤（背离本身就是要捕捉插针极端情绪）。
- */
-const TREND_SPIKE_WICK_RATIO = 0.7;
-
-function spikeAdjustedPrice(k: KlineData, dir: 'high' | 'low'): number {
-  const bodyHigh = Math.max(k.open, k.close);
-  const bodyLow = Math.min(k.open, k.close);
-  const body = bodyHigh - bodyLow;
-  if (dir === 'high') {
-    const wick = Math.max(0, k.high - bodyHigh);
-    const total = wick + body;
-    return total > 0 && wick / total > TREND_SPIKE_WICK_RATIO ? bodyHigh : k.high;
-  }
-  const wick = Math.max(0, bodyLow - k.low);
-  const total = wick + body;
-  return total > 0 && wick / total > TREND_SPIKE_WICK_RATIO ? bodyLow : k.low;
-}
-
 export function calcTrendSignal(klines: KlineData[]): TrendSignal | null {
   if (!klines || klines.length < 20) return null;
 
@@ -2375,11 +2349,8 @@ export function calcTrendSignal(klines: KlineData[]): TrendSignal | null {
   // 相对容差：按价格量级缩放（ETH≈3000 时约 0.003 USDT）
   const eps = Math.max(price, 1) * 1e-6;
 
-  // 高点结构：最近 2 个分形高点（价格先过影线过滤——插针毛刺不算结构性新高）
-  const highs = fractalHighs.slice(-2).map((f) => ({
-    ...f,
-    price: spikeAdjustedPrice(klines[f.idx], 'high'),
-  }));
+  // 高点结构：最近 2 个分形高点
+  const highs = fractalHighs.slice(-2);
   let hh = false; // higher high  高点递升
   let lh = false; // lower high   高点递降
   if (highs.length === 2) {
@@ -2387,11 +2358,8 @@ export function calcTrendSignal(klines: KlineData[]): TrendSignal | null {
     else if (highs[1].price < highs[0].price - eps) lh = true;
   }
 
-  // 低点结构：最近 2 个分形低点（同样过影线过滤）
-  const lows = fractalLows.slice(-2).map((f) => ({
-    ...f,
-    price: spikeAdjustedPrice(klines[f.idx], 'low'),
-  }));
+  // 低点结构：最近 2 个分形低点
+  const lows = fractalLows.slice(-2);
   let hl = false; // higher low   低点递升
   let ll = false; // lower low    低点递降
   if (lows.length === 2) {
@@ -2431,11 +2399,8 @@ export function calcTrendSignal(klines: KlineData[]): TrendSignal | null {
     label = '震荡';
   }
 
-  // 结构上/下沿用过滤价（与 HH/LH 判定口径一致：毛刺极值不作为结构边界展示）
-  const lastHigh =
-    fractalHighs.length > 0 ? spikeAdjustedPrice(klines[fractalHighs[fractalHighs.length - 1].idx], 'high') : null;
-  const lastLow =
-    fractalLows.length > 0 ? spikeAdjustedPrice(klines[fractalLows[fractalLows.length - 1].idx], 'low') : null;
+  const lastHigh = fractalHighs.length > 0 ? fractalHighs[fractalHighs.length - 1].price : null;
+  const lastLow = fractalLows.length > 0 ? fractalLows[fractalLows.length - 1].price : null;
 
   return { direction, strength, label, price, lastHigh, lastLow, changePercent };
 }
