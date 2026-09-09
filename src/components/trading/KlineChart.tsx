@@ -938,13 +938,16 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     }
     // —— 尾部未确认分型预览（半透明）——
     // 确认分型需右侧 3 根收盘，固有滞后最多 3 根；此处对“右确认不足但形态已成”的尾部
-    // 局部极值打半透明预览箭头：至少已有 1 根右侧K线回落（价格停止创新高/新低）才显示，
-    // 配合 flushTick 的 300ms 节流刷新，回落瞬间即现、确认后转实心、形态破坏自动消失。
+    // 局部极值打半透明预览箭头：已回落的倒数第二、三根在回落瞬间即现；最新根（n-1）无右侧，
+    // 仅按左侧极值判定为“进行中”潜在分型预警（更淡），创新高/新低当下就给出最早信号，
+    // 右侧价格反向时形态破坏自动消失。配合 flushTick 的 300ms 节流刷新随实时价更新。
     const used = new Set(mk.map((m) => m.time as number));
     const PROV = 3;
     const provStart = klines.length - PROV;
     if (provStart > PROV && showFractalRef.current) {
-      for (let i = provStart; i <= klines.length - 2; i++) {
+      // 循环覆盖到最新根 n-1，让“可能形成未确认分型”的信号最早呈现
+      for (let i = provStart; i <= klines.length - 1; i++) {
+        const inProgress = i === klines.length - 1;
         let topOk = true, botOk = true;
         for (let j = 1; j <= PROV; j++) {
           const li = i - j, ri = i + j;
@@ -957,9 +960,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             if (klines[i].low >= klines[ri].low) botOk = false;
           }
         }
+        const alpha = inProgress ? 0.30 : 0.45;
         const t = klines[i].time as number;
-        if (topOk && !used.has(t)) mk.push({ time: t as Time, position: 'aboveBar', color: 'rgba(248,113,113,0.40)', shape: 'arrowDown', size: 1 });
-        if (botOk && !used.has(t)) mk.push({ time: t as Time, position: 'belowBar', color: 'rgba(52,211,153,0.40)', shape: 'arrowUp', size: 1 });
+        if (topOk && !used.has(t)) mk.push({ time: t as Time, position: 'aboveBar', color: `rgba(248,113,113,${alpha})`, shape: 'arrowDown', size: 1 });
+        if (botOk && !used.has(t)) mk.push({ time: t as Time, position: 'belowBar', color: `rgba(52,211,153,${alpha})`, shape: 'arrowUp', size: 1 });
       }
     }
 
