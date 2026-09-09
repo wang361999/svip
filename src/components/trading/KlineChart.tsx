@@ -347,7 +347,9 @@ function drawAB9FibStyle(
     ctx.lineTo(width, y);
     ctx.stroke();
     dash([]);
-    if (y - lastLabelY >= 11) {
+    // 用绝对值判断间距：上升趋势 y 随线号递减、下降趋势递增，
+    // 单向比较会让上升趋势除第一根线外全部漏画标签（回退曾误删此修复）
+    if (Math.abs(y - lastLabelY) >= 11) {
       lastLabelY = y;
       ctx.fillStyle = color;
       ctx.font = `${isAxis ? 'bold ' : ''}9px -apple-system, sans-serif`;
