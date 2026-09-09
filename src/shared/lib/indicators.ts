@@ -1554,27 +1554,11 @@ interface SwingCandidate {
  * 注：最近 strength 根K线无法确认为分形（右侧K线数不足），属分形确认机制的固有滞后；
  * 已在函数尾部对"未确认运行极值"做投影补齐（仅在创新高/新低时追加），缓解该滞后。
  */
-/** 插针判定阈值：单侧影线占「影线+实体」的比例，超过视为插针，帧价取实体极点而非毛刺极值 */
-const SPIKE_WICK_RATIO = 0.7;
-
-/**
- * 帧点价的影线过滤：上/下影线占比过高（插针）时，用实体端点替代毛刺极值，
- * 避免长影线把 A/B 顶/底拉偏、导致整组 9 线（斐波）偏移。
- * 仅修正价格量级，不影响"是否为分形"的判定（相邻比较仍用原始 high/low）。
- */
-function fractalPrice(k: KlineData, dir: 'high' | 'low'): number {
-  const bodyHigh = Math.max(k.open, k.close);
-  const bodyLow = Math.min(k.open, k.close);
-  const body = bodyHigh - bodyLow;
-  if (dir === 'high') {
-    const wick = Math.max(0, k.high - bodyHigh);
-    const total = wick + body;
-    return total > 0 && wick / total > SPIKE_WICK_RATIO ? bodyHigh : k.high;
-  }
-  const wick = Math.max(0, bodyLow - k.low);
-  const total = wick + body;
-  return total > 0 && wick / total > SPIKE_WICK_RATIO ? bodyLow : k.low;
-}
+// 分形点价格 = K线原始最高/最低价（含影线）。
+// 缠论标准定义如此；插针极值处堆积着真实的挂单与止损，AB9/斐波那契/江恩
+// 的锚定恰恰应取图上可见的真实极值。曾有的"影线过滤"（插针时改用实体价）
+// 会悄悄替换 1/3 以上分形点的价格（ETH 日线实测：顶 39.5%、底 32.5%，
+// 偏移最大 $176），且与"分形判定用原始 high/low 比较"自相矛盾，已删除。
 
 export function detectFractals(klines: KlineData[], strength = 3): {
   fractalHighs: { idx: number; price: number }[];
@@ -1590,8 +1574,8 @@ export function detectFractals(klines: KlineData[], strength = 3): {
       if (klines[i].high < klines[i - j].high || klines[i].high <= klines[i + j].high) isHigh = false;
       if (klines[i].low > klines[i - j].low || klines[i].low >= klines[i + j].low) isLow = false;
     }
-    if (isHigh) fractalHighs.push({ idx: i, price: fractalPrice(klines[i], 'high') });
-    if (isLow) fractalLows.push({ idx: i, price: fractalPrice(klines[i], 'low') });
+    if (isHigh) fractalHighs.push({ idx: i, price: klines[i].high });
+    if (isLow) fractalLows.push({ idx: i, price: klines[i].low });
   }
 
   // —— 尾部未确认区补齐（缓解最近 strength 根无法确认为分形的固有滞后）——
@@ -1603,10 +1587,8 @@ export function detectFractals(klines: KlineData[], strength = 3): {
     let runHigh = -Infinity; let runHighIdx = -1;
     let runLow = Infinity; let runLowIdx = -1;
     for (let i = tailStart; i < klines.length; i++) {
-      const h = fractalPrice(klines[i], 'high');
-      if (h > runHigh) { runHigh = h; runHighIdx = i; }
-      const l = fractalPrice(klines[i], 'low');
-      if (l < runLow) { runLow = l; runLowIdx = i; }
+      if (klines[i].high > runHigh) { runHigh = klines[i].high; runHighIdx = i; }
+      if (klines[i].low < runLow) { runLow = klines[i].low; runLowIdx = i; }
     }
     const maxConfirmed =
       fractalHighs.length > 0 ? Math.max(...fractalHighs.map((f) => f.price)) : -Infinity;
@@ -1740,8 +1722,7 @@ function selectSwing(
       let runHigh = -Infinity;
       let runHighIdx = anchor.idx;
       for (let i = anchor.idx; i < klines.length; i++) {
-        const h = fractalPrice(klines[i], 'high');
-        if (h > runHigh) { runHigh = h; runHighIdx = i; }
+        if (klines[i].high > runHigh) { runHigh = klines[i].high; runHighIdx = i; }
       }
       if (runHigh > anchor.price && ((runHigh - anchor.price) / anchor.price) * 100 >= AB_MIN_SWING_PCT) {
         return { startPrice: anchor.price, endPrice: runHigh, startIdx: anchor.idx, endIdx: runHighIdx, direction: 'up', range: runHigh - anchor.price };
@@ -1757,8 +1738,7 @@ function selectSwing(
       let runLow = Infinity;
       let runLowIdx = anchor.idx;
       for (let i = anchor.idx; i < klines.length; i++) {
-        const l = fractalPrice(klines[i], 'low');
-        if (l < runLow) { runLow = l; runLowIdx = i; }
+        if (klines[i].low < runLow) { runLow = klines[i].low; runLowIdx = i; }
       }
       if (anchor.price > runLow && ((anchor.price - runLow) / anchor.price) * 100 >= AB_MIN_SWING_PCT) {
         return { startPrice: anchor.price, endPrice: runLow, startIdx: anchor.idx, endIdx: runLowIdx, direction: 'down', range: anchor.price - runLow };
@@ -2551,8 +2531,13 @@ export function calcGannSquareOfNine(klines: KlineData[]): GannSquareOfNine | nu
   const ab = resolveABPoints(klines);
   if (!ab) return null;
   const s = ab.selected;
-  const seed = s.direction === 'up' ? s.endPrice : s.startPrice;
-  const seedIndex = s.direction === 'up' ? s.endIdx : s.startIdx;
+  // 种子 = 波段最近端点（上升=高点，下降=低点），即以"最新完成的极值"为轮心：
+  //   上升波段：高点之上推扩展阻力，高点之下推回撤支撑
+  //   下降波段：低点之上推回撤阻力，低点之下推延伸支撑
+  // 此前下降波段误取 startPrice（高点）为种子，导致"近档支撑"落在当前价上方
+  // （水平线横在价格之上却标为支撑），92% 的下降波段样本语义错误。
+  const seed = s.endPrice;
+  const seedIndex = s.endIdx;
   const steps = [0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1];
   const resistance: GannNineLevel[] = [];
   const support: GannNineLevel[] = [];
@@ -2563,11 +2548,11 @@ export function calcGannSquareOfNine(klines: KlineData[]): GannSquareOfNine | nu
     }
   };
   if (s.direction === 'up') {
-    push(support, -1); // 种子为高点，向下推支撑
-    push(resistance, 1);
+    push(support, -1); // 种子为高点，向下推支撑（回撤档）
+    push(resistance, 1); // 向上推阻力（扩展档）
   } else {
-    push(resistance, 1); // 种子为低点，向上推阻力
-    push(support, -1);
+    push(resistance, 1); // 种子为低点，向上推阻力（回撤档）
+    push(support, -1); // 向下推支撑（延伸档）
   }
   // 就近过滤：≤0 已排除；同一侧内排序
   resistance.sort((a, b) => a.price - b.price);
@@ -2587,8 +2572,11 @@ export function calcGannThirds(klines: KlineData[]): GannThirdLevel[] | null {
   if (!ab) return null;
   const s = ab.selected;
   const H = s.range;
-  const lo = s.startPrice, hi = s.endPrice;
-  const val = (r: number): number => (s.direction === 'up' ? lo + H * r : hi - H * r);
+  // 从波段起点 A 量取：上升（A=低点）向上 1/3、2/3；下降（A=高点）向下 1/3、2/3。
+  // 此前把 startPrice 当 lo、endPrice 当 hi，下降波段时 lo/hi 名实颠倒，
+  // 三分位被算到波段区间之外（低点之下），且与高点锚定的语义相反。
+  const a = s.startPrice;
+  const val = (r: number): number => (s.direction === 'up' ? a + H * r : a - H * r);
   return [
     { ratio: 1 / 3, label: '1/3', price: val(1 / 3) },
     { ratio: 2 / 3, label: '2/3', price: val(2 / 3) },

@@ -90,8 +90,14 @@ export default function GannPanel({ klines, refreshKey = 0, precision = 2, symbo
   }
   const below = levels.filter((l) => cur != null && l.price < cur - 1e-12).sort((a, b) => b.price - a.price);
   const above = levels.filter((l) => cur != null && l.price > cur + 1e-12).sort((a, b) => a.price - b.price);
-  const supBelow = g.squareOfNine ? g.squareOfNine.support[0] : null;
-  const resAbove = g.squareOfNine ? g.squareOfNine.resistance[0] : null;
+  // "近档"= 离当前价最近，而非离种子最近：support[] 按离种子降序、resistance[] 按离种子升序排列，
+  // 直接取 [0] 会在价格远离种子（如下降波段低点反弹）时把远在价格上方的档位显示成"近档支撑"。
+  const supBelow = g.squareOfNine && cur != null
+    ? g.squareOfNine.support.filter((l) => l.price <= cur + 1e-9).sort((a, b) => b.price - a.price)[0] ?? null
+    : null;
+  const resAbove = g.squareOfNine && cur != null
+    ? g.squareOfNine.resistance.filter((l) => l.price >= cur - 1e-9).sort((a, b) => a.price - b.price)[0] ?? null
+    : null;
   const inBox = g.square && cur != null ? cur >= g.square.priceLo && cur <= g.square.priceHi : null;
 
   if (!g.fan && !g.thirds) {
