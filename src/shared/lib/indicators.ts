@@ -930,23 +930,28 @@ function detectChanFractals(merged: MergedKline[]): ChanFractal[] {
     const prev = merged[i - 1];
     const curr = merged[i];
     const next = merged[i + 1];
-    // 顶分型：高点最高 + 低点也最高
-    if (curr.high > prev.high && curr.high > next.high &&
-        curr.low > prev.low && curr.low > next.low) {
-      // 与上一分型在合并K线上至少间隔 2 根（避免紧邻伪分型）
-      const last = fractals[fractals.length - 1];
-      if (!last || i - last.mergedIndex >= 2) {
-        fractals.push({ index: curr.index, mergedIndex: i, time: curr.time, price: curr.high, type: 'top' });
-      }
+    const isTop = curr.high > prev.high && curr.high > next.high &&
+                  curr.low > prev.low && curr.low > next.low;
+    const isBottom = curr.low < prev.low && curr.low < next.low &&
+                     curr.high < prev.high && curr.high < next.high;
+    if (!isTop && !isBottom) continue;
+    const type: 'top' | 'bottom' = isTop ? 'top' : 'bottom';
+    const price = isTop ? curr.high : curr.low;
+    const last = fractals[fractals.length - 1];
+    if (!last) {
+      fractals.push({ index: curr.index, mergedIndex: i, time: curr.time, price, type });
+      continue;
     }
-    // 底分型：低点最低 + 高点也最低
-    if (curr.low < prev.low && curr.low < next.low &&
-        curr.high < prev.high && curr.high < next.high) {
-      const last = fractals[fractals.length - 1];
-      if (!last || i - last.mergedIndex >= 2) {
-        fractals.push({ index: curr.index, mergedIndex: i, time: curr.time, price: curr.low, type: 'bottom' });
+    if (last.type === type) {
+      // 同向分型：仅保留更极端的（顶更高/底更低），保证顶底严格交替
+      if ((type === 'top' && price > last.price) || (type === 'bottom' && price < last.price)) {
+        fractals[fractals.length - 1] = { index: curr.index, mergedIndex: i, time: curr.time, price, type };
       }
+    } else if (i - last.mergedIndex >= 2) {
+      // 反向分型且与上一分型在合并K线上至少间隔 2 根
+      fractals.push({ index: curr.index, mergedIndex: i, time: curr.time, price, type });
     }
+    // 反向但间隔不足：跳过（避免紧邻伪分型）
   }
   return fractals;
 }
@@ -3084,7 +3089,9 @@ export function calcDivergence(
     }
   }
 
-  return points.slice(-12); // 只保留最近若干，避免图上杂乱
+  // 按时间升序排列后仅保留最近若干，避免图上杂乱
+  // （顶背离与底背离分两段收集，必须先排序再截取，否则截取会丢掉真正最近的信号且顺序错乱）
+  return points.sort((a, b) => a.time - b.time).slice(-12);
 }
 
 // ==================== 预测信号合成器 ====================
