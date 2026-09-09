@@ -17,16 +17,12 @@ function load(file: string): K[] {
 
 const HORIZONS = [5, 10, 20] as const;
 const MAXH = 20;
-type E = { name: string; dir: Dir };
 type Stats = { n: number; win: Record<number, number>; ret: Record<number, number> };
 const newS = (): Stats => ({ n: 0, win: {}, ret: {} });
 
 // 客观事件信号 → 事件列表（不含未来信息，i+20 越界剔除由调用方处理）
 function collectEvents(kl: K[]) {
   const n = kl.length;
-  const ev: E[] = [];
-  const push = (name: string, lastIdx: number, dir: Dir) => { if (lastIdx + MAXH < n) ev.push({ name, dir, /*index*/ } as never); };
-  // 上面 push 用 lastIdx 记录触发索引；改为可变结构：
   const events: { name: string; i: number; dir: Dir }[] = [];
   const add = (name: string, i: number, dir: Dir) => { if (i + MAXH < n) events.push({ name, i, dir }); };
 

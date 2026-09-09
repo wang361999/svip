@@ -2413,7 +2413,7 @@ export function calcGannTimeCycles(klines: KlineData[]): GannTimeCycles | null {
   const markers: GannTimeCycle[] = [];
   for (const p of pivots) {
     for (const bars of cycles) {
-      markers.push({ bars, label: `${p.label}${p.idx === s.startIdx ? '' : ''}+${bars}`, time: p.time + bars * interval, price: p.price });
+      markers.push({ bars, label: `${p.label}+${bars}`, time: p.time + bars * interval, price: p.price });
     }
   }
   markers.sort((a, b) => a.time - b.time);
@@ -2727,7 +2727,6 @@ export function calcNineTurn(klines: KlineData[]): NineTurnResult[] {
     let count = 0;
     let j = i;
     while (j < n) {
-      if (j < 4) break;
       const meets = isBuy
         ? klines[j].close < klines[j - 4].close
         : klines[j].close > klines[j - 4].close;
