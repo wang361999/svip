@@ -45,6 +45,8 @@ interface Trade {
   pnl?: number;
 }
 interface Pos { dir: 'LONG' | 'SHORT'; qty: number; entry: number; margin: number; }
+/** 以显式参数读取持仓方向，规避闭包变量在多次赋值后的类型收窄问题 */
+const posDir = (p: Pos | null): 'LONG' | 'SHORT' | null => (p ? p.dir : null);
 
 /**
  * 双向多空回放：预底分型→做多、预顶分型→做空；与当前持仓反向的信号先平旧再反手开新（顶底信号都不落空）。
@@ -53,29 +55,30 @@ interface Pos { dir: 'LONG' | 'SHORT'; qty: number; entry: number; margin: numbe
 function runPaper(kl: KT[], capital: number, leverage: number) {
   const n = kl.length;
   const trades: Trade[] = [];
-  let balance = capital;
-  let pos: Pos | null = null;
+  // 用对象容器承载可变状态：避免闭包变量经多次赋值后被 TS 收窄为 never
+  const st: { pos: Pos | null; balance: number } = { pos: null, balance: capital };
   const fired = new Set<string>();
 
   const open = (dir: 'LONG' | 'SHORT', price: number, time: number, sigType: string) => {
-    const margin = balance * POSRATIO;
+    const margin = st.balance * POSRATIO;
     const qty = margin * leverage / price; // 名义 = 保证金 × 杠杆
-    balance -= margin;
-    pos = { dir, qty, entry: price, margin };
+    st.balance -= margin;
+    st.pos = { dir, qty, entry: price, margin };
     trades.push({ time, dir, act: 'OPEN', price, size: qty, sigType });
   };
   const close = (price: number, time: number, sigType: string, force: boolean) => {
-    if (!pos) return;
-    const pnl = force ? -pos.margin
-      : (price - pos.entry) * pos.qty * (pos.dir === 'LONG' ? 1 : -1)
-        - pos.qty * price * FEE - pos.qty * pos.entry * FEE;
-    balance += pos.margin + pnl;
-    trades.push({ time, dir: pos.dir, act: 'CLOSE', price, size: pos.qty, sigType, pnl });
-    pos = null;
+    const p = st.pos;
+    if (!p) return;
+    const pnl = force ? -p.margin
+      : (price - p.entry) * p.qty * (p.dir === 'LONG' ? 1 : -1)
+        - p.qty * price * FEE - p.qty * p.entry * FEE;
+    st.balance += p.margin + pnl;
+    trades.push({ time, dir: p.dir, act: 'CLOSE', price, size: p.qty, sigType, pnl });
+    st.pos = null;
   };
   // 反手：平旧仓 + 开新仓（同一根开盘成交）
   const reverse = (newDir: 'LONG' | 'SHORT', price: number, time: number, sigType: string) => {
-    if (pos) close(price, time, '反手平' + (pos.dir === 'LONG' ? '多' : '空'), false);
+    if (st.pos) close(price, time, '反手平' + (st.pos.dir === 'LONG' ? '多' : '空'), false);
     open(newDir, price, time, sigType);
   };
 
@@ -91,27 +94,28 @@ function runPaper(kl: KT[], capital: number, leverage: number) {
       fired.add(key);
       const bar = kl[x + 1];
       if (!bar) continue;
+      const dir = posDir(st.pos);
       if (sig === 'L') {
         // 预底分型：空仓→开多；持空→平空反手开多；持多→同向忽略
-        if (!pos) open('LONG', bar.open, bar.time, '预底分型');
-        else if (pos.dir === 'SHORT') reverse('LONG', bar.open, bar.time, '预底分型');
+        if (!dir) open('LONG', bar.open, bar.time, '预底分型');
+        else if (dir === 'SHORT') reverse('LONG', bar.open, bar.time, '预底分型');
       } else {
         // 预顶分型：空仓→开空；持多→平多反手开空；持空→同向忽略
-        if (!pos) open('SHORT', bar.open, bar.time, '预顶分型');
-        else if (pos.dir === 'LONG') reverse('SHORT', bar.open, bar.time, '预顶分型');
+        if (!dir) open('SHORT', bar.open, bar.time, '预顶分型');
+        else if (dir === 'LONG') reverse('SHORT', bar.open, bar.time, '预顶分型');
       }
     }
     // 爆仓强平：当根价格触及爆仓价（1/杠杆 波动）
-    if (pos) {
+    if (st.pos) {
       const k = kl[t];
-      const liq = pos.dir === 'LONG' ? pos.entry * (1 - 1 / leverage) : pos.entry * (1 + 1 / leverage);
-      const hit = pos.dir === 'LONG' ? k.low <= liq : k.high >= liq;
+      const liq = st.pos.dir === 'LONG' ? st.pos.entry * (1 - 1 / leverage) : st.pos.entry * (1 + 1 / leverage);
+      const hit = st.pos.dir === 'LONG' ? k.low <= liq : k.high >= liq;
       if (hit) close(liq, k.time, '强平', true);
     }
   }
   // 期末强制平仓
-  if (pos) close(kl[n - 1].close, kl[n - 1].time, '期末平仓', true);
-  return { trades, finalEquity: balance, n };
+  if (st.pos) close(kl[n - 1].close, kl[n - 1].time, '期末平仓', true);
+  return { trades, finalEquity: st.balance, n };
 }
 
 function loadCollapsed(): boolean {
