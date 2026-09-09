@@ -37,59 +37,80 @@ function isPreview(arr: KT[], i: number): 'H' | 'L' | null {
 }
 
 interface Trade {
-  time: number; side: 'BUY' | 'SELL'; price: number; size: number;
-  sigIdx: number; sigType: string; pnl?: number;
+  time: number;
+  dir: 'LONG' | 'SHORT';        // 持仓方向
+  act: 'OPEN' | 'CLOSE';        // 开仓 / 平仓
+  price: number; size: number;  // 成交价 / 数量
+  sigType: string;              // 预底分型 / 预顶分型 / 反手 / 强平 / 期末平仓
+  pnl?: number;
 }
+interface Pos { dir: 'LONG' | 'SHORT'; qty: number; entry: number; margin: number; }
 
-/** 合约逐仓回放：预底分型买入 / 预顶分型卖出，本金 + 杠杆可自定，满仓、含强平 */
+/**
+ * 双向多空回放：预底分型→做多、预顶分型→做空；与当前持仓反向的信号先平旧再反手开新（顶底信号都不落空）。
+ * 本金 + 杠杆可自定，满仓、含爆仓强平。同向信号忽略，避免连续加仓。
+ */
 function runPaper(kl: KT[], capital: number, leverage: number) {
   const n = kl.length;
   const trades: Trade[] = [];
   let balance = capital;
-  let pos: { qty: number; entry: number; margin: number } | null = null;
+  let pos: Pos | null = null;
   const fired = new Set<string>();
-  const buySigIdx = new Map<number, number>();
-  const closePos = (price: number, time: number, sigType: string, force: boolean) => {
+
+  const open = (dir: 'LONG' | 'SHORT', price: number, time: number, sigType: string) => {
+    const margin = balance * POSRATIO;
+    const qty = margin * leverage / price; // 名义 = 保证金 × 杠杆
+    balance -= margin;
+    pos = { dir, qty, entry: price, margin };
+    trades.push({ time, dir, act: 'OPEN', price, size: qty, sigType });
+  };
+  const close = (price: number, time: number, sigType: string, force: boolean) => {
     if (!pos) return;
     const pnl = force ? -pos.margin
-      : (price - pos.entry) * pos.qty - pos.qty * price * FEE - pos.qty * pos.entry * FEE;
+      : (price - pos.entry) * pos.qty * (pos.dir === 'LONG' ? 1 : -1)
+        - pos.qty * price * FEE - pos.qty * pos.entry * FEE;
     balance += pos.margin + pnl;
-    trades.push({ time, side: 'SELL', price, size: pos.qty, sigIdx: buySigIdx.get(0) ?? 0, sigType, pnl });
+    trades.push({ time, dir: pos.dir, act: 'CLOSE', price, size: pos.qty, sigType, pnl });
     pos = null;
   };
+  // 反手：平旧仓 + 开新仓（同一根开盘成交）
+  const reverse = (newDir: 'LONG' | 'SHORT', price: number, time: number, sigType: string) => {
+    if (pos) close(price, time, '反手平' + (pos.dir === 'LONG' ? '多' : '空'), false);
+    open(newDir, price, time, sigType);
+  };
+
   for (let t = 30; t < n; t++) {
     const win = kl.slice(0, t + 1), prevWin = kl.slice(0, t);
     for (const x of [t - 2, t - 1]) {
       if (x < 0 || x >= n) continue;
-      const now = isPreview(win, x);
-      if (!now) continue;
+      const sig = isPreview(win, x);
+      if (!sig) continue;
       if (isPreview(prevWin, x)) continue;
-      const key = `${x}:${now}`;
+      const key = `${x}:${sig}`;
       if (fired.has(key)) continue;
       fired.add(key);
       const bar = kl[x + 1];
       if (!bar) continue;
-      if (now === 'L' && !pos) {
-        const entry = bar.open;
-        const margin = balance * POSRATIO;
-        const qty = margin * leverage / entry;
-        balance -= margin;
-        pos = { qty, entry, margin };
-        buySigIdx.set(0, x);
-        trades.push({ time: bar.time, side: 'BUY', price: entry, size: qty, sigIdx: x, sigType: '预底分型' });
-      } else if (now === 'H' && pos) {
-        closePos(bar.open, bar.time, '预顶分型', false);
+      if (sig === 'L') {
+        // 预底分型：空仓→开多；持空→平空反手开多；持多→同向忽略
+        if (!pos) open('LONG', bar.open, bar.time, '预底分型');
+        else if (pos.dir === 'SHORT') reverse('LONG', bar.open, bar.time, '预底分型');
+      } else {
+        // 预顶分型：空仓→开空；持多→平多反手开空；持空→同向忽略
+        if (!pos) open('SHORT', bar.open, bar.time, '预顶分型');
+        else if (pos.dir === 'LONG') reverse('SHORT', bar.open, bar.time, '预顶分型');
       }
     }
-    // 强平：当根最低价触及爆仓价（1/杠杆 波动）
+    // 爆仓强平：当根价格触及爆仓价（1/杠杆 波动）
     if (pos) {
       const k = kl[t];
-      const liq = pos.entry * (1 - 1 / leverage);
-      if (k.low <= liq) closePos(liq, k.time, '强平', true);
+      const liq = pos.dir === 'LONG' ? pos.entry * (1 - 1 / leverage) : pos.entry * (1 + 1 / leverage);
+      const hit = pos.dir === 'LONG' ? k.low <= liq : k.high >= liq;
+      if (hit) close(liq, k.time, '强平', true);
     }
   }
   // 期末强制平仓
-  if (pos) closePos(kl[n - 1].close, kl[n - 1].time, '期末平仓', true);
+  if (pos) close(kl[n - 1].close, kl[n - 1].time, '期末平仓', true);
   return { trades, finalEquity: balance, n };
 }
 
@@ -104,6 +125,21 @@ const fmtT = (t: number) => {
 };
 const money = (v: number) => '$' + v.toFixed(2);
 const clsOf = (v: number) => (v >= 0 ? 'text-green-400' : 'text-red-400');
+
+/** 方向 + 开平 → 徽标 */
+function dirBadge(dir: 'LONG' | 'SHORT', act: 'OPEN' | 'CLOSE') {
+  const isOpen = act === 'OPEN';
+  if (dir === 'LONG') {
+    return {
+      text: isOpen ? '开多' : '平多',
+      cls: isOpen ? 'bg-green-500/15 text-green-400' : 'text-slate-300',
+    };
+  }
+  return {
+    text: isOpen ? '开空' : '平空',
+    cls: isOpen ? 'bg-red-500/15 text-red-400' : 'text-slate-300',
+  };
+}
 
 export default function TradingSimCard() {
   const interval = useChartStore((s) => s.interval);
@@ -120,8 +156,7 @@ export default function TradingSimCard() {
   const [inLev, setInLev] = useState('1');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  const dataKey = `${symbol}|${interval}`;
+  const [cleared, setCleared] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -140,7 +175,6 @@ export default function TradingSimCard() {
   useEffect(() => {
     setLoading(true);
     load();
-    // 30s 巡检，让最后一根实时 tick 跟进模拟盘
     const timer = setInterval(load, REFRESH_MS);
     return () => clearInterval(timer);
   }, [load]);
@@ -161,29 +195,34 @@ export default function TradingSimCard() {
     if (!(c > 0) || !(l >= 1)) return;
     const cl = Math.min(125, l);
     setCap(c); setLev(cl); setInLev(String(cl));
+    setCleared(false); // 重算恢复记录
   };
 
   const ivLabel = INTERVALS.find((i) => i.value === interval)?.label ?? interval;
 
-  // 计算展示用的派生指标
+  // 派生指标
   const stats = useMemo(() => {
     const r = result;
     if (!r) return null;
-    const closed = r.trades.filter((t) => t.side === 'SELL');
+    const closed = r.trades.filter((t) => t.act === 'CLOSE');
     const wins = closed.filter((t) => (t.pnl ?? 0) > 0).length;
     const losses = closed.length - wins;
-    const buys = r.trades.filter((t) => t.side === 'BUY').length;
+    const opens = r.trades.filter((t) => t.act === 'OPEN').length;
     const avgPnl = closed.length ? closed.reduce((x, t) => x + (t.pnl ?? 0), 0) / closed.length : 0;
     const ret = (r.finalEquity / cap - 1) * 100;
     const liq = closed.filter((t) => t.sigType === '强平').length;
-    const last = r.trades[r.trades.length - 1];
-    const lastBuy = r.trades.filter((t) => t.side === 'BUY').at(-1);
-    const lastSell = r.trades.filter((t) => t.side === 'SELL').at(-1);
-    const show = lastSell && (!lastBuy || lastSell.time >= lastBuy.time) ? lastSell : lastBuy;
-    return { closed, wins, losses, buys, avgPnl, ret, liq, last, lastBuy, lastSell, show };
+    const lastOpen = [...r.trades].reverse().find((t) => t.act === 'OPEN');
+    // 最终持仓：最后开未平的仓
+    let holding: { dir: 'LONG' | 'SHORT'; price: number; size: number; time: number } | null = null;
+    for (const t of r.trades) {
+      if (t.act === 'OPEN') holding = { dir: t.dir, price: t.price, size: t.size, time: t.time };
+      else if (t.act === 'CLOSE') holding = null;
+    }
+    return { r, closed, wins, losses, opens, avgPnl, ret, liq, lastOpen, holding };
   }, [result, cap]);
 
   const priceFixed = (v: number) => v.toFixed(pricePrecision ?? 2);
+  const shownTrades = stats && !cleared ? stats.r.trades.slice().reverse() : [];
 
   return (
     <div className="glass-card overflow-hidden">
@@ -199,7 +238,7 @@ export default function TradingSimCard() {
           <div>
             <div className="text-sm font-semibold text-slate-100">预分型模拟盘</div>
             <div className="text-[11px] text-dark-400 leading-tight">
-              {symbolLabel} · {ivLabel} · 预底买 / 预顶卖
+              {symbolLabel} · {ivLabel} · 预底做多 / 预顶做空
             </div>
           </div>
         </div>
@@ -239,13 +278,13 @@ export default function TradingSimCard() {
               </button>
             </div>
             <p className="text-[10px] text-dark-500 mt-2 leading-relaxed">
-              满仓：每笔以当前权益作保证金、名义 = 本金 × 杠杆；价格反向触及 1/杠杆 则强平，杠杆越高越易爆仓。
+              满仓：以当前权益作保证金、名义 = 本金 × 杠杆；底分型做多、顶分型做空，反向信号平旧反手；触及 1/杠杆 波动则强平。
             </p>
           </div>
 
           {error ? (
             <div className="text-center text-dark-300 text-xs py-6">{error}</div>
-          ) : !stats || !result ? (
+          ) : !stats ? (
             <div className="flex items-center justify-center py-8">
               <div className="w-7 h-7 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
             </div>
@@ -257,7 +296,7 @@ export default function TradingSimCard() {
                   <div>
                     <div className="text-[11px] text-dark-400">虚拟账户权益 (USDT)</div>
                     <div className="text-[32px] font-extrabold tracking-tight text-slate-100 tabular-nums leading-none mt-1">
-                      {money(result.finalEquity)}
+                      {money(result!.finalEquity)}
                     </div>
                   </div>
                   <div className="text-[11px] text-dark-400 text-right">
@@ -269,12 +308,12 @@ export default function TradingSimCard() {
                   <span className="opacity-60 font-normal">vs {money(cap)} 本金 · {lev}x</span>
                 </div>
                 <div className="mt-3 h-1.5 rounded-full bg-white/[0.07] overflow-hidden">
-                  <div className={`h-full rounded-full transition-all duration-500 ${result.finalEquity >= cap ? 'bg-gradient-to-r from-green-500 to-emerald-500' : 'bg-gradient-to-r from-red-500 to-rose-500'}`}
-                    style={{ width: `${Math.min(100, Math.max(3, (result.finalEquity / cap - 1) * 100 + 100))}%` }} />
+                  <div className={`h-full rounded-full transition-all duration-500 ${result!.finalEquity >= cap ? 'bg-gradient-to-r from-green-500 to-emerald-500' : 'bg-gradient-to-r from-red-500 to-rose-500'}`}
+                    style={{ width: `${Math.min(100, Math.max(3, (result!.finalEquity / cap - 1) * 100 + 100))}%` }} />
                 </div>
                 <div className="grid grid-cols-3 gap-2 mt-3">
                   {[
-                    { v: String(stats.buys), l: '买入次数' },
+                    { v: String(stats.opens), l: '做单次数' },
                     { v: stats.wins + stats.losses > 0 ? ((stats.wins / (stats.wins + stats.losses)) * 100).toFixed(1) + '%' : '-', l: '胜率' },
                     { v: (stats.avgPnl >= 0 ? '+' : '') + '$' + Math.abs(stats.avgPnl).toFixed(2), l: '单笔均收益' },
                   ].map((k, i) => (
@@ -290,23 +329,25 @@ export default function TradingSimCard() {
               <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-4">
                 <div className="flex items-center justify-between text-[11px] mb-1">
                   <span className="text-dark-400">当前持仓</span>
-                  <span className="text-dark-500">{stats.buys} 个开仓周期 · 强平 {stats.liq} 次</span>
+                  <span className="text-dark-500">{stats.opens} 次做单 · 强平 {stats.liq} 次</span>
                 </div>
-                {stats.last && stats.last.side === 'BUY' ? (
+                {stats.holding ? (
                   <div className="flex items-center gap-3">
-                    <span className="flex-none flex items-center justify-center w-11 h-11 rounded-xl bg-green-500/15 text-green-400 font-extrabold">多</span>
+                    <span className={`flex-none flex items-center justify-center w-11 h-11 rounded-xl font-extrabold ${stats.holding.dir === 'LONG' ? 'bg-green-500/15 text-green-400' : 'bg-red-500/15 text-red-400'}`}>
+                      {stats.holding.dir === 'LONG' ? '多' : '空'}
+                    </span>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between text-sm font-semibold text-slate-100">
-                        <span>持有多单 <span className="text-[9px] font-normal border border-amber-400/40 text-amber-300 rounded-full px-1.5 py-px">当前在途</span></span>
-                        <span className="text-green-400">+{stats.last.size.toFixed(4)}</span>
+                        <span>{stats.holding.dir === 'LONG' ? '持有多单' : '持有空单'} <span className="text-[9px] font-normal border border-amber-400/40 text-amber-300 rounded-full px-1.5 py-px">当前在途</span></span>
+                        <span className="text-dark-300">{stats.holding.size.toFixed(4)}</span>
                       </div>
                       <div className="flex items-center justify-between text-[11px] text-dark-400 mt-0.5">
-                        <span>成本 {priceFixed(stats.last.price)}</span>
-                        <span>数量 {stats.last.size.toFixed(4)}</span>
+                        <span>开仓价 {priceFixed(stats.holding.price)}</span>
+                        <span>{stats.holding.dir === 'LONG' ? '▼等待预顶' : '▲等待预底'}</span>
                       </div>
                       <div className="flex items-center justify-between text-[10px] text-dark-500 mt-1 border-t border-dashed border-white/10 pt-1">
-                        <span>开仓：{fmtT(stats.last.time)}</span>
-                        <span>交易 #{result.trades.findIndex((t) => t === stats.last) + 1}</span>
+                        <span>开仓：{fmtT(stats.holding.time)}</span>
+                        <span>交易 #{stats.r.trades.indexOf(stats.r.trades.find((t) => t.act === 'OPEN' && t.time === stats.holding!.time)!) + 1}</span>
                       </div>
                     </div>
                   </div>
@@ -315,10 +356,10 @@ export default function TradingSimCard() {
                     <span className="flex-none flex items-center justify-center w-11 h-11 rounded-xl bg-dark-800/40 text-dark-400 font-extrabold">空</span>
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-semibold text-slate-100">当前空仓</div>
-                      <div className="text-[11px] text-dark-400 mt-0.5">等待预底分型信号</div>
+                      <div className="text-[11px] text-dark-400 mt-0.5">等待预底分型做多 / 预顶分型做空</div>
                       <div className="flex items-center justify-between text-[10px] text-dark-500 mt-1 border-t border-dashed border-white/10 pt-1">
-                        <span>上次剪仓：{stats.last ? fmtT(stats.last.time) : '—'}</span>
-                        <span>{stats.last?.sigType ?? '-'}{stats.last?.pnl != null ? ' · ' + (stats.last.pnl >= 0 ? '+' : '') + money(stats.last.pnl) : ''}</span>
+                        <span>上次做单：{stats.lastOpen ? fmtT(stats.lastOpen.time) : '—'}</span>
+                        <span>{stats.lastOpen?.sigType ?? '-'}</span>
                       </div>
                     </div>
                   </div>
@@ -328,16 +369,18 @@ export default function TradingSimCard() {
               {/* 最新信号 */}
               <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-3.5">
                 <div className="text-[11px] text-dark-400 mb-2">最新信号</div>
-                {stats.show ? (
+                {stats.lastOpen ? (
                   <div className="flex items-center gap-2.5">
-                    <span className={`flex-none flex items-center justify-center w-8 h-8 rounded-lg font-extrabold text-sm ${stats.show.side === 'BUY' ? 'bg-green-500 text-green-950' : 'bg-red-500 text-white'}`}>
-                      {stats.show.side === 'BUY' ? '▲' : '▼'}
+                    <span className={`flex-none flex items-center justify-center w-8 h-8 rounded-lg font-extrabold text-sm ${stats.lastOpen.dir === 'LONG' ? 'bg-green-500 text-green-950' : 'bg-red-500 text-white'}`}>
+                      {stats.lastOpen.dir === 'LONG' ? '▲' : '▼'}
                     </span>
                     <div className="flex-1 min-w-0">
-                      <div className="text-xs font-semibold text-slate-100">{stats.show.side === 'BUY' ? '预底分型 · 买入信号' : '预顶分型 · 卖出信号'}</div>
-                      <div className="text-[11px] text-dark-400 mt-0.5">{fmtT(stats.show.time)} · {stats.show.sigType}</div>
+                      <div className="text-xs font-semibold text-slate-100">
+                        {stats.lastOpen.sigType} · {stats.lastOpen.dir === 'LONG' ? '做多' : '做空'}
+                      </div>
+                      <div className="text-[11px] text-dark-400 mt-0.5">{fmtT(stats.lastOpen.time)}</div>
                     </div>
-                    <div className={`text-xs font-bold tabular-nums ${clsOf(stats.show.side === 'BUY' ? 1 : -1)}`}>{priceFixed(stats.show.price)}</div>
+                    <div className={`text-xs font-bold tabular-nums ${stats.lastOpen.dir === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>{priceFixed(stats.lastOpen.price)}</div>
                   </div>
                 ) : (
                   <div className="text-[11px] text-dark-300">暂无信号，等待预分型预览形成</div>
@@ -347,43 +390,62 @@ export default function TradingSimCard() {
               {/* 最近交易 */}
               <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-3.5">
                 <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-sm font-semibold text-slate-100">最近交易</span>
-                  <span className="text-[11px] text-dark-400">{stats.buys} 开仓 · {stats.closed.length} 平仓（盈{stats.wins}/亏{stats.losses}）</span>
+                  <span className="text-sm font-semibold text-slate-100">交易记录</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-dark-400">
+                      {cleared ? '已清空' : `${stats.opens} 单 · ${stats.closed.length} 平（盈${stats.wins}/亏${stats.losses}）`}
+                    </span>
+                    <button
+                      onClick={() => setCleared((c) => !c)}
+                      className="text-[11px] rounded-md border border-white/15 px-2 py-0.5 text-dark-300 hover:bg-white/10"
+                    >
+                      {cleared ? '恢复' : '一键清空'}
+                    </button>
+                  </div>
                 </div>
                 <div className="max-h-44 overflow-auto">
-                  <table className="w-full text-[11px] tabular-nums text-left">
-                    <thead className="sticky top-0 bg-dark-950/95 text-dark-400">
-                      <tr>
-                        <th className="py-1 pr-2 font-medium text-right">#</th>
-                        <th className="py-1 pr-2 font-medium">時間</th>
-                        <th className="py-1 pr-2 font-medium">方向</th>
-                        <th className="py-1 pr-2 font-medium">价格</th>
-                        <th className="py-1 pr-2 font-medium">触发</th>
-                        <th className="py-1 font-medium">盈亏</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {[...stats.closed].reverse().map((t, i) => (
-                        <tr key={i} className="border-b border-white/5">
-                          <td className="py-1 pr-2 text-right text-dark-500">{stats.closed.length - i}</td>
-                          <td className="py-1 pr-2 text-dark-300">{fmtT(t.time).slice(6)}</td>
-                          <td className="py-1 pr-2 text-red-400">▼</td>
-                          <td className="py-1 pr-2">{priceFixed(t.price)}</td>
-                          <td className="py-1 pr-2">
-                            {t.sigType === '强平'
-                              ? <span className="text-[9px] border border-red-400/40 text-red-400 rounded-full px-1.5 py-px">强平</span>
-                              : <span className="text-dark-300">{t.sigType}</span>}
-                          </td>
-                          <td className={`py-1 ${clsOf(t.pnl ?? 0)}`}>{t.pnl != null ? (t.pnl >= 0 ? '+' : '') + t.pnl.toFixed(1) : '—'}</td>
+                  {shownTrades.length > 0 ? (
+                    <table className="w-full text-[11px] tabular-nums text-left">
+                      <thead className="sticky top-0 bg-dark-950/95 text-dark-400">
+                        <tr>
+                          <th className="py-1 pr-2 font-medium text-right">#</th>
+                          <th className="py-1 pr-2 font-medium">時間</th>
+                          <th className="py-1 pr-2 font-medium">方向</th>
+                          <th className="py-1 pr-2 font-medium">价格</th>
+                          <th className="py-1 pr-2 font-medium">触发</th>
+                          <th className="py-1 font-medium">盈亏</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {shownTrades.map((t, i) => {
+                          const b = dirBadge(t.dir, t.act);
+                          return (
+                            <tr key={i} className="border-b border-white/5">
+                              <td className="py-1 pr-2 text-right text-dark-500">{shownTrades.length - i}</td>
+                              <td className="py-1 pr-2 text-dark-300">{fmtT(t.time).slice(6)}</td>
+                              <td className="py-1 pr-2"><span className={`${b.cls} rounded px-1`}>{b.text}</span></td>
+                              <td className="py-1 pr-2">{priceFixed(t.price)}</td>
+                              <td className="py-1 pr-2">
+                                {t.sigType === '强平'
+                                  ? <span className="text-[9px] border border-red-400/40 text-red-400 rounded-full px-1.5 py-px">强平</span>
+                                  : <span className="text-dark-300">{t.sigType}</span>}
+                              </td>
+                              <td className={`py-1 ${t.pnl != null ? clsOf(t.pnl) : 'text-dark-500'}`}>
+                                {t.pnl != null ? (t.pnl >= 0 ? '+' : '') + t.pnl.toFixed(1) : '—'}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div className="text-center text-dark-500 text-xs py-5">{cleared ? '交易记录已清空' : '暂无交易记录'}</div>
+                  )}
                 </div>
               </div>
 
               <p className="text-center text-[10px] text-dark-500 leading-relaxed">
-                示意卡 · 数据为当前币种该周期最近 {BAR_COUNT} 根实时K线 · 预分型信号下一根开盘成交 · 合约逐仓满仓模型含强平 · 非投资建议
+                示意卡 · 数据为当前币种该周期最近 {BAR_COUNT} 根实时K线 · 预底做多 / 预顶做空，异向反手 · 合约逐仓满仓模型含强平 · 非投资建议
               </p>
             </>
           )}
