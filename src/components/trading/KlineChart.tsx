@@ -273,6 +273,92 @@ function drawGannSuite(
   }
 }
 
+// ========== AB9线绘制（斐波那契画法，canvas 叠层） ==========
+// 经典斐波那契回调的画法：A→B 波段虚线（含端点标记）+ 九档水平线从 B 点起向右延伸。
+// 此前用 createPriceLine 画满宽水平线，九线横贯整张图（含波段开始之前的历史区域），
+// 与斐波那契回调线的行业惯例不符；改为 canvas 后横线起于 B、终于右缘。
+
+function drawAB9FibStyle(
+  ctx: CanvasRenderingContext2D,
+  xOf: (t: number) => number | null,
+  yOf: (p: number) => number | null,
+  width: number,
+  ab9: ReturnType<typeof calcAB9Lines>,
+  precision: number,
+): void {
+  if (!ab9) return;
+  const p = Math.max(0, Math.min(8, precision));
+  const fmt = (v: number) => v.toFixed(p);
+  const dash = (arr: number[]) => { ctx.setLineDash(arr); };
+
+  // B 点 x：滚出视野/数据缺失时为 null，此时视野整体在 B 右侧，水平线从左边缘起画
+  const xB = xOf(ab9.timeB);
+  const lineStart = xB === null ? 0 : xB;
+  if (lineStart >= width) return;
+
+  // —— A→B 波段线（虚线 + 端点圆点 + 价格标签，标签置于端点外侧） ——
+  const xA = xOf(ab9.timeA);
+  const yA = yOf(ab9.pointA);
+  const yB = yOf(ab9.pointB);
+  if (xA !== null && xB !== null && yA !== null && yB !== null) {
+    ctx.strokeStyle = 'rgba(124, 58, 237, 0.8)';
+    ctx.lineWidth = 1.4;
+    dash([5, 4]);
+    ctx.beginPath();
+    ctx.moveTo(xA, yA);
+    ctx.lineTo(xB, yB);
+    ctx.stroke();
+    dash([]);
+    ctx.font = 'bold 10px -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    for (const pt of [
+      { x: xA, y: yA, name: 'A', price: ab9.pointA },
+      { x: xB, y: yB, name: 'B', price: ab9.pointB },
+    ]) {
+      ctx.fillStyle = 'rgba(124, 58, 237, 0.95)';
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+      // 上升：A 为低点（标签在下）、B 为高点（标签在上）；下降反之
+      const isLow = (ab9.direction === 'up') === (pt.name === 'A');
+      if (isLow) {
+        ctx.textBaseline = 'top';
+        ctx.fillText(`${pt.name} ${fmt(pt.price)}`, pt.x, pt.y + 6);
+      } else {
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(`${pt.name} ${fmt(pt.price)}`, pt.x, pt.y - 6);
+      }
+    }
+  }
+
+  // —— 九档水平线：从 B 向右延伸；标签画在每条线起点右侧（间距过近时跳过防重叠） ——
+  let lastLabelY = -Infinity;
+  for (const line of ab9.lines) {
+    const y = yOf(line.price);
+    if (y === null) continue;
+    const isAxis = line.lineNo === 4; // 中轴
+    const isExt = line.lineNo === 9;  // 1/8 扩展位
+    const color = AB9_COLORS[line.lineNo] ?? 'rgba(148, 163, 184, 0.7)';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = isAxis ? 1.6 : 1;
+    dash(isExt ? [4, 4] : []);
+    ctx.beginPath();
+    ctx.moveTo(Math.max(0, lineStart), y);
+    ctx.lineTo(width, y);
+    ctx.stroke();
+    dash([]);
+    if (y - lastLabelY >= 11) {
+      lastLabelY = y;
+      ctx.fillStyle = color;
+      ctx.font = `${isAxis ? 'bold ' : ''}9px -apple-system, sans-serif`;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      const tag = isAxis ? `${line.label}·中轴` : line.label;
+      ctx.fillText(`${tag} ${fmt(line.price)}`, Math.max(0, lineStart) + 4, y);
+    }
+  }
+}
+
 
 export default function KlineChart({ isFullscreen = false, onToggleFullscreen }: KlineChartProps) {
   const mainChartRef = useRef<HTMLDivElement>(null);
@@ -390,14 +476,15 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // 江恩工具箱结果缓存（按 K 线签名懒重算）
   const gannRef = useRef<ReturnType<typeof calcGannAll> | null>(null);
   const gannSigRef = useRef<string>('');
+  // AB9线结果缓存（canvas 斐波那契画法用，按 K 线签名懒重算；含 close 使尾部分形预览随收盘演化）
+  const ab9CanvasRef = useRef<ReturnType<typeof calcAB9Lines> | null>(null);
+  const ab9SigRef = useRef<string>('');
   // 左上角 OHLC 图例：随十字线联动（悬停读历史K线，离开回落到最新一根，tick 实时刷新）
   interface LegendInfo { o: number; h: number; l: number; c: number; pct: number }
   const [legend, setLegend] = useState<LegendInfo | null>(null);
   const legendOf = useCallback((o: number, h: number, l: number, c: number): LegendInfo => ({
     o, h, l, c, pct: o > 0 ? ((c - o) / o) * 100 : 0,
   }), []);
-  // AB9线 ref（原生价格线）
-  const autoPriceLinesRef = useRef<any[]>([]);
   // 趋势通道 LineSeries refs（上轨/下轨/中轨 + 预测延伸线）
   const tcSeriesRef = useRef<{
     upper?: ISeriesApi<'Line'>; lower?: ISeriesApi<'Line'>; mid?: ISeriesApi<'Line'>;
@@ -444,6 +531,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const fetchSymbols = useSymbolStore((s) => s.fetchSymbols);
   /** 当前币种价格精度（K线价格轴/十字线按此格式化 — 低价币不再显示成 0.00） */
   const pricePrecision = useSymbolStore((s) => s.pricePrecision);
+  // AB9线已改 canvas 斐波那契画法，价格轴精度经此 ref 传入 drawChan 闭包
+  const pricePrecisionRef = useRef(pricePrecision);
+  pricePrecisionRef.current = pricePrecision;
   // 期望加载的数据签名（镜像）：切换周期/币种时渲染即更新，供 tick/kline 守卫比对
   dataKeyRef.current = `${symbol}|${interval}`;
 
@@ -799,6 +889,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   }, [indicators, updateIndicators]);
 
   // 趋势通道/音叉/Fourier 开关切换时立即重算
+  // （showGann / showAutoAB9 叠加绘制在 canvas 层，开关切换只需触发一次 drawChan 重绘）
   useEffect(() => {
     if (allKlinesRef.current.length > 0 && mainChart.current) {
       const klines = allKlinesRef.current;
@@ -830,20 +921,15 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         try { drawChanRef.current(); } catch (e) { console.warn('[Overlay] raf error:', e); }
       });
     }
-  }, [showTrendChannel, showValueArea, showIchimoku, showSynth]);
+  }, [showTrendChannel, showValueArea, showIchimoku, showSynth, showGann, showAutoAB9, isMember]);
 
-  // === AB9线 + 斐波那契回调线重绘 ===
+  // === 支撑/阻力线重绘 ===
   // 数据加载、开关切换、K线收盘（isFinal）时调用，统一走这一个入口
+  // （AB9线已改为斐波那契画法，在 drawChan canvas 叠层绘制，不在此处）
   const redrawOverlayLines = useCallback(() => {
     const klines = allKlinesRef.current;
     const series = candleSeries.current;
     if (!mainChart.current || !series || klines.length === 0) return;
-
-    // 先清除所有旧画线
-    for (const pl of autoPriceLinesRef.current) {
-      try { series.removePriceLine(pl); } catch {}
-    }
-    autoPriceLinesRef.current = [];
 
     // —— 支撑/阻力（箱体区间或近端；恢复快信号版本的原画法，独立于策略引擎） ——
     for (const pl of srLinesRef.current) {
@@ -875,29 +961,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       }
     }
 
-    // —— AB9线（原生满宽价格线，价格轴可读数；应反馈恢复原画法） ——
-    if (showAutoAB9 && isMember) {
-      const ab9 = calcAB9Lines(klines);
-      if (ab9) {
-        for (const line of ab9.lines) {
-          const color = AB9_COLORS[line.lineNo];
-          if (!color) continue;
-          try {
-            const pl = series.createPriceLine({
-              price: line.price,
-              color: color.replace(/[\d.]+\)$/, '0.85)'),
-              lineWidth: 1,
-              lineStyle: 2,
-              axisLabelVisible: true,
-              title: ` ${line.lineNo}线`,
-            });
-            autoPriceLinesRef.current.push(pl);
-          } catch {}
-        }
-      }
-    }
-
-    }, [showAutoAB9, isMember, symbol]);
+    }, [isMember, symbol]);
 
   // ====== 趋势通道 + 预测延伸线 + 音叉 ====== 画线 ======
   // 在 redrawOverlayLines 之后独立执行，依赖 showTrendChannel
@@ -1641,7 +1705,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
         // 没有任何叠层数据时，清空后直接返回
-        if (!chanData && !trendChannelRef.current && !valueAreaRef.current && !ichimokuRef.current && !synthRef.current && !showGannRef.current) return;
+        if (!chanData && !trendChannelRef.current && !valueAreaRef.current && !ichimokuRef.current && !synthRef.current && !showGannRef.current && !showAutoAB9Ref.current) return;
 
         ctx.save();
         ctx.scale(dpr, dpr);
@@ -2274,6 +2338,21 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           }
         }
 
+        // ========== AB9线（斐波那契画法：A→B 波段线 + 自 B 点向右延伸的九档水平线）==========
+        if (showAutoAB9Ref.current && isMemberRef.current) {
+          const ksA = allKlinesRef.current;
+          // 签名含 close：尾部分形预览随最新K线演化，收盘价变化即触发重算（lib 内还有同签名二级缓存）
+          const sigA = ksA.length > 0 ? `${ksA.length}:${ksA[ksA.length - 1].time}:${ksA[ksA.length - 1].close}` : '';
+          if (sigA !== ab9SigRef.current) {
+            ab9SigRef.current = sigA;
+            ab9CanvasRef.current = calcAB9Lines(ksA);
+          }
+          const ar = ab9CanvasRef.current;
+          if (ar) {
+            drawAB9FibStyle(ctx, timeToX, (p) => candleSeries.current?.priceToCoordinate(p) ?? null, rect.width, ar, pricePrecisionRef.current);
+          }
+        }
+
         ctx.restore();
       } catch (e) {
         console.warn('[Chan] render error:', e);
@@ -2492,7 +2571,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   });
   const layerMenu = [
     {
-      key: 'AB9', label: 'AB9 均线带', active: showAutoAB9,
+      key: 'AB9', label: 'AB9 江恩九线', active: showAutoAB9,
       on: () => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ ...currentOverlayPrefs(), AB9: v }); saveUserPref('prefAB9', v); setOpenMenu(null); },
     },
     {
