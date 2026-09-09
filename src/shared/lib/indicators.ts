@@ -31,6 +31,19 @@ export function calcEMAArray(klines: KlineData[], period: number): number[] {
   return ema(closes, period);
 }
 
+// SMA 数组（简单移动平均；前 period-1 根数据不足时为 null）
+export function calcSMAArray(klines: KlineData[], period: number): (number | null)[] {
+  const closes = klines.map((k) => k.close);
+  const out: (number | null)[] = [];
+  let sum = 0;
+  for (let i = 0; i < closes.length; i++) {
+    sum += closes[i];
+    if (i >= period) sum -= closes[i - period];
+    out.push(i >= period - 1 ? sum / period : null);
+  }
+  return out;
+}
+
 // 布林带
 export interface BollingerData {
   upper: number;

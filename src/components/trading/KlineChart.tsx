@@ -4,6 +4,7 @@ import {
   calcBollinger,
   calcMACD,
   calcEMAArray,
+  calcSMAArray,
   calcRSIArray,
   calcAB9Lines,
   calcGannAll,
@@ -96,7 +97,7 @@ interface KlineChartProps {
 // 徽章点击即生效并持久化，刷新/换币种/换周期后保持用户的选择。
 // 版本号：默认值变更时递增，旧 localStorage 自动失效
   const INDICATOR_PREFS_KEY = 'kline-indicator-prefs-v2';
-const DEFAULT_INDICATORS = { EMA: false, BOLL: false, MACD: false, RSI: false, VWAP: false, KDJ: false, ATR: false, NINE: false, CHAN: false };
+const DEFAULT_INDICATORS = { EMA: false, MA120: true, BOLL: false, MACD: false, RSI: false, VWAP: false, KDJ: false, ATR: false, NINE: false, CHAN: false };
 
 function loadIndicatorPrefs(): typeof DEFAULT_INDICATORS {
   if (typeof window === 'undefined') return { ...DEFAULT_INDICATORS };
@@ -106,6 +107,7 @@ function loadIndicatorPrefs(): typeof DEFAULT_INDICATORS {
     const parsed = JSON.parse(raw) as Partial<typeof DEFAULT_INDICATORS>;
     return {
       EMA: !!parsed.EMA,
+      MA120: parsed.MA120 !== undefined ? !!parsed.MA120 : DEFAULT_INDICATORS.MA120,
       BOLL: !!parsed.BOLL,
       MACD: !!parsed.MACD,
       RSI: !!parsed.RSI,
@@ -282,6 +284,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const candleSeries = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volumeSeries = useRef<ISeriesApi<'Histogram'> | null>(null);
   const emaSeries = useRef<ISeriesApi<'Line'> | null>(null);
+  const ma120Series = useRef<ISeriesApi<'Line'> | null>(null);
   const bbUpper = useRef<ISeriesApi<'Line'> | null>(null);
   const bbMiddle = useRef<ISeriesApi<'Line'> | null>(null);
   const bbLower = useRef<ISeriesApi<'Line'> | null>(null);
@@ -503,10 +506,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     if (!klines.length || !mainChart.current) return;
 
     // 清除旧的布林带
-    [bbUpper.current, bbMiddle.current, bbLower.current, emaSeries.current].forEach((s) => {
+    [bbUpper.current, bbMiddle.current, bbLower.current, emaSeries.current, ma120Series.current].forEach((s) => {
       if (s) { try { mainChart.current?.removeSeries(s); } catch {} }
     });
-    bbUpper.current = bbMiddle.current = bbLower.current = emaSeries.current = null;
+    bbUpper.current = bbMiddle.current = bbLower.current = emaSeries.current = ma120Series.current = null;
 
     // EMA 均线
     if (indicators.EMA) {
@@ -523,6 +526,24 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         if (v !== null && !isNaN(v)) emaData.push({ time: klines[i].time as Time, value: v });
       });
       emaSeries.current.setData(emaData);
+    }
+
+    // MA120 长期均线（金色，固定 120 周期）
+    if (indicators.MA120) {
+      ma120Series.current = mainChart.current.addLineSeries({
+        color: 'rgba(230, 180, 80, 0.95)',
+        lineWidth: 2,
+        lineStyle: 0,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        title: 'MA120',
+      });
+      const ma = calcSMAArray(klines, 120);
+      const maData: LineData[] = [];
+      ma.forEach((v, i) => {
+        if (v !== null && !isNaN(v)) maData.push({ time: klines[i].time as Time, value: v });
+      });
+      ma120Series.current.setData(maData);
     }
 
     // 布林带
@@ -2561,7 +2582,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             {openMenu === 'ind' && (
               <div className="absolute right-0 top-full mt-1 z-40 w-44 rounded-lg bg-dark-800 border border-dark-700 p-1.5 shadow-2xl">
                 <div className="px-2 pt-1 pb-0.5 text-[10px] uppercase tracking-wider text-dark-500">副图</div>
-                {(['EMA', 'BOLL', 'MACD', 'RSI', 'VWAP', 'KDJ', 'ATR'] as const).map((ind) => (
+                {(['EMA', 'MA120', 'BOLL', 'MACD', 'RSI', 'VWAP', 'KDJ', 'ATR'] as const).map((ind) => (
                   <button
                     key={ind}
                     onClick={() => {
