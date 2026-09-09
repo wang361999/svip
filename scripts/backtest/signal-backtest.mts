@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import {
   calcMACD, calcRSIArray, calcKDJ, calcBollinger, calcEMAArray,
   calcSuperTrend, calcADX,
-} from './svip/src/shared/lib/indicators';
+} from '../../src/shared/lib/indicators';
 
 type K = { time: number; open: number; high: number; low: number; close: number; volume: number };
 type Dir = 'B' | 'S';
