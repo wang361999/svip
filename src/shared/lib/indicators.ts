@@ -1673,6 +1673,36 @@ function selectSwing(
   fractalLows: { idx: number; price: number }[],
   currentPrice: number,
 ): SwingCandidate | null {
+  // 0. 最近完成的显著波段优先（标准江恩八分法锚定）：
+  //    沿分形序列从最新往回逐波扫描：B=当前分形，A=其前最近的反向分形，
+  //    幅度 ≥2% 即命中。此前逻辑只看"最后一个顶分形+最后一个底分形"这一对，
+  //    当最近一对是噪声（如 0.1% 的微幅震荡）时会直接放弃，落入下方回退分支，
+  //    导致 9 线/斐波那契整组画在远古价格区间（如全窗口最高→最古老低点）上。
+  //    修复后跳过噪声波，取最近一段满足幅度阈值的已完成波段，既保持锚定
+  //    最近结构，又避免画在远古区间上失去参考意义。
+  const sorted: { idx: number; price: number; type: 'H' | 'L' }[] = [
+    ...fractalHighs.map((f) => ({ ...f, type: 'H' as const })),
+    ...fractalLows.map((f) => ({ ...f, type: 'L' as const })),
+  ].sort((a, b) => a.idx - b.idx);
+  for (let i = sorted.length - 1; i >= 1; i--) {
+    const b = sorted[i];
+    for (let j = i - 1; j >= 0; j--) {
+      if (sorted[j].type === b.type) continue;
+      const range = Math.abs(b.price - sorted[j].price);
+      const base = Math.min(b.price, sorted[j].price);
+      if ((range / base) * 100 >= AB_MIN_SWING_PCT) {
+        return {
+          startPrice: sorted[j].price,
+          endPrice: b.price,
+          startIdx: sorted[j].idx,
+          endIdx: b.idx,
+          direction: sorted[j].price < b.price ? 'up' : 'down',
+          range,
+        };
+      }
+      break; // 该波段端点已确定（幅度不足），跳到更早一段继续找
+    }
+  }
   // 1. 当前价在波段区间内：幅度最大者优先
   const containing = swings.filter((s) => {
     const lo = Math.min(s.startPrice, s.endPrice);
