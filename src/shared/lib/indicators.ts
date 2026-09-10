@@ -1944,7 +1944,7 @@ export function calcAB9Lines(klines: KlineData[]): AB9Analysis | null {
     } else if (selected.direction === 'down' && currentPrice < lines[lines.length - 1].price) {
       betweenLines = `9线之下（突破波段）`;
     } else {
-      betweenLines = `1线之上（跌破波段起点）`;
+      betweenLines = `1线之上（突破波段起点）`;
     }
   }
 
@@ -2370,6 +2370,8 @@ export interface GannSquare {
   /** 1x1 价格步长 */
   step: number;
   interval: number;
+  /** 波段方向（决定对角线方向：上升=左下→右上，下降=左上→右下） */
+  direction: 'up' | 'down';
 }
 
 export function calcGannSquare(klines: KlineData[]): GannSquare | null {
@@ -2386,6 +2388,7 @@ export function calcGannSquare(klines: KlineData[]): GannSquare | null {
   return {
     startIdx: s.startIdx, bars: xSpan, priceLo, priceHi, step, interval,
     endTime: klines[s.startIdx].time + xSpan * interval,
+    direction: s.direction,
   };
 }
 

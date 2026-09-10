@@ -97,7 +97,7 @@ interface KlineChartProps {
 // 徽章点击即生效并持久化，刷新/换币种/换周期后保持用户的选择。
 // 版本号：默认值变更时递增，旧 localStorage 自动失效
   const INDICATOR_PREFS_KEY = 'kline-indicator-prefs-v2';
-const DEFAULT_INDICATORS = { EMA: false, MA120: true, BOLL: false, MACD: false, RSI: false, VWAP: false, KDJ: false, ATR: false, NINE: false, CHAN: false };
+const DEFAULT_INDICATORS = { EMA: false, MA120: false, BOLL: false, MACD: false, RSI: false, VWAP: false, KDJ: false, ATR: false, NINE: false, CHAN: false };
 
 function loadIndicatorPrefs(): typeof DEFAULT_INDICATORS {
   if (typeof window === 'undefined') return { ...DEFAULT_INDICATORS };
@@ -204,22 +204,31 @@ function drawGannSuite(
   }
 
   // —— 江恩时价四方（矩形 + 1x1 对角线） ——
+  // 坐标说明：yOf(priceLo) → 屏幕下方(y值大)，yOf(priceHi) → 屏幕上方(y值小)
+  // 上升波段：起点低价→终点高价 = 左下→右上
+  // 下降波段：起点高价→终点低价 = 左上→右下
   if (g.square) {
     const sq = g.square;
     const startT = sq.endTime - sq.bars * sq.interval;
     const x0 = xOf(startT);
     const x1 = xOf(sq.endTime);
-    const y0 = yOf(sq.priceLo);
-    const y1 = yOf(sq.priceHi);
-    if (x0 !== null && x1 !== null && y0 !== null && y1 !== null) {
+    const yLo = yOf(sq.priceLo); // 低价 → 屏幕下方
+    const yHi = yOf(sq.priceHi); // 高价 → 屏幕上方
+    if (x0 !== null && x1 !== null && yLo !== null && yHi !== null) {
       ctx.strokeStyle = 'rgba(168, 85, 247, 0.55)';
       ctx.lineWidth = 1;
       dash([5, 4]);
-      ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+      ctx.strokeRect(x0, yHi, x1 - x0, yLo - yHi); // 矩形从左上(高价)画到右下
+      // 1x1 对角线：与角度线 1x1 同向，连接波段两个端点
       ctx.strokeStyle = 'rgba(251, 191, 36, 0.6)';
       ctx.beginPath();
-      ctx.moveTo(x0, y0);
-      ctx.lineTo(x1, y1);
+      if (sq.direction === 'up') {
+        ctx.moveTo(x0, yLo); // 起点：低价（左下）
+        ctx.lineTo(x1, yHi); // 终点：高价（右上）
+      } else {
+        ctx.moveTo(x0, yHi); // 起点：高价（左上）
+        ctx.lineTo(x1, yLo); // 终点：低价（右下）
+      }
       ctx.stroke();
       dash([]);
     }
