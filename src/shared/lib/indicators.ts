@@ -1768,8 +1768,11 @@ interface ResolvedAB {
  * 签名必须带 K 线时间间隔（step）：4h 与 1d 在 UTC 整点对齐、K 线数相同、
  * 收盘价相同（如 500 根、00:00 收盘价一致）时，length:time:close 三字段会完全碰撞，
  * 导致后计算的周期复用前一周期的 A/B 点，9 线整组锚错波段。
+ * 缓存保留最近若干条（按周期/窗口独立记忆）：切周期后切回，原周期点位
+ * 直接命中，不再反复 clear + 重算 O(n²)；超限后淘汰最早插入的旧窗口条目。
  */
 const abPointCache = new Map<string, ResolvedAB>();
+const AB_POINT_CACHE_MAX = 16; // 覆盖多周期×多窗口（4h/1d/1w … × 图表/信号面板）
 
 function resolveABPoints(klines: KlineData[]): ResolvedAB | null {
   const last = klines[klines.length - 1];
@@ -1791,8 +1794,12 @@ function resolveABPoints(klines: KlineData[]): ResolvedAB | null {
   if (!selected) return null;
 
   const result: ResolvedAB = { fractalHighs, fractalLows, selected };
-  abPointCache.clear(); // 仅保留最近一条，防 Map 无限增长
   abPointCache.set(sig, result);
+  if (abPointCache.size > AB_POINT_CACHE_MAX) {
+    // Map 按插入序淘汰最旧条目（即最早时间窗口），不影响当前活跃周期
+    const oldest = abPointCache.keys().next().value;
+    if (oldest !== undefined) abPointCache.delete(oldest);
+  }
   return result;
 }
 
