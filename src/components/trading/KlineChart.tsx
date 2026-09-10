@@ -995,7 +995,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       }
     };
     fetchOil();
-    const timer = setInterval(fetchOil, 10 * 60 * 1000);
+    const timer = setInterval(fetchOil, 5 * 60 * 1000);
     return () => { active = false; clearInterval(timer); };
   }, []);
 

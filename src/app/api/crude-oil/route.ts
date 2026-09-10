@@ -1,18 +1,17 @@
 /**
  * 原油信号 API
  *
- * GET /api/crude-oil — 拉取 WTI 原油近 5 日数据，计算 3 日涨跌幅
+ * GET /api/crude-oil — 拉取 WTI 原油实时价格 + 历史数据
  * 返回多空观望信号：
  *   涨 > 3% → short（通胀恐慌，加密币跌）
  *   跌 > 3% → long（避险消退，加密币涨）
  *   其他 → neutral（观望）
  *
- * 服务端 10 分钟缓存
+ * 服务端 5 分钟缓存
  *
- * 数据源（优先级）：
- *   1. OilPriceAPI 历史数据（5日） → 算 3 日涨跌幅
- *   2. OilPriceAPI 最新价格 → 用 24h 涨跌幅
- *   3. Yahoo Finance CL=F（备用）
+ * 数据源：
+ *   主力: OilPriceAPI 实时价格(latest) + 5日历史(historical) 合并
+ *   备用: Yahoo Finance CL=F
  *   失败则返回错误，不使用假数据
  */
 import { createHandler } from '@/shared/api/handler';
@@ -20,11 +19,11 @@ import { apiSuccess, apiError } from '@/shared/api/response';
 import { requireUser } from '@/shared/api/auth-guard';
 
 export const dynamic = 'force-dynamic';
-export const revalidate = 600; // 10 分钟
+export const revalidate = 300; // 5 分钟
 
 // 内存缓存
 let cache: { data: any; ts: number } | null = null;
-const CACHE_TTL = 10 * 60 * 1000; // 10 分钟
+const CACHE_TTL = 5 * 60 * 1000; // 5 分钟
 
 async function fetchWithTimeout(url: string, ms = 5000, headers?: Record<string, string>): Promise<any> {
   const controller = new AbortController();
@@ -47,54 +46,74 @@ async function fetchWithTimeout(url: string, ms = 5000, headers?: Record<string,
 const OIL_API_KEY = process.env.OIL_PRICE_API_KEY || '1f88da035b3fca28a99048abd0f139a87be86be1e9c804db784dfe93b3d0bf53';
 
 /**
- * 方案1: OilPriceAPI 历史数据（5日 daily average）
- * 返回每天的日均价，可以算 3 日涨跌幅
+ * 主力：同时拉 OilPriceAPI 的实时价格 + 5日历史
+ * 用实时价格显示，用历史数据算 3 日涨跌幅
  */
-async function fetchOilPriceAPIHistory(): Promise<{ price: number; change3d: number; changePct3d: number; history: number[]; source: string } | null> {
+async function fetchOilPriceAPICombined(): Promise<{ price: number; change3d: number; changePct3d: number; history: number[]; source: string } | null> {
   if (!OIL_API_KEY) return null;
-  try {
-    const url = 'https://api.oilpriceapi.com/v1/prices/historical?by_code=WTI_USD&days=5';
-    const data = await fetchWithTimeout(url, 5000, {
+
+  // 并行请求实时价格和历史数据
+  const [latestRes, histRes] = await Promise.allSettled([
+    fetchWithTimeout('https://api.oilpriceapi.com/v1/prices/latest?by_code=WTI_USD', 5000, {
       'Authorization': `Token ${OIL_API_KEY}`,
-    });
-    const prices = data?.data?.prices;
+    }),
+    fetchWithTimeout('https://api.oilpriceapi.com/v1/prices/historical?by_code=WTI_USD&days=5', 5000, {
+      'Authorization': `Token ${OIL_API_KEY}`,
+    }),
+  ]);
+
+  // 取实时价格（主力显示用）
+  let price = 0;
+  let change3d = 0;
+  let changePct3d = 0;
+  let history: number[] = [];
+  let hasLatest = false;
+
+  if (latestRes.status === 'fulfilled') {
+    const data = latestRes.value?.data;
+    if (data?.price) {
+      price = data.price;
+      hasLatest = true;
+      // 24h 涨跌幅作为备用
+      const ch24 = data.changes?.['24h'];
+      change3d = ch24?.amount ?? 0;
+      changePct3d = ch24?.percent ?? 0;
+    }
+  }
+
+  // 取历史数据（算 3 日涨跌幅）
+  let hasHistory = false;
+  if (histRes.status === 'fulfilled') {
+    const prices = histRes.value?.data?.prices;
     if (Array.isArray(prices) && prices.length >= 4) {
-      // 历史数据按日期升序排列（旧→新）
       const closes = prices.map((p: any) => p.price).reverse();
-      const latest = closes[closes.length - 1];
+      history = closes;
+      // 用历史数据的最新日均价算 3 日涨跌幅
+      const histLatest = closes[closes.length - 1];
       const price3dAgo = closes[closes.length - 4];
-      const change = latest - price3dAgo;
-      const changePct = (change / price3dAgo) * 100;
-      return { price: latest, change3d: change, changePct3d: changePct, history: closes, source: 'OilPriceAPI (WTI 5d)' };
+      change3d = histLatest - price3dAgo;
+      changePct3d = (change3d / price3dAgo) * 100;
+      hasHistory = true;
+      // 如果没有实时价格，用历史最新日均价
+      if (!hasLatest) price = histLatest;
     }
-  } catch {}
+  }
+
+  if (hasLatest || hasHistory) {
+    return {
+      price,
+      change3d,
+      changePct3d,
+      history,
+      source: hasLatest ? 'OilPriceAPI (WTI 实时)' : 'OilPriceAPI (WTI 日均)',
+    };
+  }
+
   return null;
 }
 
 /**
- * 方案2: OilPriceAPI 最新价格（含 24h 涨跌幅）
- * 历史接口失败时，用 24h 数据做近似
- */
-async function fetchOilPriceAPILatest(): Promise<{ price: number; change3d: number; changePct3d: number; history: number[]; source: string } | null> {
-  if (!OIL_API_KEY) return null;
-  try {
-    const url = 'https://api.oilpriceapi.com/v1/prices/latest?by_code=WTI_USD';
-    const data = await fetchWithTimeout(url, 5000, {
-      'Authorization': `Token ${OIL_API_KEY}`,
-    });
-    if (data?.data?.price) {
-      const latest = data.data.price;
-      const change24h = data.data.changes?.['24h'];
-      const change3d = change24h?.amount ?? 0;
-      const changePct3d = change24h?.percent ?? 0;
-      return { price: latest, change3d, changePct3d, history: [latest], source: 'OilPriceAPI (WTI 24h)' };
-    }
-  } catch {}
-  return null;
-}
-
-/**
- * 方案3: Yahoo Finance CL=F（备用）
+ * 备用：Yahoo Finance CL=F
  */
 async function fetchYahooFinance(): Promise<{ price: number; change3d: number; changePct3d: number; history: number[]; source: string } | null> {
   try {
@@ -136,8 +155,7 @@ export const GET = createHandler(async () => {
 
   // 按优先级尝试真实数据源
   const oilData =
-    (await fetchOilPriceAPIHistory()) ||
-    (await fetchOilPriceAPILatest()) ||
+    (await fetchOilPriceAPICombined()) ||
     (await fetchYahooFinance());
 
   if (!oilData) {
