@@ -2179,43 +2179,44 @@ export interface SupportResistanceLevel {
 }
 
 /**
- * 全量压力支撑位：取近 N 根 K 线的分形高低点，聚类后返回所有被多次触及的价位。
+ * 全量压力支撑位：取近 N 根 K 线的分形高低点（strength=3，结构更稳定），
+ * 聚类去重后返回所有价位。minCount=1 时不过滤孤立点，全部画出。
  *
  * 与 calcRangeBox 的区别：
  *   - calcRangeBox 只取最近的一组支撑/阻力（各一条），用于箱体判定；
- *   - 本函数返回全部聚类价位，供"压支线"开关在主图上批量画水平线。
+ *   - 本函数返回全部分形价位，供"压支线"开关在主图上批量画水平线。
  *
- * 聚类参数与 calcRangeBox 一致（1.5% 容差、至少 2 次触及），保证语义统一。
  * 独立于 AB9/江恩的 A/B 波段，不影响其画线锚定。
  *
  * @param klines   K 线数据
  * @param lookback 回溯窗口（默认 200 根，覆盖中长线结构位）
- * @param minCount 最少触及次数（默认 2，过滤孤立 spike）
+ * @param minCount 最少触及次数（默认 1=全部画出，2=仅多次触及的强位）
  */
 export function calcSupportResistance(
   klines: KlineData[],
   lookback = 200,
-  minCount = 2,
+  minCount = 1,
 ): SupportResistanceLevel[] | null {
   const n = klines.length;
-  if (n < 10) return null;
+  if (n < 20) return null;
   const last = klines[n - 1];
   const currentPrice = last.close;
   const win = klines.slice(Math.max(0, n - lookback), n);
-  if (win.length < 10) return null;
+  if (win.length < 20) return null;
 
-  // 摆动高低点：左右各一根确认的局部极值（与 calcRangeBox 同口径）
-  const swHigh: number[] = [], swLow: number[] = [];
-  for (let i = 1; i < win.length - 1; i++) {
-    const a = win[i - 1], c = win[i], b = win[i + 1];
-    if (c.high >= a.high && c.high >= b.high) swHigh.push(c.high);
-    if (c.low <= a.low && c.low <= b.low) swLow.push(c.low);
-  }
-  if (swHigh.length + swLow.length < 4) return null;
+  // 使用分形检测（strength=3，左右各 3 根确认，比 1 根确认更稳定、更重要）
+  const { fractalHighs, fractalLows } = detectFractals(win, 3);
+  if (fractalHighs.length + fractalLows.length < 2) return null;
 
-  // 聚类：高低点合并参与（前高可转支撑、前低可转阻力，角色可转换）
+  // 所有分形价格合并
+  const allPrices = [
+    ...fractalHighs.map((f) => f.price),
+    ...fractalLows.map((f) => f.price),
+  ];
+
+  // 聚类去重（1.5% 容差）：价位相近的分形点合并为一条线
   const tol = 0.015;
-  const levels = clusterPriceLevels([...swHigh, ...swLow], tol, minCount);
+  const levels = clusterPriceLevels(allPrices, tol, minCount);
 
   // 按当前价分割：上方=阻力，下方=支撑
   const result: SupportResistanceLevel[] = levels.map((lv) => ({
