@@ -326,13 +326,16 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // ADX 状态（趋势/震荡过滤，仅计算不画副图）
   const [adxState, setAdxState] = useState<ADXData | null>(null);
 
-  // 原油多空观望信号
+  // 原油多空观望信号（CNBC 实时数据）
   const [oilSignal, setOilSignal] = useState<{
     signal: 'long' | 'short' | 'neutral';
     label: string;
     color: string;
     changePct3d: number;
     price: number;
+    changePct?: number;    // 当日实时涨跌%（CNBC，相对昨收）
+    lastTime?: number;     // 交易所行情时间（毫秒）
+    marketStatus?: string; // REG_MKT=盘中 CLOSED=休市等
   } | null>(null);
 
   // 原油信号拖拽位置（持久化到 localStorage）
@@ -973,10 +976,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     }
   }, [indicators, periods]);
 
-  // 原油信号：组件挂载时拉取，10 分钟轮询
+  // 原油信号：CNBC 实时行情，60 秒轮询（页面隐藏时暂停，切回时立即刷新）
   useEffect(() => {
     let active = true;
     const fetchOil = async () => {
+      if (document.hidden) return;
       try {
         const resp = await fetch('/api/crude-oil');
         if (!resp.ok) return;
@@ -988,6 +992,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             color: json.data.color,
             changePct3d: json.data.changePct3d,
             price: json.data.price,
+            changePct: json.data.changePct,
+            lastTime: json.data.lastTime,
+            marketStatus: json.data.marketStatus,
           });
         }
       } catch {
@@ -995,8 +1002,14 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       }
     };
     fetchOil();
-    const timer = setInterval(fetchOil, 5 * 60 * 1000);
-    return () => { active = false; clearInterval(timer); };
+    const timer = setInterval(fetchOil, 60 * 1000);
+    const onVisible = () => { if (!document.hidden) fetchOil(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      active = false;
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, []);
 
   // 徽章切换指标时立即重绘
@@ -3113,13 +3126,16 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
               </div>
             );
           })()}
-          {/* 原油多空观望信号（可拖拽） */}
+          {/* 原油多空观望信号（可拖拽，CNBC 实时数据） */}
           {oilSignal && (
             <div
               className="absolute z-[4] cursor-grab active:cursor-grabbing"
               style={oilBadgePos ? { left: oilBadgePos.x, top: oilBadgePos.y } : { top: 10, left: 12 }}
               onMouseDown={onOilBadgeMouseDown}
               onTouchStart={onOilBadgeTouchStart}
+              title={`CNBC 实时 · ${oilSignal.marketStatus === 'REG_MKT' ? '交易中' : '休市/盘外'}${
+                oilSignal.lastTime ? ' · 行情时间 ' + new Date(oilSignal.lastTime).toLocaleTimeString() : ''
+              }`}
             >
               <div
                 className="flex items-center gap-1.5 px-2 py-1 rounded-md border"
@@ -3138,7 +3154,23 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
                 <span className="text-[9px] text-dark-400 font-mono tabular-nums">
                   ${oilSignal.price.toFixed(2)}
                 </span>
-                <span className="text-[9px] font-mono tabular-nums" style={{ color: oilSignal.changePct3d > 0 ? 'rgba(34, 197, 94, 0.8)' : oilSignal.changePct3d < 0 ? 'rgba(246, 70, 93, 0.8)' : 'rgba(148, 163, 184, 0.8)' }}>
+                {/* 当日实时涨跌%（CNBC，相对昨收） */}
+                {typeof oilSignal.changePct === 'number' && Number.isFinite(oilSignal.changePct) && (
+                  <span
+                    className="text-[9px] font-mono tabular-nums"
+                    style={{
+                      color:
+                        oilSignal.changePct > 0
+                          ? 'rgba(34, 197, 94, 0.8)'
+                          : oilSignal.changePct < 0
+                            ? 'rgba(246, 70, 93, 0.8)'
+                            : 'rgba(148, 163, 184, 0.8)',
+                    }}
+                  >
+                    {oilSignal.changePct > 0 ? '+' : ''}{oilSignal.changePct.toFixed(2)}%
+                  </span>
+                )}
+                <span className="text-[9px] text-dark-500 font-mono tabular-nums" style={{ color: oilSignal.changePct3d > 0 ? 'rgba(34, 197, 94, 0.8)' : oilSignal.changePct3d < 0 ? 'rgba(246, 70, 93, 0.8)' : 'rgba(148, 163, 184, 0.8)' }}>
                   {oilSignal.changePct3d > 0 ? '+' : ''}{oilSignal.changePct3d.toFixed(1)}%
                 </span>
                 <span className="text-[8px] text-dark-500">原油</span>
