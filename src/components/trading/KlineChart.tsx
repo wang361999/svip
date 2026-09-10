@@ -18,6 +18,8 @@ import {
   calcIchimoku,
   calcPredictionSynth,
   calcRangeBox,
+  calcLevelTouch,
+  type LevelTouchInfo,
   detectFractals,
   calcSuperTrend,
   type ChanResult,
@@ -410,6 +412,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const legendOf = useCallback((o: number, h: number, l: number, c: number): LegendInfo => ({
     o, h, l, c, pct: o > 0 ? ((c - o) / o) * 100 : 0,
   }), []);
+  // 九线触及反馈：实时距离检测 + 成交量异动（仅 showAutoAB9 开启时计算）
+  const [levelTouch, setLevelTouch] = useState<LevelTouchInfo | null>(null);
   // 趋势通道 LineSeries refs（上轨/下轨/中轨 + 预测延伸线）
   const tcSeriesRef = useRef<{
     upper?: ISeriesApi<'Line'>; lower?: ISeriesApi<'Line'>; mid?: ISeriesApi<'Line'>;
@@ -889,26 +893,38 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     }
 
     // —— AB9线（原生满宽价格线，价格轴可读数） ——
+    let ab9Result: ReturnType<typeof calcAB9Lines> = null;
     if (showAutoAB9 && isMember) {
-      const ab9 = calcAB9Lines(klines);
-      if (ab9) {
-        for (const line of ab9.lines) {
+      ab9Result = calcAB9Lines(klines);
+      if (ab9Result) {
+        for (const line of ab9Result.lines) {
           const color = AB9_COLORS[line.lineNo];
           if (!color) continue;
+          // 触及反馈：当前价触及的线加粗高亮
+          const touchInfo = calcLevelTouch(ab9Result, klines);
+          const isNear = touchInfo && touchInfo.nearestLine === line.lineNo && touchInfo.status !== '远离';
           try {
             const pl = series.createPriceLine({
               price: line.price,
-              color: color.replace(/[\d.]+\)$/, '0.85)'),
-              lineWidth: 1,
-              lineStyle: 2,
+              color: isNear
+                ? (touchInfo!.isAbove
+                  ? 'rgba(246, 70, 93, 1)'   // 阻力位触及：高亮红
+                  : 'rgba(34, 197, 94, 1)')   // 支撑位触及：高亮绿
+                : color.replace(/[\d.]+\)$/, '0.85)'),
+              lineWidth: isNear ? 2 : 1,
+              lineStyle: isNear ? 0 : 2,
               axisLabelVisible: true,
-              title: ` ${line.lineNo}线`,
+              title: isNear
+                ? ` ${line.lineNo}线 ${touchInfo!.isAbove ? '阻力' : '支撑'}${touchInfo!.volumeSignal ? ' ' + touchInfo!.volumeSignal : ''}`
+                : ` ${line.lineNo}线`,
             });
             autoPriceLinesRef.current.push(pl);
           } catch {}
         }
       }
     }
+    // 九线触及反馈状态（供 UI 角标显示）
+    setLevelTouch(showAutoAB9 && isMember && ab9Result ? calcLevelTouch(ab9Result, klines) : null);
 
     }, [showAutoAB9, showSR, isMember, symbol]);
 
@@ -2784,6 +2800,61 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
                 <span className="font-semibold">
                   {legend.pct >= 0 ? '+' : ''}{legend.pct.toFixed(2)}%
                 </span>
+              </div>
+            </div>
+          )}
+          {/* 九线触及反馈角标：实时距离 + 成交量配合 */}
+          {levelTouch && levelTouch.status !== '远离' && (
+            <div className="absolute top-2.5 right-3 z-[4] pointer-events-none">
+              <div
+                className="px-2.5 py-1.5 rounded-md border text-[11px] font-mono tabular-nums flex flex-col gap-0.5"
+                style={{
+                  borderColor: levelTouch.isAbove ? 'rgba(246, 70, 93, 0.5)' : 'rgba(34, 197, 94, 0.5)',
+                  background: 'rgba(15, 20, 30, 0.88)',
+                }}
+              >
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className="px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                    style={{
+                      background: levelTouch.status === '触及'
+                        ? (levelTouch.isAbove ? 'rgba(246, 70, 93, 0.9)' : 'rgba(34, 197, 94, 0.9)')
+                        : 'rgba(100, 116, 139, 0.4)',
+                      color: '#fff',
+                    }}
+                  >
+                    {levelTouch.status}
+                  </span>
+                  <span className="text-slate-300">
+                    {levelTouch.nearestLine}线 {levelTouch.isAbove ? '阻力' : '支撑'}
+                  </span>
+                  <span className="text-dark-400">
+                    {levelTouch.nearestPrice.toFixed(Math.max(0, Math.min(8, pricePrecision)))}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 text-[10px]">
+                  <span className="text-dark-400">距离</span>
+                  <span style={{ color: levelTouch.isAbove ? 'rgba(246, 70, 93, 0.9)' : 'rgba(34, 197, 94, 0.9)' }}>
+                    {levelTouch.distancePct.toFixed(3)}%
+                  </span>
+                  {levelTouch.volumeSignal && (
+                    <span
+                      className="px-1 py-0.5 rounded font-semibold"
+                      style={{
+                        background:
+                          levelTouch.volumeSignal === '放量' ? 'rgba(251, 191, 36, 0.25)'
+                          : levelTouch.volumeSignal === '缩量' ? 'rgba(100, 116, 139, 0.25)'
+                          : 'transparent',
+                        color:
+                          levelTouch.volumeSignal === '放量' ? 'rgba(251, 191, 36, 1)'
+                          : levelTouch.volumeSignal === '缩量' ? 'rgba(148, 163, 184, 1)'
+                          : 'rgba(100, 116, 139, 1)',
+                      }}
+                    >
+                      {levelTouch.volumeSignal}
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
           )}

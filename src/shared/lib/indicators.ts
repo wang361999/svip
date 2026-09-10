@@ -2060,6 +2060,99 @@ export function calcAB9Lines(klines: KlineData[]): AB9Analysis | null {
   };
 }
 
+// ========== 九线触及反馈：实时距离检测 ==========
+
+export interface LevelTouchInfo {
+  /** 最近的线号 */
+  nearestLine: number;
+  /** 该线价格 */
+  nearestPrice: number;
+  /** 当前价距该线的距离（绝对值） */
+  distance: number;
+  /** 距离百分比（distance / price × 100） */
+  distancePct: number;
+  /** 该线在当前价上方=true（阻力），下方=false（支撑） */
+  isAbove: boolean;
+  /** 是否处于"触及"状态：距离 ≤ 触及阈值 */
+  isTouching: boolean;
+  /** 到线状态标签：'触及' | '接近' | '远离' */
+  status: '触及' | '接近' | '远离';
+  /** 成交量异动判断（触及/接近时才有意义） */
+  volumeSignal: '放量' | '缩量' | '正常' | null;
+}
+
+/**
+ * 九线触及检测：计算当前价到最近线的距离、触及状态、成交量配合。
+ *
+ * @param ab9 calcAB9Lines 返回的结果
+ * @param klines K线数据（用于成交量比较）
+ * @returns 触及信息，ab9 为空时返回 null
+ */
+export function calcLevelTouch(
+  ab9: AB9Analysis | null,
+  klines: KlineData[],
+): LevelTouchInfo | null {
+  if (!ab9 || klines.length < 6) return null;
+  const currentPrice = klines[klines.length - 1].close;
+
+  // 找最近线
+  let nearestLine = 0;
+  let nearestPrice = 0;
+  let minDist = Infinity;
+  for (const line of ab9.lines) {
+    const dist = Math.abs(currentPrice - line.price);
+    if (dist < minDist) {
+      minDist = dist;
+      nearestLine = line.lineNo;
+      nearestPrice = line.price;
+    }
+  }
+
+  const isAbove = nearestPrice >= currentPrice;
+  const distancePct = nearestPrice > 0 ? (minDist / nearestPrice) * 100 : 0;
+
+  // 触及阈值：波段高度的 0.5% 与价格 0.15% 取较大
+  const threshold = Math.max(ab9.height * 0.005, currentPrice * 0.0015);
+  const isTouching = minDist <= threshold;
+
+  // 接近阈值：触及阈值的 3 倍
+  const nearThreshold = threshold * 3;
+
+  let status: LevelTouchInfo['status'];
+  if (isTouching) status = '触及';
+  else if (minDist <= nearThreshold) status = '接近';
+  else status = '远离';
+
+  // 成交量异动：最近 5 根均量 vs 前 20 根均量
+  let volumeSignal: LevelTouchInfo['volumeSignal'] = null;
+  if (isTouching || minDist <= nearThreshold) {
+    const volArr = klines.filter((k) => typeof k.volume === 'number');
+    if (volArr.length >= 25) {
+      const recent5 = volArr.slice(-5);
+      const prev20 = volArr.slice(-25, -5);
+      const recentAvg = recent5.reduce((s, k) => s + k.volume, 0) / recent5.length;
+      const prevAvg = prev20.reduce((s, k) => s + k.volume, 0) / prev20.length;
+      if (prevAvg > 0) {
+        const ratio = recentAvg / prevAvg;
+        if (ratio >= 1.8) volumeSignal = '放量';
+        else if (ratio <= 0.5) volumeSignal = '缩量';
+        else volumeSignal = '正常';
+      }
+    }
+  }
+
+  return {
+    nearestLine,
+    nearestPrice,
+    distance: minDist,
+    distancePct,
+    isAbove,
+    isTouching,
+    status,
+    volumeSignal,
+  };
+}
+
 /**
  * 震荡箱体 / 近端支撑阻力：检测价格是否处于箱体区间，并给出支撑区下沿与阻力区上沿。
  * 独立于策略引擎，供主图画箱体（区间）或近端支撑/阻力参考线。
