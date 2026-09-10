@@ -421,8 +421,18 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // 九线触及反馈：实时距离检测 + 成交量异动（仅 showAutoAB9 开启时计算）
   const [levelTouch, setLevelTouch] = useState<LevelTouchInfo | null>(null);
 
-  // 可拖拽提示框位置（null=默认右上角；拖拽后记录像素坐标）
-  const [badgePos, setBadgePos] = useState<{ x: number; y: number } | null>(null);
+  // 可拖拽提示框位置（持久化到 localStorage，刷新/换币种/换周期后保持）
+  const BADGE_POS_KEY = 'kline-badge-pos-v1';
+  const [badgePos, setBadgePos] = useState<{ x: number; y: number } | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const raw = window.localStorage.getItem(BADGE_POS_KEY);
+      if (!raw) return null;
+      const p = JSON.parse(raw);
+      if (typeof p.x === 'number' && typeof p.y === 'number') return { x: p.x, y: p.y };
+    } catch {}
+    return null;
+  });
   const badgeDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
 
   const onBadgeMouseDown = useCallback((e: ReactMouseEvent) => {
@@ -460,7 +470,16 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     };
     const mm = (e: MouseEvent) => onMove(e.clientX, e.clientY);
     const tm = (e: TouchEvent) => { if (e.touches.length === 1) onMove(e.touches[0].clientX, e.touches[0].clientY); };
-    const up = () => { badgeDragRef.current = null; };
+    const up = () => {
+      badgeDragRef.current = null;
+      // 持久化最新位置
+      setBadgePos((cur) => {
+        if (cur) {
+          try { window.localStorage.setItem(BADGE_POS_KEY, JSON.stringify(cur)); } catch {}
+        }
+        return cur;
+      });
+    };
     window.addEventListener('mousemove', mm);
     window.addEventListener('mouseup', up);
     window.addEventListener('touchmove', tm, { passive: false });
