@@ -2917,67 +2917,73 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
                       {levelTouch.volumeSignal}
                     </span>
                   )}
-                  {adxState?.lastADX != null && (
-                    <span
-                      className="px-1 py-0.5 rounded font-semibold"
-                      style={{
-                        background: adxState.lastADX > 25
-                          ? 'rgba(251, 191, 36, 0.25)'
-                          : adxState.lastADX < 20
-                          ? 'rgba(100, 116, 139, 0.25)'
-                          : 'transparent',
-                        color: adxState.lastADX > 25
-                          ? 'rgba(251, 191, 36, 1)'
-                          : adxState.lastADX < 20
-                          ? 'rgba(148, 163, 184, 1)'
-                          : 'rgba(100, 116, 139, 1)',
-                      }}
-                    >
-                      ADX {adxState.lastADX.toFixed(0)} {adxState.lastADX > 25 ? '趋势' : adxState.lastADX < 20 ? '震荡' : '中性'}
-                    </span>
-                  )}
+                  {adxState?.lastADX != null && (() => {
+                    const dir = adxState.direction;
+                    const slope = adxState.adxSlope;
+                    const arrow = slope === 'rising' ? '↗' : slope === 'falling' ? '↘' : '→';
+                    const label = adxState.lastADX > 25
+                      ? (dir === 'bull' ? '上涨' : dir === 'bear' ? '下跌' : '趋势')
+                      : adxState.lastADX < 20
+                      ? (dir === 'bull' ? '震荡上行' : dir === 'bear' ? '震荡下行' : '震荡')
+                      : (dir === 'bull' ? '偏多' : dir === 'bear' ? '偏空' : '中性');
+                    const c = dir === 'bull' ? 'rgba(34, 197, 94, 1)' : dir === 'bear' ? 'rgba(246, 70, 93, 1)' : 'rgba(148, 163, 184, 1)';
+                    return (
+                      <span
+                        className="px-1 py-0.5 rounded font-semibold"
+                        style={{ background: dir === 'bull' ? 'rgba(34, 197, 94, 0.15)' : dir === 'bear' ? 'rgba(246, 70, 93, 0.15)' : 'rgba(148, 163, 184, 0.12)', color: c }}
+                      >
+                        {label} {arrow} ADX{adxState.lastADX.toFixed(0)}
+                      </span>
+                    );
+                  })()}
                 </div>
               </div>
             </div>
           )}
-          {/* ADX 趋势状态灯（常驻；触及反馈显示时让位避免重复，可拖拽） */}
-          {(!levelTouch || levelTouch.status === '远离') && adxState?.lastADX != null && (
-            <div
-              className="absolute z-[4] cursor-grab active:cursor-grabbing"
-              style={badgePos ? { left: badgePos.x, top: badgePos.y } : { top: 10, right: 4 }}
-              onMouseDown={onBadgeMouseDown}
-              onTouchStart={onBadgeTouchStart}
-            >
+          {/* ADX 四态趋势灯（常驻；触及反馈显示时让位避免重复，可拖拽） */}
+          {(!levelTouch || levelTouch.status === '远离') && adxState?.lastADX != null && (() => {
+            const adx = adxState.lastADX;
+            const dir = adxState.direction;
+            const slope = adxState.adxSlope;
+            const isTrend = adx > 25;
+            const isChop = adx < 20;
+            // 四态标签
+            const label = isTrend
+              ? (dir === 'bull' ? '上涨' : dir === 'bear' ? '下跌' : '趋势中性')
+              : isChop
+              ? (dir === 'bull' ? '震荡上行' : dir === 'bear' ? '震荡下行' : '纯震荡')
+              : (dir === 'bull' ? '偏多' : dir === 'bear' ? '偏空' : '中性');
+            // 主色
+            const color = dir === 'bull' ? 'rgba(34, 197, 94, 1)'
+              : dir === 'bear' ? 'rgba(246, 70, 93, 1)'
+              : 'rgba(148, 163, 184, 1)';
+            const colorBg = dir === 'bull' ? 'rgba(34, 197, 94, 0.15)'
+              : dir === 'bear' ? 'rgba(246, 70, 93, 0.15)'
+              : 'rgba(148, 163, 184, 0.12)';
+            // 斜率箭头
+            const arrow = slope === 'rising' ? '↗' : slope === 'falling' ? '↘' : '→';
+            const arrowColor = slope === 'rising' ? 'rgba(251, 191, 36, 1)' : slope === 'falling' ? 'rgba(148, 163, 184, 1)' : 'rgba(100, 116, 139, 0.7)';
+            const isTrendStr = isTrend ? '强' : isChop ? '弱' : '中';
+            return (
               <div
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border"
-                style={{
-                  borderColor: 'rgba(255,255,255,0.06)',
-                  background: 'rgba(15, 20, 30, 0.88)',
-                }}
+                className="absolute z-[4] cursor-grab active:cursor-grabbing"
+                style={badgePos ? { left: badgePos.x, top: badgePos.y } : { top: 10, right: 4 }}
+                onMouseDown={onBadgeMouseDown}
+                onTouchStart={onBadgeTouchStart}
               >
-                <span
-                  className="w-2 h-2 rounded-full"
-                  style={{
-                    backgroundColor:
-                      adxState.lastADX > 25 ? 'rgba(251, 191, 36, 1)'
-                      : adxState.lastADX < 20 ? 'rgba(148, 163, 184, 1)'
-                      : 'rgba(100, 116, 139, 0.6)',
-                  }}
-                />
-                <span
-                  className="text-[11px] font-semibold"
-                  style={{
-                    color:
-                      adxState.lastADX > 25 ? 'rgba(251, 191, 36, 1)'
-                      : adxState.lastADX < 20 ? 'rgba(148, 163, 184, 1)'
-                      : 'rgba(100, 116, 139, 1)',
-                  }}
+                <div
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border"
+                  style={{ borderColor: colorBg, background: 'rgba(15, 20, 30, 0.9)' }}
                 >
-                  {adxState.lastADX > 25 ? '趋势' : adxState.lastADX < 20 ? '震荡' : '中性'}
-                </span>
+                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
+                  <span className="text-[11px] font-bold" style={{ color }}>{label}</span>
+                  <span className="text-[9px] text-dark-400 font-mono tabular-nums">ADX{adx.toFixed(0)}</span>
+                  <span className="text-[10px] font-bold" style={{ color: arrowColor }}>{arrow}</span>
+                  <span className="text-[9px] text-dark-400">{isTrendStr}</span>
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
       </div>
 

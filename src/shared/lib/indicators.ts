@@ -3536,6 +3536,7 @@ export interface ADXData {
   plusDI: number; // 最新 +DI
   minusDI: number; // 最新 -DI
   lastADX: number; // 最新 ADX
+  adxSlope: 'rising' | 'flat' | 'falling'; // ADX 近 3 根斜率方向（提前预警）
   direction: 'bull' | 'bear' | 'osc'; // 由 +DI/-DI 快判
 }
 
@@ -3578,8 +3579,18 @@ export function calcADX(klines: KlineData[], period: number = 14): ADXData | nul
     else if (dxBuf.length > period) { adxVal = (adxVal * (period - 1) + dx) / period; const r = Math.round(adxVal * 100) / 100; adx[i] = r; lastAdx = r; }
   }
 
+  // ADX 斜率：取最后 3 个非 null ADX 值判断方向（提前预警趋势加强/衰竭）
+  const adxVals = adx.filter((v): v is number => v != null);
+  let adxSlope: 'rising' | 'flat' | 'falling' = 'flat';
+  if (adxVals.length >= 3) {
+    const len = adxVals.length;
+    const diff = adxVals[len - 1] - adxVals[len - 3];
+    if (diff > 0.5) adxSlope = 'rising';
+    else if (diff < -0.5) adxSlope = 'falling';
+  }
+
   const direction: 'bull' | 'bear' | 'osc' = Math.abs(lastPlus - lastMinus) < 4 ? 'osc' : lastPlus > lastMinus ? 'bull' : 'bear';
-  return { pdi, mdi, adx, plusDI: lastPlus, minusDI: lastMinus, lastADX: lastAdx, direction };
+  return { pdi, mdi, adx, plusDI: lastPlus, minusDI: lastMinus, lastADX: lastAdx, adxSlope, direction };
 }
 
 // SuperTrend（ATR 趋势跟踪 · 机械可回测）
