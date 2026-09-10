@@ -3136,6 +3136,9 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
                   {oilSignal.label}
                 </span>
                 <span className="text-[9px] text-dark-400 font-mono tabular-nums">
+                  ${oilSignal.price.toFixed(2)}
+                </span>
+                <span className="text-[9px] font-mono tabular-nums" style={{ color: oilSignal.changePct3d > 0 ? 'rgba(246, 70, 93, 0.8)' : oilSignal.changePct3d < 0 ? 'rgba(34, 197, 94, 0.8)' : 'rgba(148, 163, 184, 0.8)' }}>
                   {oilSignal.changePct3d > 0 ? '+' : ''}{oilSignal.changePct3d.toFixed(1)}%
                 </span>
                 <span className="text-[8px] text-dark-500">原油</span>
