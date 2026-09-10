@@ -43,7 +43,6 @@ import {
   Time,
   CrosshairMode,
   LineStyle,
-  PriceScaleMode,
   type SeriesMarker,
 } from 'lightweight-charts';
 import {
@@ -841,6 +840,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         if (adxThreshold25.current) adxThreshold25.current.setData(thresh25Data);
         if (adxThreshold20.current) adxThreshold20.current.setData(thresh20Data);
         setAdxState(adxData);
+        // 确保副图自适应数据范围
+        if (adxChart.current) adxChart.current.timeScale().fitContent();
       }
     }
   }, [indicators, periods]);
@@ -1610,7 +1611,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           horzLines: { color: GRID_COLOR_FAINT, style: LineStyle.Dotted },
         },
         timeScale: { visible: false, borderColor: AXIS_BORDER, timeVisible: true },
-        rightPriceScale: { borderColor: AXIS_BORDER, autoScale: false, mode: PriceScaleMode.Normal },
+        rightPriceScale: { borderColor: AXIS_BORDER, autoScale: true },
         crosshair: {
           vertLine: { color: CROSSHAIR_COLOR, width: 1, style: LineStyle.Dashed, labelBackgroundColor: CROSSHAIR_LABEL_BG },
           horzLine: { color: CROSSHAIR_COLOR, width: 1, style: LineStyle.Dashed, labelBackgroundColor: CROSSHAIR_LABEL_BG },
