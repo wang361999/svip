@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>压支线回测 — 真实数据</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0e17; color: #e0e0e0; font-family: 'Segoe UI', 'Noto Sans CJK SC', sans-serif; padding: 16px; }
+  h1 { color: #fff; font-size: 20px; margin-bottom: 4px; }
+  .subtitle { color: #6b7280; font-size: 12px; margin-bottom: 12px; }
+  .controls { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+  .controls select, .controls button { background: #141821; color: #e0e0e0; border: 1px solid #1e2530; border-radius: 6px; padding: 8px 12px; font-size: 13px; cursor: pointer; }
+  .controls button { background: #1e3a5f; border-color: #3b82f6; }
+  .controls button:hover { background: #2563eb; }
+  .controls button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-bottom: 12px; }
+  .stat-card { background: #141821; border: 1px solid #1e2530; border-radius: 6px; padding: 12px; }
+  .stat-card .label { color: #6b7280; font-size: 11px; margin-bottom: 2px; }
+  .stat-card .value { font-size: 24px; font-weight: 700; }
+  .stat-card .sub { font-size: 11px; color: #6b7280; margin-top: 2px; }
+  .green { color: #22c55e; }
+  .red { color: #f6465d; }
+  .yellow { color: #fbbf24; }
+  .blue { color: #3b82f6; }
+  #chart { width: 100%; height: 480px; background: #0d1117; border: 1px solid #1e2530; border-radius: 8px; margin-bottom: 12px; }
+  .legend { display: flex; gap: 12px; margin: 8px 0; font-size: 12px; flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 4px; }
+  .legend .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .legend .line { width: 16px; height: 2px; display: inline-block; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 16px; font-size: 12px; }
+  th, td { padding: 6px 10px; text-align: center; border-bottom: 1px solid #1e2530; }
+  th { color: #6b7280; font-weight: 600; text-transform: uppercase; font-size: 10px; }
+  .section-title { font-size: 14px; color: #fff; margin: 16px 0 6px; border-left: 3px solid #3b82f6; padding-left: 10px; }
+  .loading { text-align: center; padding: 40px; color: #6b7280; }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+  .badge-conf { background: rgba(59,130,246,0.2); color: #3b82f6; }
+  .badge-single { background: rgba(107,126,142,0.2); color: #6b7280; }
+  .compare-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 16px; }
+  @media (max-width: 768px) { .compare-grid { grid-template-columns: 1fr; } }
+  .compare-card { background: #141821; border: 1px solid #1e2530; border-radius: 8px; padding: 14px; }
+  .compare-card h3 { font-size: 14px; margin-bottom: 8px; color: #fff; }
+  .compare-card.highlight { border-color: #3b82f6; box-shadow: 0 0 16px rgba(59,130,246,0.12); }
+  .metric { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #1a1f2e; font-size: 12px; }
+  .metric:last-child { border: none; }
+  .metric .val { font-weight: 700; }
+</style>
+</head>
+<body>
+
+<h1>压支线回测 — 真实行情</h1>
+<p class="subtitle">通过 /api/klines 代理拉取真实K线 | 每5根重算 | 前推30根检查触线/破线/反弹</p>
+
+<div class="controls">
+  <select id="symbol">
+    <option value="BTCUSDT">BTC/USDT</option>
+    <option value="ETHUSDT">ETH/USDT</option>
+    <option value="SOLUSDT">SOL/USDT</option>
+    <option value="BNBUSDT">BNB/USDT</option>
+  </select>
+  <select id="interval">
+    <option value="15m">15分钟</option>
+    <option value="1h" selected>1小时</option>
+    <option value="4h">4小时</option>
+    <option value="1d">日线</option>
+  </select>
+  <button id="runBtn" onclick="runBacktest()">开始回测</button>
+  <span id="status" style="color:#6b7280;font-size:12px"></span>
+</div>
+
+<div id="results" style="display:none">
+  <div class="compare-grid" id="compareGrid"></div>
+  <div class="legend">
+    <span><span class="line" style="background:rgba(59,130,246,0.8)"></span> 九线</span>
+    <span><span class="line" style="background:rgba(168,85,247,0.7);border:1px dashed"></span> 斐波那契</span>
+    <span><span class="line" style="background:rgba(251,191,36,0.9);height:3px"></span> 共振位</span>
+    <span><span class="line" style="background:rgba(34,197,94,0.4)"></span> 摆动支撑</span>
+    <span><span class="line" style="background:rgba(246,70,93,0.4)"></span> 摆动阻力</span>
+    <span><span class="dot" style="background:#fbbf24"></span> 反弹</span>
+    <span><span class="dot" style="background:#f6465d"></span> 破线</span>
+  </div>
+  <div id="chart"></div>
+  <div id="detailTables"></div>
+</div>
+
+<div id="loadingDiv" class="loading" style="display:none">
+  <p id="loadingText">正在拉取K线数据...</p>
+</div>
+
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+// ============================================================
+// 1. K线拉取（通过 /api/klines 代理）
+// ============================================================
+async function fetchKlines(symbol, interval, limit=1000) {
+  const url = `/api/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`API ${resp.status}`);
+  const raw = await resp.json();
+  // Binance 格式: [openTime, open, high, low, close, volume, ...]
+  return raw.map(k => ({
+    time: Math.floor(k[0] / 1000),
+    open: parseFloat(k[1]),
+    high: parseFloat(k[2]),
+    low: parseFloat(k[3]),
+    close: parseFloat(k[4]),
+    volume: parseFloat(k[5]) || 0,
+  }));
+}
+
+// ============================================================
+// 2. 分形检测（复刻 detectFractals strength=3）
+// ============================================================
+function detectFractals(klines, strength=3) {
+  const fractalHighs = [], fractalLows = [];
+  const n = klines.length;
+  const fbEnd = n - strength - 1;
+  for (let i = strength; i <= fbEnd; i++) {
+    let isHigh = true, isLow = true;
+    for (let j = 1; j <= strength; j++) {
+      if (klines[i].high < klines[i-j].high || klines[i].high <= klines[i+j].high) isHigh = false;
+      if (klines[i].low > klines[i-j].low || klines[i].low >= klines[i+j].low) isLow = false;
+    }
+    if (isHigh) fractalHighs.push({ idx: i, price: klines[i].high });
+    if (isLow) fractalLows.push({ idx: i, price: klines[i].low });
+  }
+  // 尾部未确认区
+  const tailStart = n - strength;
+  if (tailStart > strength) {
+    let runHigh = -Infinity, runHighIdx = -1, runLow = Infinity, runLowIdx = -1;
+    for (let i = tailStart; i < n; i++) {
+      if (klines[i].high > runHigh) { runHigh = klines[i].high; runHighIdx = i; }
+      if (klines[i].low < runLow) { runLow = klines[i].low; runLowIdx = i; }
+    }
+    const maxConfirmed = fractalHighs.length > 0 ? Math.max(...fractalHighs.map(f => f.price)) : -Infinity;
+    const minConfirmed = fractalLows.length > 0 ? Math.min(...fractalLows.map(f => f.price)) : Infinity;
+    if (runHighIdx >= 0 && runHigh > maxConfirmed) fractalHighs.push({ idx: runHighIdx, price: runHigh });
+    if (runLowIdx >= 0 && runLow < minConfirmed) fractalLows.push({ idx: runLowIdx, price: runLow });
+  }
+  return { fractalHighs, fractalLows };
+}
+
+// ============================================================
+// 3. 波段构建 + 选择（复刻 buildSwings + selectSwing）
+// ============================================================
+const AB_MIN_SWING_PCT = 2;
+
+function buildSwings(fh, fl, minPct = AB_MIN_SWING_PCT) {
+  const swings = [];
+  for (const low of fl) {
+    for (const high of fh) {
+      if (high.idx > low.idx) {
+        const range = high.price - low.price;
+        if ((range / low.price) * 100 >= minPct)
+          swings.push({ startPrice: low.price, endPrice: high.price, startIdx: low.idx, endIdx: high.idx, direction: 'up', range });
+      }
+    }
+  }
+  for (const high of fh) {
+    for (const low of fl) {
+      if (low.idx > high.idx && high.price > low.price) {
+        const range = high.price - low.price;
+        if ((range / high.price) * 100 >= minPct)
+          swings.push({ startPrice: high.price, endPrice: low.price, startIdx: high.idx, endIdx: low.idx, direction: 'down', range });
+      }
+    }
+  }
+  return swings;
+}
+
+function selectSwing(klines, swings, fh, fl, currentPrice) {
+  // 0. 最近完成的显著波段
+  const sorted = [...fh.map(f => ({...f, type: 'H'})), ...fl.map(f => ({...f, type: 'L'}))].sort((a,b) => a.idx - b.idx);
+  for (let i = sorted.length - 1; i >= 1; i--) {
+    const b = sorted[i];
+    for (let j = i - 1; j >= 0; j--) {
+      if (sorted[j].type === b.type) continue;
+      const range = Math.abs(b.price - sorted[j].price);
+      const base = Math.min(b.price, sorted[j].price);
+      if ((range / base) * 100 >= AB_MIN_SWING_PCT)
+        return { startPrice: sorted[j].price, endPrice: b.price, startIdx: sorted[j].idx, endIdx: b.idx, direction: sorted[j].price < b.price ? 'up' : 'down', range };
+      break;
+    }
+  }
+  // 1. 当前价在波段区间内
+  const containing = swings.filter(s => currentPrice >= Math.min(s.startPrice, s.endPrice) && currentPrice <= Math.max(s.startPrice, s.endPrice));
+  if (containing.length > 0) return containing.reduce((a, b) => b.range > a.range ? b : a);
+  // 2. 向上突破
+  const brokenUp = swings.filter(s => s.direction === 'up' && currentPrice > Math.max(s.startPrice, s.endPrice));
+  if (brokenUp.length > 0) return brokenUp.reduce((a, b) => (b.endPrice > a.endPrice || (b.endPrice === a.endPrice && b.range > a.range)) ? b : a);
+  // 3. 向下跌破
+  const brokenDown = swings.filter(s => s.direction === 'down' && currentPrice < Math.min(s.startPrice, s.endPrice));
+  if (brokenDown.length > 0) return brokenDown.reduce((a, b) => (b.endPrice < a.endPrice || (b.endPrice === a.endPrice && b.range > a.range)) ? b : a);
+  // 4. 单边上涨兜底
+  const maxFH = fh.length > 0 ? Math.max(...fh.map(f => f.price)) : -Infinity;
+  if (currentPrice > maxFH && fl.length > 0) {
+    const anchor = fl[fl.length - 1];
+    if (currentPrice > anchor.price) {
+      let runHigh = -Infinity, runHighIdx = anchor.idx;
+      for (let i = anchor.idx; i < klines.length; i++) {
+        if (klines[i].high > runHigh) { runHigh = klines[i].high; runHighIdx = i; }
+      }
+      if (runHigh > anchor.price && ((runHigh - anchor.price) / anchor.price) * 100 >= AB_MIN_SWING_PCT)
+        return { startPrice: anchor.price, endPrice: runHigh, startIdx: anchor.idx, endIdx: runHighIdx, direction: 'up', range: runHigh - anchor.price };
+    }
+  }
+  // 5. 单边下跌兜底
+  const minFL = fl.length > 0 ? Math.min(...fl.map(f => f.price)) : Infinity;
+  if (currentPrice < minFL && fh.length > 0) {
+    const anchor = fh[fh.length - 1];
+    if (currentPrice < anchor.price) {
+      let runLow = Infinity, runLowIdx = anchor.idx;
+      for (let i = anchor.idx; i < klines.length; i++) {
+        if (klines[i].low < runLow) { runLow = klines[i].low; runLowIdx = i; }
+      }
+      if (anchor.price > runLow && ((anchor.price - runLow) / anchor.price) * 100 >= AB_MIN_SWING_PCT)
+        return { startPrice: anchor.price, endPrice: runLow, startIdx: anchor.idx, endIdx: runLowIdx, direction: 'down', range: anchor.price - runLow };
+    }
+  }
+  // 6. 兜底
+  if (swings.length === 0) return null;
+  return swings.reduce((a, b) => (b.endIdx > a.endIdx || (b.endIdx === a.endIdx && b.range > a.range)) ? b : a);
+}
+
+function resolveAB(klines) {
+  if (klines.length < 30) return null;
+  const { fractalHighs, fractalLows } = detectFractals(klines);
+  if (fractalHighs.length === 0 && fractalLows.length === 0) return null;
+  const swings = buildSwings(fractalHighs, fractalLows);
+  const currentPrice = klines[klines.length - 1].close;
+  const selected = selectSwing(klines, swings, fractalHighs, fractalLows, currentPrice);
+  if (!selected) return null;
+  return { selected, fractalHighs, fractalLows };
+}
+
+// ============================================================
+// 4. 九线 + 斐波那契
+// ============================================================
+function calc9Lines(ab) {
+  const s = ab.selected;
+  const pointA = s.startPrice, pointB = s.endPrice;
+  const height = Math.abs(pointB - pointA);
+  const lines = [];
+  for (let i = 0; i <= 8; i++) {
+    const ratio = i / 8;
+    const price = s.direction === 'up' ? pointA + height * ratio : pointA - height * ratio;
+    lines.push({ lineNo: i + 1, ratio, price });
+  }
+  return lines;
+}
+
+function calcFibonacci(ab) {
+  const s = ab.selected;
+  const pointA = s.startPrice, pointB = s.endPrice;
+  const height = Math.abs(pointB - pointA);
+  const fibRatios = [0.236, 0.382, 0.5, 0.618, 0.786];
+  return fibRatios.map(r => ({
+    ratio: r,
+    price: s.direction === 'up' ? pointB - height * r : pointB + height * r
+  }));
+}
+
+// ============================================================
+// 5. 纯摆动压支线
+// ============================================================
+function calcSwingSR(klines, lookback = 200) {
+  const n = klines.length;
+  if (n < 10) return null;
+  const currentPrice = klines[n - 1].close;
+  const win = klines.slice(Math.max(0, n - lookback));
+  if (win.length < 10) return null;
+  const swPts = [];
+  for (let i = 1; i < win.length - 1; i++) {
+    const a = win[i-1], c = win[i], b = win[i+1];
+    const cbh = Math.max(c.open, c.close), cbl = Math.min(c.open, c.close);
+    if (cbh >= Math.max(a.open, a.close) && cbh >= Math.max(b.open, b.close)) swPts.push({ price: cbh, idx: i });
+    if (cbl <= Math.min(a.open, a.close) && cbl <= Math.min(b.open, b.close)) swPts.push({ price: cbl, idx: i });
+  }
+  if (swPts.length < 2) return null;
+  swPts.sort((a, b) => a.price - b.price);
+  const tolOf = p => Math.max(p * 0.002, 0.01);
+  const groups = [];
+  let curP = [swPts[0].price], curI = [swPts[0].idx];
+  for (let i = 1; i < swPts.length; i++) {
+    const lastP = curP[curP.length - 1];
+    const tol = Math.max(tolOf(lastP), tolOf(swPts[i].price));
+    if (Math.abs(swPts[i].price - lastP) <= tol) { curP.push(swPts[i].price); curI.push(swPts[i].idx); }
+    else {
+      const sp = [...curP].sort((a,b) => a - b);
+      const mid = sp.length % 2 ? sp[Math.floor(sp.length/2)] : (sp[sp.length/2-1] + sp[sp.length/2]) / 2;
+      groups.push({ price: mid, count: curP.length, isSupport: mid < currentPrice });
+      curP = [swPts[i].price]; curI = [swPts[i].idx];
+    }
+  }
+  const sp = [...curP].sort((a,b) => a - b);
+  const mid = sp.length % 2 ? sp[Math.floor(sp.length/2)] : (sp[sp.length/2-1] + sp[sp.length/2]) / 2;
+  groups.push({ price: mid, count: curP.length, isSupport: mid < currentPrice });
+  groups.sort((a,b) => a.price - b.price);
+  return groups;
+}
+
+// ============================================================
+// 6. 回测核心
+// ============================================================
+function backtestLevels(klines, levelsData, forward = 30) {
+  const interactions = [];
+  const step = 5;
+  for (let i = 200; i < klines.length - forward; i += step) {
+    if (i >= levelsData.length || !levelsData[i]) continue;
+    const levels = levelsData[i];
+    const future = klines.slice(i + 1, Math.min(i + 1 + forward, klines.length));
+    const currentPrice = klines[i].close;
+    for (const lv of levels) {
+      const lvPrice = lv.price;
+      const tol = lvPrice * 0.002;
+      const isSupport = lvPrice < currentPrice;
+      let touched = false, broken = false, bounce = false, touchIdx = -1;
+      for (let j = 0; j < future.length; j++) {
+        const k = future[j];
+        if (!touched && !broken) {
+          if (k.low <= lvPrice + tol && k.high >= lvPrice - tol) { touched = true; touchIdx = j; }
+        }
+        if (isSupport) {
+          if (k.close < lvPrice - tol) { if (touched) broken = true; else { touched = true; touchIdx = j; } break; }
+        } else {
+          if (k.close > lvPrice + tol) { if (touched) broken = true; else { touched = true; touchIdx = j; } break; }
+        }
+      }
+      if (touched && !broken && touchIdx >= 0) {
+        const post = future.slice(touchIdx + 1, touchIdx + 4);
+        if (post.length >= 2) {
+          if (isSupport) { if (post.slice(0, 2).every(p => p.close > lvPrice)) bounce = true; }
+          else { if (post.slice(0, 2).every(p => p.close < lvPrice)) bounce = true; }
+        }
+      }
+      if (touched) interactions.push({ klineIdx: i, price: lvPrice, touched, broken, bounce, source: lv.source || '', isSupport, touchIdxInFuture: touchIdx });
+    }
+  }
+  return interactions;
+}
+
+function calcStats(interactions) {
+  const total = interactions.length;
+  const bounces = interactions.filter(i => i.bounce).length;
+  const breaks = interactions.filter(i => i.broken).length;
+  const touchOnly = total - bounces - breaks;
+  const bySource = {};
+  for (const i of interactions) {
+    const s = i.source;
+    if (!bySource[s]) bySource[s] = { total: 0, bounce: 0, break: 0 };
+    bySource[s].total++;
+    if (i.bounce) bySource[s].bounce++;
+    if (i.broken) bySource[s].break++;
+  }
+  const confInts = interactions.filter(i => i.source.includes('+'));
+  const singleInts = interactions.filter(i => !i.source.includes('+'));
+  const confBounce = confInts.filter(i => i.bounce).length;
+  const singleBounce = singleInts.filter(i => i.bounce).length;
+  return {
+    total, bounces, breaks, touchOnly,
+    bounceRate: total ? bounces / total * 100 : 0,
+    breakRate: total ? breaks / total * 100 : 0,
+    bySource,
+    confTotal: confInts.length, confBounce,
+    confRate: confInts.length ? confBounce / confInts.length * 100 : 0,
+    singleTotal: singleInts.length, singleBounce,
+    singleRate: singleInts.length ? singleBounce / singleInts.length * 100 : 0,
+  };
+}
+
+// ============================================================
+// 7. 逐根计算所有系统
+// ============================================================
+function calcAll(klines) {
+  const nineData = [], fibData = [], confData = [], swingData = [];
+  for (let i = 0; i < klines.length; i++) {
+    if (i < 30) { nineData.push(null); fibData.push(null); confData.push(null); swingData.push(null); continue; }
+    const win = klines.slice(0, i + 1);
+    const ab = resolveAB(win);
+    if (!ab) { nineData.push(null); fibData.push(null); confData.push(null); swingData.push(null); continue; }
+    const nine = calc9Lines(ab);
+    const fib = calcFibonacci(ab);
+    const swing = calcSwingSR(win);
+    nineData.push(nine.map(l => ({ price: l.price, source: `九${l.lineNo}线`, lineNo: l.lineNo })));
+    fibData.push(fib.map(f => ({ price: f.price, source: `斐${f.ratio}`, ratio: f.ratio })));
+    // 共振：九线 3-7 + 斐波那契全档，0.3%容差合并
+    const allPts = [];
+    nine.filter(l => l.lineNo >= 3 && l.lineNo <= 7).forEach(l => allPts.push({ price: l.price, source: `九${l.lineNo}线` }));
+    fib.forEach(f => allPts.push({ price: f.price, source: `斐${f.ratio}` }));
+    allPts.sort((a, b) => a.price - b.price);
+    const conf = [];
+    if (allPts.length > 0) {
+      let curGroup = [allPts[0]];
+      for (let k = 1; k < allPts.length; k++) {
+        const lastP = curGroup[curGroup.length - 1].price;
+        const tol = Math.max(lastP * 0.003, 0.01);
+        if (Math.abs(allPts[k].price - lastP) <= tol) curGroup.push(allPts[k]);
+        else {
+          const sp = curGroup.map(p => p.price).sort((a,b) => a - b);
+          const mid = sp.length % 2 ? sp[Math.floor(sp.length/2)] : (sp[sp.length/2-1] + sp[sp.length/2]) / 2;
+          const sources = curGroup.map(p => p.source);
+          conf.push({ price: mid, sources, count: sources.length, source: sources.join('+'), isSupport: mid < klines[i].close });
+          curGroup = [allPts[k]];
+        }
+      }
+      const sp = curGroup.map(p => p.price).sort((a,b) => a - b);
+      const mid = sp.length % 2 ? sp[Math.floor(sp.length/2)] : (sp[sp.length/2-1] + sp[sp.length/2]) / 2;
+      const sources = curGroup.map(p => p.source);
+      conf.push({ price: mid, sources, count: sources.length, source: sources.join('+'), isSupport: mid < klines[i].close });
+    }
+    confData.push(conf);
+    swingData.push(swing ? swing.map(s => ({ price: s.price, source: `摆×${s.count}`, count: s.count, isSupport: s.isSupport })) : null);
+  }
+  return { nineData, fibData, confData, swingData };
+}
+
+// ============================================================
+// 8. 渲染
+// ============================================================
+let chartInstance = null;
+
+function renderChart(klines, nineLines, fibLines, confLines, swingLines, abInfo) {
+  if (chartInstance) { chartInstance.remove(); chartInstance = null; }
+  const chartKlines = klines.slice(-200);
+  const currentPrice = klines[klines.length - 1].close;
+
+  chartInstance = LightweightCharts.createChart(document.getElementById('chart'), {
+    layout: { background: { color: '#0d1117' }, textColor: '#6b7280', fontSize: 11 },
+    grid: { vertLines: { color: '#1a1f2e' }, horzLines: { color: '#1a1f2e' } },
+    crosshair: { mode: 0 },
+    rightPriceScale: { borderColor: '#1e2530', scaleMargins: { top: 0.05, bottom: 0.05 } },
+    timeScale: { borderColor: '#1e2530', timeVisible: true, secondsVisible: false },
+  });
+
+  const series = chartInstance.addCandlestickSeries({
+    upColor: '#22c55e', downColor: '#f6465d',
+    borderUpColor: '#22c55e', borderDownColor: '#f6465d',
+    wickUpColor: '#22c55e', wickDownColor: '#f6465d',
+  });
+  series.setData(chartKlines.map(c => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close })));
+
+  // 九线
+  if (nineLines) nineLines.forEach(l => {
+    const isKey = [4,5,6].includes(l.lineNo);
+    series.createPriceLine({ price: l.price, color: isKey ? 'rgba(59,130,246,0.7)' : 'rgba(59,130,246,0.3)', lineWidth: isKey ? 2 : 1, lineStyle: 0, axisLabelVisible: true, title: ` ${l.lineNo}线` });
+  });
+  // 斐波那契
+  if (fibLines) fibLines.forEach(f => {
+    const isKey = [0.382, 0.5, 0.618].includes(f.ratio);
+    series.createPriceLine({ price: f.price, color: isKey ? 'rgba(168,85,247,0.7)' : 'rgba(168,85,247,0.3)', lineWidth: isKey ? 2 : 1, lineStyle: 1, axisLabelVisible: true, title: ` Fib${f.ratio}` });
+  });
+  // 共振位
+  if (confLines) confLines.forEach(lv => {
+    if (lv.sources && lv.sources.length >= 2)
+      series.createPriceLine({ price: lv.price, color: 'rgba(251,191,36,0.9)', lineWidth: 3, lineStyle: 0, axisLabelVisible: true, title: ` ★${lv.source}` });
+  });
+  // 摆动压支线
+  if (swingLines) swingLines.forEach(s => {
+    const strong = s.count >= 3;
+    const color = s.isSupport ? `rgba(34,197,94,${strong ? 0.4 : 0.2})` : `rgba(246,70,93,${strong ? 0.4 : 0.2})`;
+    series.createPriceLine({ price: s.price, color, lineWidth: 1, lineStyle: 0, axisLabelVisible: false, title: ` 摆×${s.count}` });
+  });
+
+  chartInstance.timeScale().fitContent();
+}
+
+function renderStats(nineStats, fibStats, confStats, swingStats) {
+  const card = (title, s, highlight) => `
+    <div class="compare-card ${highlight ? 'highlight' : ''}">
+      <h3 class="${highlight ? 'blue' : ''}">${title}</h3>
+      <div class="metric"><span>触线总数</span><span class="val">${s.total}</span></div>
+      <div class="metric"><span>触线反弹</span><span class="val green">${s.bounces} (${s.bounceRate.toFixed(1)}%)</span></div>
+      <div class="metric"><span>破线穿越</span><span class="val red">${s.breaks} (${s.breakRate.toFixed(1)}%)</span></div>
+      <div class="metric"><span>仅触及</span><span class="val yellow">${s.touchOnly}</span></div>
+    </div>`;
+  document.getElementById('compareGrid').innerHTML =
+    card('九线(4/5/6线)', nineStats) +
+    card('斐波那契回撤', fibStats) +
+    card('九线+斐波那契共振', confStats, true) +
+    card('纯摆动压支线', swingStats);
+}
+
+function renderDetailTables(nineStats, fibStats, confStats) {
+  let html = '';
+  // 共振 vs 单一
+  html += '<div class="section-title">共振位 vs 单一来源反弹率</div><table><tr><th>类型</th><th>触线总数</th><th>反弹</th><th>破线</th><th>反弹率</th></tr>';
+  html += `<tr><td><span class="badge badge-conf">共振位</span></td><td>${confStats.confTotal}</td><td class="green">${confStats.confBounce}</td><td class="red">${confStats.confTotal - confStats.confBounce}</td><td class="blue">${confStats.confRate.toFixed(1)}%</td></tr>`;
+  html += `<tr><td><span class="badge badge-single">单一来源</span></td><td>${confStats.singleTotal}</td><td class="green">${confStats.singleBounce}</td><td class="red">${confStats.singleTotal - confStats.singleBounce}</td><td>${confStats.singleRate.toFixed(1)}%</td></tr>`;
+  html += '</table>';
+  // 九线各线
+  html += '<div class="section-title">九线各线反弹率</div><table><tr><th>线号</th><th>触线总数</th><th>反弹</th><th>破线</th><th>反弹率</th></tr>';
+  for (const ln of Object.keys(nineStats.bySource).sort())
+    html += `<tr><td>${ln}</td><td>${nineStats.bySource[ln].total}</td><td class="green">${nineStats.bySource[ln].bounce}</td><td class="red">${nineStats.bySource[ln].break}</td><td>${(nineStats.bySource[ln].bounce/nineStats.bySource[ln].total*100).toFixed(1)}%</td></tr>`;
+  html += '</table>';
+  // 斐波那契各比例
+  html += '<div class="section-title">斐波那契各比例反弹率</div><table><tr><th>比例</th><th>触线总数</th><th>反弹</th><th>破线</th><th>反弹率</th></tr>';
+  for (const fn of Object.keys(fibStats.bySource).sort())
+    html += `<tr><td>${fn}</td><td>${fibStats.bySource[fn].total}</td><td class="green">${fibStats.bySource[fn].bounce}</td><td class="red">${fibStats.bySource[fn].break}</td><td>${(fibStats.bySource[fn].bounce/fibStats.bySource[fn].total*100).toFixed(1)}%</td></tr>`;
+  html += '</table>';
+  document.getElementById('detailTables').innerHTML = html;
+}
+
+// ============================================================
+// 9. 主函数
+// ============================================================
+async function runBacktest() {
+  const symbol = document.getElementById('symbol').value;
+  const interval = document.getElementById('interval').value;
+  const btn = document.getElementById('runBtn');
+  const status = document.getElementById('status');
+  const loadingDiv = document.getElementById('loadingDiv');
+  const loadingText = document.getElementById('loadingText');
+  const results = document.getElementById('results');
+
+  btn.disabled = true;
+  status.textContent = '';
+  loadingDiv.style.display = 'block';
+  results.style.display = 'none';
+  loadingText.textContent = `正在拉取 ${symbol} ${interval} K线...`;
+
+  try {
+    const klines = await fetchKlines(symbol, interval, 1000);
+    if (klines.length < 50) throw new Error('K线数据不足');
+    loadingText.textContent = `获取 ${klines.length} 根K线，正在计算...`;
+
+    // 逐根计算所有系统
+    const { nineData, fibData, confData, swingData } = calcAll(klines);
+
+    loadingText.textContent = '回测中...';
+
+    // 回测各系统
+    // 九线只用 4/5/6 线
+    const nineKeyData = nineData.map(d => d ? d.filter(l => [4,5,6].includes(l.lineNo)) : null);
+    const nineInts = backtestLevels(klines, nineKeyData, 30);
+    const fibInts = backtestLevels(klines, fibData, 30);
+    const confInts = backtestLevels(klines, confData, 30);
+    const swingInts = backtestLevels(klines, swingData, 30);
+
+    const nineStats = calcStats(nineInts);
+    const fibStats = calcStats(fibInts);
+    const confStats = calcStats(confInts);
+    const swingStats = calcStats(swingInts);
+
+    loadingText.textContent = '渲染图表...';
+
+    // 最终画线
+    const finalNine = nineData[klines.length - 1];
+    const finalFib = fibData[klines.length - 1];
+    const finalConf = confData[klines.length - 1];
+    const finalSwing = swingData[klines.length - 1];
+
+    // 渲染
+    loadingDiv.style.display = 'none';
+    results.style.display = 'block';
+    renderChart(klines, finalNine, finalFib, finalConf, finalSwing, null);
+    renderStats(nineStats, fibStats, confStats, swingStats);
+    renderDetailTables(nineStats, fibStats, confStats);
+
+    status.innerHTML = `<span class="green">完成</span> | ${symbol} ${interval} | ${klines.length}根K线 | 价格 ${klines[klines.length-1].close.toFixed(2)}`;
+  } catch (e) {
+    loadingDiv.style.display = 'none';
+    status.innerHTML = `<span class="red">错误: ${e.message}</span>`;
+    console.error(e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>
