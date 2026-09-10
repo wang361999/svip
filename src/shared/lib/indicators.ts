@@ -2198,24 +2198,26 @@ export function calcSupportResistance(
   minCount = 1,
 ): SupportResistanceLevel[] | null {
   const n = klines.length;
-  if (n < 20) return null;
+  if (n < 10) return null;
   const last = klines[n - 1];
   const currentPrice = last.close;
   const win = klines.slice(Math.max(0, n - lookback), n);
-  if (win.length < 20) return null;
+  if (win.length < 10) return null;
 
-  // 使用分形检测（strength=3，左右各 3 根确认，比 1 根确认更稳定、更重要）
-  const { fractalHighs, fractalLows } = detectFractals(win, 3);
-  if (fractalHighs.length + fractalLows.length < 2) return null;
+  // 摆动高低点：左右各 1 根确认的局部极值（宽松检测，尽量多找结构位）
+  const swHigh: number[] = [], swLow: number[] = [];
+  for (let i = 1; i < win.length - 1; i++) {
+    const a = win[i - 1], c = win[i], b = win[i + 1];
+    if (c.high >= a.high && c.high >= b.high) swHigh.push(c.high);
+    if (c.low <= a.low && c.low <= b.low) swLow.push(c.low);
+  }
+  if (swHigh.length + swLow.length < 2) return null;
 
-  // 所有分形价格合并
-  const allPrices = [
-    ...fractalHighs.map((f) => f.price),
-    ...fractalLows.map((f) => f.price),
-  ];
+  // 所有摆动高低点合并
+  const allPrices = [...swHigh, ...swLow];
 
-  // 聚类去重（1.5% 容差）：价位相近的分形点合并为一条线
-  const tol = 0.015;
+  // 聚类去重：0.3% 容差（比 1.5% 更严格，避免相近但不同的价位被合并）
+  const tol = 0.003;
   const levels = clusterPriceLevels(allPrices, tol, minCount);
 
   // 按当前价分割：上方=阻力，下方=支撑
