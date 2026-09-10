@@ -33,6 +33,7 @@ import {
 
 
 import { useEffect, useRef, useState, useCallback } from 'react';
+import type { MouseEvent as ReactMouseEvent, TouchEvent as ReactTouchEvent } from 'react';
 import {
   createChart,
   IChartApi,
@@ -419,6 +420,58 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   }), []);
   // 九线触及反馈：实时距离检测 + 成交量异动（仅 showAutoAB9 开启时计算）
   const [levelTouch, setLevelTouch] = useState<LevelTouchInfo | null>(null);
+
+  // 可拖拽提示框位置（null=默认右上角；拖拽后记录像素坐标）
+  const [badgePos, setBadgePos] = useState<{ x: number; y: number } | null>(null);
+  const badgeDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
+
+  const onBadgeMouseDown = useCallback((e: ReactMouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const parent = (e.currentTarget as HTMLElement).parentElement?.parentElement;
+    if (!parent) return;
+    const rect = parent.getBoundingClientRect();
+    const cur = badgePos ?? { x: rect.width - 8, y: 8 };
+    badgeDragRef.current = { startX: e.clientX, startY: e.clientY, origX: cur.x, origY: cur.y };
+  }, [badgePos]);
+
+  const onBadgeTouchStart = useCallback((e: ReactTouchEvent) => {
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const parent = (e.currentTarget as HTMLElement).parentElement?.parentElement;
+    if (!parent) return;
+    const rect = parent.getBoundingClientRect();
+    const cur = badgePos ?? { x: rect.width - 8, y: 8 };
+    badgeDragRef.current = { startX: t.clientX, startY: t.clientY, origX: cur.x, origY: cur.y };
+  }, [badgePos]);
+
+  useEffect(() => {
+    const onMove = (clientX: number, clientY: number) => {
+      const drag = badgeDragRef.current;
+      if (!drag) return;
+      const parent = mainChartRef.current?.parentElement;
+      if (!parent) return;
+      const rect = parent.getBoundingClientRect();
+      let x = drag.origX + (clientX - drag.startX);
+      let y = drag.origY + (clientY - drag.startY);
+      x = Math.max(0, Math.min(rect.width - 60, x));
+      y = Math.max(0, Math.min(rect.height - 40, y));
+      setBadgePos({ x, y });
+    };
+    const mm = (e: MouseEvent) => onMove(e.clientX, e.clientY);
+    const tm = (e: TouchEvent) => { if (e.touches.length === 1) onMove(e.touches[0].clientX, e.touches[0].clientY); };
+    const up = () => { badgeDragRef.current = null; };
+    window.addEventListener('mousemove', mm);
+    window.addEventListener('mouseup', up);
+    window.addEventListener('touchmove', tm, { passive: false });
+    window.addEventListener('touchend', up);
+    return () => {
+      window.removeEventListener('mousemove', mm);
+      window.removeEventListener('mouseup', up);
+      window.removeEventListener('touchmove', tm);
+      window.removeEventListener('touchend', up);
+    };
+  }, []);
   // 趋势通道 LineSeries refs（上轨/下轨/中轨 + 预测延伸线）
   const tcSeriesRef = useRef<{
     upper?: ISeriesApi<'Line'>; lower?: ISeriesApi<'Line'>; mid?: ISeriesApi<'Line'>;
@@ -2808,9 +2861,14 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
               </div>
             </div>
           )}
-          {/* 九线触及反馈角标：实时距离 + 成交量配合 */}
+          {/* 九线触及反馈角标：实时距离 + 成交量配合（可拖拽） */}
           {levelTouch && levelTouch.status !== '远离' && (
-            <div className="absolute top-2.5 right-1 z-[4] pointer-events-none">
+            <div
+              className="absolute z-[4] cursor-grab active:cursor-grabbing"
+              style={badgePos ? { left: badgePos.x, top: badgePos.y } : { top: 10, right: 4 }}
+              onMouseDown={onBadgeMouseDown}
+              onTouchStart={onBadgeTouchStart}
+            >
               <div
                 className="px-2.5 py-1.5 rounded-md border text-[11px] font-mono tabular-nums flex flex-col gap-0.5"
                 style={{
@@ -2882,9 +2940,14 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
               </div>
             </div>
           )}
-          {/* ADX 趋势状态灯（常驻右上角；触及反馈显示时让位避免重复） */}
+          {/* ADX 趋势状态灯（常驻；触及反馈显示时让位避免重复，可拖拽） */}
           {(!levelTouch || levelTouch.status === '远离') && adxState?.lastADX != null && (
-            <div className="absolute top-2.5 right-1 z-[4] pointer-events-none">
+            <div
+              className="absolute z-[4] cursor-grab active:cursor-grabbing"
+              style={badgePos ? { left: badgePos.x, top: badgePos.y } : { top: 10, right: 4 }}
+              onMouseDown={onBadgeMouseDown}
+              onTouchStart={onBadgeTouchStart}
+            >
               <div
                 className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border"
                 style={{
