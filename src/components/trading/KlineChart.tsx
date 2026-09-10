@@ -326,6 +326,15 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // ADX 状态（趋势/震荡过滤，仅计算不画副图）
   const [adxState, setAdxState] = useState<ADXData | null>(null);
 
+  // 原油多空观望信号
+  const [oilSignal, setOilSignal] = useState<{
+    signal: 'long' | 'short' | 'neutral';
+    label: string;
+    color: string;
+    changePct3d: number;
+    price: number;
+  } | null>(null);
+
   // VWAP（主图线）
   const vwapSeries = useRef<ISeriesApi<'Line'> | null>(null);
 
@@ -888,6 +897,32 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       if (adxData) setAdxState(adxData);
     }
   }, [indicators, periods]);
+
+  // 原油信号：组件挂载时拉取，10 分钟轮询
+  useEffect(() => {
+    let active = true;
+    const fetchOil = async () => {
+      try {
+        const resp = await fetch('/api/crude-oil');
+        if (!resp.ok) return;
+        const json = await resp.json();
+        if (active && json.success && json.data) {
+          setOilSignal({
+            signal: json.data.signal,
+            label: json.data.label,
+            color: json.data.color,
+            changePct3d: json.data.changePct3d,
+            price: json.data.price,
+          });
+        }
+      } catch {
+        // 静默失败，不影响主图
+      }
+    };
+    fetchOil();
+    const timer = setInterval(fetchOil, 10 * 60 * 1000);
+    return () => { active = false; clearInterval(timer); };
+  }, []);
 
   // 徽章切换指标时立即重绘
   // 修复：此前徽章只改 state 不触发重绘，必须等K线收盘或刷新页面才生效
@@ -3003,6 +3038,30 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
               </div>
             );
           })()}
+          {/* 原油多空观望信号（常驻左上角） */}
+          {oilSignal && (
+            <div className="absolute top-2.5 left-3 z-[4] pointer-events-none">
+              <div
+                className="flex items-center gap-1.5 px-2 py-1 rounded-md border"
+                style={{
+                  borderColor: oilSignal.color.replace('1)', '0.3)'),
+                  background: 'rgba(15, 20, 30, 0.85)',
+                }}
+              >
+                <span
+                  className="w-2 h-2 rounded-full"
+                  style={{ backgroundColor: oilSignal.color }}
+                />
+                <span className="text-[10px] font-bold" style={{ color: oilSignal.color }}>
+                  {oilSignal.label}
+                </span>
+                <span className="text-[9px] text-dark-400 font-mono tabular-nums">
+                  {oilSignal.changePct3d > 0 ? '+' : ''}{oilSignal.changePct3d.toFixed(1)}%
+                </span>
+                <span className="text-[8px] text-dark-500">原油</span>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
