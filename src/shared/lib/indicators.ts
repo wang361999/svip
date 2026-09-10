@@ -2167,6 +2167,68 @@ export function calcRangeBox(klines: KlineData[], lookback = 80): RangeBox | nul
   return { support, resistance, isRange, widthPct, touches, position, breakout };
 }
 
+// ========== 全量压支线（支撑/阻力聚类水平线）==========
+
+export interface SupportResistanceLevel {
+  /** 价位 */
+  price: number;
+  /** 触及次数（聚类内摆动点数） */
+  count: number;
+  /** 相对当前价：true=支撑（在下方），false=阻力（在上方） */
+  isSupport: boolean;
+}
+
+/**
+ * 全量压力支撑位：取近 N 根 K 线的分形高低点，聚类后返回所有被多次触及的价位。
+ *
+ * 与 calcRangeBox 的区别：
+ *   - calcRangeBox 只取最近的一组支撑/阻力（各一条），用于箱体判定；
+ *   - 本函数返回全部聚类价位，供"压支线"开关在主图上批量画水平线。
+ *
+ * 聚类参数与 calcRangeBox 一致（1.5% 容差、至少 2 次触及），保证语义统一。
+ * 独立于 AB9/江恩的 A/B 波段，不影响其画线锚定。
+ *
+ * @param klines   K 线数据
+ * @param lookback 回溯窗口（默认 200 根，覆盖中长线结构位）
+ * @param minCount 最少触及次数（默认 2，过滤孤立 spike）
+ */
+export function calcSupportResistance(
+  klines: KlineData[],
+  lookback = 200,
+  minCount = 2,
+): SupportResistanceLevel[] | null {
+  const n = klines.length;
+  if (n < 10) return null;
+  const last = klines[n - 1];
+  const currentPrice = last.close;
+  const win = klines.slice(Math.max(0, n - lookback), n);
+  if (win.length < 10) return null;
+
+  // 摆动高低点：左右各一根确认的局部极值（与 calcRangeBox 同口径）
+  const swHigh: number[] = [], swLow: number[] = [];
+  for (let i = 1; i < win.length - 1; i++) {
+    const a = win[i - 1], c = win[i], b = win[i + 1];
+    if (c.high >= a.high && c.high >= b.high) swHigh.push(c.high);
+    if (c.low <= a.low && c.low <= b.low) swLow.push(c.low);
+  }
+  if (swHigh.length + swLow.length < 4) return null;
+
+  // 聚类：高低点合并参与（前高可转支撑、前低可转阻力，角色可转换）
+  const tol = 0.015;
+  const levels = clusterPriceLevels([...swHigh, ...swLow], tol, minCount);
+
+  // 按当前价分割：上方=阻力，下方=支撑
+  const result: SupportResistanceLevel[] = levels.map((lv) => ({
+    price: lv.center,
+    count: lv.count,
+    isSupport: lv.center < currentPrice,
+  }));
+
+  // 按价格升序排列
+  result.sort((a, b) => a.price - b.price);
+  return result;
+}
+
 // ========== 多周期趋势（结构法）==========
 
 /** 趋势方向 */

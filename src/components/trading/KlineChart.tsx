@@ -18,6 +18,7 @@ import {
   calcIchimoku,
   calcPredictionSynth,
   calcRangeBox,
+  calcSupportResistance,
   detectFractals,
   calcSuperTrend,
   type ChanResult,
@@ -132,9 +133,9 @@ function saveIndicatorPrefs(next: typeof DEFAULT_INDICATORS) {
 // 同样存于浏览器本地，刷新/换币种/换周期后保持用户的选择
 // 会员用户额外同步到后端（跨设备），非会员仅本地
 // 版本号：默认值变更时递增，旧 localStorage 自动失效
-  const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v7';
+  const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v8';
 // 分型 + 背离为默认可见的核心信号（默认开启），版本号递增使旧缓存失效，避免已保存的关闭状态覆盖新默认
-const DEFAULT_OVERLAY = { AB9: false, CHANNEL: false, VALUEAREA: false, ICHIMOKU: false, SYNTH: false, GANN: false, SUPER: false, FRACTAL: true, DIVERG: true };
+const DEFAULT_OVERLAY = { AB9: false, CHANNEL: false, VALUEAREA: false, ICHIMOKU: false, SYNTH: false, GANN: false, SUPER: false, SUPRES: false, FRACTAL: true, DIVERG: true };
 
 function loadOverlayPrefs() {
   if (typeof window === 'undefined') return { ...DEFAULT_OVERLAY };
@@ -150,6 +151,7 @@ function loadOverlayPrefs() {
       SYNTH: parsed.SYNTH !== undefined ? !!parsed.SYNTH : DEFAULT_OVERLAY.SYNTH,
       GANN: parsed.GANN !== undefined ? !!parsed.GANN : DEFAULT_OVERLAY.GANN,
       SUPER: parsed.SUPER !== undefined ? !!parsed.SUPER : DEFAULT_OVERLAY.SUPER,
+      SUPRES: parsed.SUPRES !== undefined ? !!parsed.SUPRES : DEFAULT_OVERLAY.SUPRES,
       FRACTAL: parsed.FRACTAL !== undefined ? !!parsed.FRACTAL : DEFAULT_OVERLAY.FRACTAL,
       DIVERG: parsed.DIVERG !== undefined ? !!parsed.DIVERG : DEFAULT_OVERLAY.DIVERG,
     };
@@ -364,6 +366,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const [showSynth, setShowSynth] = useState(overlayPrefsInit.SYNTH ?? false);
   const [showGann, setShowGann] = useState(overlayPrefsInit.GANN ?? false);
   const [showSuperTrend, setShowSuperTrend] = useState(overlayPrefsInit.SUPER ?? false);
+  const [showSupRes, setShowSupRes] = useState(overlayPrefsInit.SUPRES ?? false);
   const [showFractal, setShowFractal] = useState(overlayPrefsInit.FRACTAL ?? false);
   const [showDiverg, setShowDiverg] = useState(overlayPrefsInit.DIVERG ?? false);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -393,6 +396,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   showGannRef.current = showGann;
   const showSuperTrendRef = useRef(showSuperTrend);
   showSuperTrendRef.current = showSuperTrend;
+  const showSupResRef = useRef(showSupRes);
+  showSupResRef.current = showSupRes;
   // SuperTrend 叠加段 series 引用（重算/关闭时清理）
   const superTrendSegsRef = useRef<ISeriesApi<'Line'>[]>([]);
   // 江恩工具箱结果缓存（按 K 线签名懒重算）
@@ -400,6 +405,8 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const gannSigRef = useRef<string>('');
   // AB9线 ref（原生满宽价格线）
   const autoPriceLinesRef = useRef<any[]>([]);
+  // 压支线 ref（全量支撑/阻力水平线，独立于 AB9 和箱体近端 S/R）
+  const supResLinesRef = useRef<any[]>([]);
   // 左上角 OHLC 图例：随十字线联动（悬停读历史K线，离开回落到最新一根，tick 实时刷新）
   interface LegendInfo { o: number; h: number; l: number; c: number; pct: number }
   const [legend, setLegend] = useState<LegendInfo | null>(null);
@@ -841,7 +848,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     }
   }, [showTrendChannel, showValueArea, showIchimoku, showSynth, showGann, showAutoAB9, isMember]);
 
-  // === AB9线 + 支撑/阻力线重绘 ===
+  // === AB9线 + 压支线 + 支撑/阻力线重绘 ===
   // 数据加载、开关切换、K线收盘（isFinal）时调用，统一走这一个入口
   const redrawOverlayLines = useCallback(() => {
     const klines = allKlinesRef.current;
@@ -853,6 +860,35 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       try { series.removePriceLine(pl); } catch {}
     }
     autoPriceLinesRef.current = [];
+
+    // 清除旧的压支线
+    for (const pl of supResLinesRef.current) {
+      try { series.removePriceLine(pl); } catch {}
+    }
+    supResLinesRef.current = [];
+
+    // —— 压支线（全量支撑/阻力水平线，独立画线） ——
+    if (showSupRes && isMember) {
+      const levels = calcSupportResistance(klines);
+      if (levels) {
+        for (const lv of levels) {
+          const color = lv.isSupport
+            ? `rgba(34, 197, 94, ${lv.count >= 3 ? 0.7 : 0.45})`   // 支撑=绿，触及≥3次加粗
+            : `rgba(246, 70, 93, ${lv.count >= 3 ? 0.7 : 0.45})`;  // 阻力=红，触及≥3次加粗
+          try {
+            const pl = series.createPriceLine({
+              price: lv.price,
+              color,
+              lineWidth: lv.count >= 3 ? 2 : 1,
+              lineStyle: 0, // 实线
+              axisLabelVisible: true,
+              title: ` ${lv.isSupport ? '支' : '阻'}×${lv.count}`,
+            });
+            supResLinesRef.current.push(pl);
+          } catch {}
+        }
+      }
+    }
 
     // —— 支撑/阻力（箱体区间或近端；恢复快信号版本的原画法，独立于策略引擎） ——
     for (const pl of srLinesRef.current) {
@@ -906,7 +942,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       }
     }
 
-    }, [showAutoAB9, isMember, symbol]);
+    }, [showAutoAB9, showSupRes, isMember, symbol]);
 
   // ====== 趋势通道 + 预测延伸线 + 音叉 ====== 画线 ======
   // 在 redrawOverlayLines 之后独立执行，依赖 showTrendChannel
@@ -1650,7 +1686,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
         // 没有任何叠层数据时，清空后直接返回
-        if (!chanData && !trendChannelRef.current && !valueAreaRef.current && !ichimokuRef.current && !synthRef.current && !showGannRef.current && !showAutoAB9Ref.current) return;
+        if (!chanData && !trendChannelRef.current && !valueAreaRef.current && !ichimokuRef.current && !synthRef.current && !showGannRef.current && !showAutoAB9Ref.current && !showSupResRef.current) return;
 
         ctx.save();
         ctx.scale(dpr, dpr);
@@ -2497,7 +2533,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // 绘图/叠加图层菜单项（会员）
   const currentOverlayPrefs = () => ({
     AB9: showAutoAB9, CHANNEL: showTrendChannel, VALUEAREA: showValueArea, ICHIMOKU: showIchimoku,
-    SYNTH: showSynth, GANN: showGann, SUPER: showSuperTrend, FRACTAL: showFractal, DIVERG: showDiverg,
+    SYNTH: showSynth, GANN: showGann, SUPER: showSuperTrend, SUPRES: showSupRes, FRACTAL: showFractal, DIVERG: showDiverg,
   });
   const layerMenu = [
     {
@@ -2527,6 +2563,10 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     {
       key: 'SUPER', label: 'SuperTrend', active: showSuperTrend,
       on: () => { const v = !showSuperTrend; setShowSuperTrend(v); saveOverlayPrefs({ ...currentOverlayPrefs(), SUPER: v }); saveUserPref('prefSUPER', v); setOpenMenu(null); },
+    },
+    {
+      key: 'SUPRES', label: '压支线', active: showSupRes,
+      on: () => { const v = !showSupRes; setShowSupRes(v); saveOverlayPrefs({ ...currentOverlayPrefs(), SUPRES: v }); saveUserPref('prefSUPRES', v); setOpenMenu(null); },
     },
     {
       key: 'FRACTAL', label: '顶/底分型', active: showFractal,
