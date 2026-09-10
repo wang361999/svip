@@ -20,6 +20,8 @@ import {
   calcRangeBox,
   calcLevelTouch,
   type LevelTouchInfo,
+  calcADX,
+  type ADXData,
   detectFractals,
   calcSuperTrend,
   type ChanResult,
@@ -41,6 +43,7 @@ import {
   Time,
   CrosshairMode,
   LineStyle,
+  PriceScaleMode,
   type SeriesMarker,
 } from 'lightweight-charts';
 import {
@@ -134,7 +137,7 @@ function saveIndicatorPrefs(next: typeof DEFAULT_INDICATORS) {
 // 同样存于浏览器本地，刷新/换币种/换周期后保持用户的选择
 // 会员用户额外同步到后端（跨设备），非会员仅本地
 // 版本号：默认值变更时递增，旧 localStorage 自动失效
-  const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v10';
+  const OVERLAY_PREFS_KEY = 'kline-overlay-prefs-v11';
 // 分型 + 背离为默认可见的核心信号（默认开启），版本号递增使旧缓存失效，避免已保存的关闭状态覆盖新默认
 const DEFAULT_OVERLAY = { AB9: false, CHANNEL: false, VALUEAREA: false, ICHIMOKU: false, SYNTH: false, GANN: false, SUPER: false, SR: false, FRACTAL: true, DIVERG: true };
 
@@ -319,6 +322,16 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   const atrChartRef = useRef<HTMLDivElement>(null);
   const atrChart = useRef<IChartApi | null>(null);
   const atrLine = useRef<ISeriesApi<'Line'> | null>(null);
+
+  // ADX 副图（趋势强度，始终可见）
+  const adxChartRef = useRef<HTMLDivElement>(null);
+  const adxChart = useRef<IChartApi | null>(null);
+  const adxLine = useRef<ISeriesApi<'Line'> | null>(null);
+  const adxPlusDILine = useRef<ISeriesApi<'Line'> | null>(null);
+  const adxMinusDILine = useRef<ISeriesApi<'Line'> | null>(null);
+  const adxThreshold25 = useRef<ISeriesApi<'Line'> | null>(null);
+  const adxThreshold20 = useRef<ISeriesApi<'Line'> | null>(null);
+  const [adxState, setAdxState] = useState<ADXData | null>(null);
 
   // VWAP（主图线）
   const vwapSeries = useRef<ISeriesApi<'Line'> | null>(null);
@@ -804,6 +817,32 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         atrChartRef.current.parentElement.classList.add('hidden');
       }
     }
+
+    // ADX 副图（始终计算并显示，趋势强度过滤）
+    if (adxChart.current && adxLine.current && klines.length >= 30) {
+      const adxData = calcADX(klines, 14);
+      if (adxData) {
+        const adxLineData: LineData[] = [];
+        const plusDIData: LineData[] = [];
+        const minusDIData: LineData[] = [];
+        const thresh25Data: LineData[] = [];
+        const thresh20Data: LineData[] = [];
+        for (let i = 0; i < klines.length; i++) {
+          const t = klines[i].time as Time;
+          adxLineData.push({ time: t, value: adxData.adx[i] ?? 0 });
+          plusDIData.push({ time: t, value: adxData.pdi[i] ?? 0 });
+          minusDIData.push({ time: t, value: adxData.mdi[i] ?? 0 });
+          thresh25Data.push({ time: t, value: 25 });
+          thresh20Data.push({ time: t, value: 20 });
+        }
+        adxLine.current.setData(adxLineData);
+        if (adxPlusDILine.current) adxPlusDILine.current.setData(plusDIData);
+        if (adxMinusDILine.current) adxMinusDILine.current.setData(minusDIData);
+        if (adxThreshold25.current) adxThreshold25.current.setData(thresh25Data);
+        if (adxThreshold20.current) adxThreshold20.current.setData(thresh20Data);
+        setAdxState(adxData);
+      }
+    }
   }, [indicators, periods]);
 
   // 徽章切换指标时立即重绘
@@ -1180,6 +1219,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       if (rsiChart.current) rsiChart.current.timeScale().setVisibleLogicalRange(range);
       if (kdjChart.current) kdjChart.current.timeScale().setVisibleLogicalRange(range);
       if (atrChart.current) atrChart.current.timeScale().setVisibleLogicalRange(range);
+      if (adxChart.current) adxChart.current.timeScale().setVisibleLogicalRange(range);
     }
   }, [updateIndicators, redrawOverlayLines, drawTrendOverlays, legendOf, drawFractalDivergMarkers]);
 
@@ -1552,6 +1592,68 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         lineWidth: 1,
         priceLineVisible: false,
         lastValueVisible: false,
+      });
+    }
+
+    // ADX 副图（趋势强度，始终可见）
+    let axChart: IChartApi | null = null;
+    let axADXLine: ISeriesApi<'Line'> | null = null;
+    let axPlusDI: ISeriesApi<'Line'> | null = null;
+    let axMinusDI: ISeriesApi<'Line'> | null = null;
+    let axThresh25: ISeriesApi<'Line'> | null = null;
+    let axThresh20: ISeriesApi<'Line'> | null = null;
+    if (adxChartRef.current) {
+      axChart = createChart(adxChartRef.current, {
+        layout: { background: { color: 'transparent' }, textColor: '#848e9c', fontSize: 10, fontFamily: CHART_FONT },
+        grid: {
+          vertLines: { color: GRID_COLOR, style: LineStyle.Dotted },
+          horzLines: { color: GRID_COLOR_FAINT, style: LineStyle.Dotted },
+        },
+        timeScale: { visible: false, borderColor: AXIS_BORDER, timeVisible: true },
+        rightPriceScale: { borderColor: AXIS_BORDER, autoScale: false, mode: PriceScaleMode.Normal },
+        crosshair: {
+          vertLine: { color: CROSSHAIR_COLOR, width: 1, style: LineStyle.Dashed, labelBackgroundColor: CROSSHAIR_LABEL_BG },
+          horzLine: { color: CROSSHAIR_COLOR, width: 1, style: LineStyle.Dashed, labelBackgroundColor: CROSSHAIR_LABEL_BG },
+        },
+      });
+      // ADX 主线（黄色）
+      axADXLine = axChart.addLineSeries({
+        color: '#fbbf24',
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: true,
+      });
+      // +DI 线（绿色）
+      axPlusDI = axChart.addLineSeries({
+        color: 'rgba(34, 197, 94, 0.7)',
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      // -DI 线（红色）
+      axMinusDI = axChart.addLineSeries({
+        color: 'rgba(246, 70, 93, 0.7)',
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      // 25 参考线（趋势阈值）
+      axThresh25 = axChart.addLineSeries({
+        color: 'rgba(132, 142, 156, 0.3)',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      // 20 参考线（震荡阈值）
+      axThresh20 = axChart.addLineSeries({
+        color: 'rgba(132, 142, 156, 0.2)',
+        lineWidth: 1,
+        lineStyle: LineStyle.Dotted,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
       });
     }
 
@@ -2317,6 +2419,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         if (rChart) rChart.timeScale().setVisibleLogicalRange(range);
         if (kChart) kChart.timeScale().setVisibleLogicalRange(range);
         if (aChart) aChart.timeScale().setVisibleLogicalRange(range);
+        if (axChart) axChart.timeScale().setVisibleLogicalRange(range);
       }
       // 九转数字随视图滚动重绘
       try { drawNineTurnNumbers(); } catch (e) { console.warn('[NineTurn] scroll error:', e); }
@@ -2343,6 +2446,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     kdjOverbought.current = kOver;
     kdjOversold.current = kUnder;
     atrLine.current = aLine;
+    adxChart.current = axChart;
+    adxLine.current = axADXLine;
+    adxPlusDILine.current = axPlusDI;
+    adxMinusDILine.current = axMinusDI;
+    adxThreshold25.current = axThresh25;
+    adxThreshold20.current = axThresh20;
 
     const handleResize = () => {
       if (mainChartRef.current && mainChart.current) {
@@ -2375,6 +2484,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           height: atrChartRef.current.clientHeight,
         });
       }
+      if (adxChartRef.current && adxChart.current) {
+        adxChart.current.applyOptions({
+          width: adxChartRef.current.clientWidth,
+          height: adxChartRef.current.clientHeight,
+        });
+      }
       // 九转数字随 resize 重绘
       try { drawNineTurnNumbers(); } catch (e) { console.warn('[NineTurn] resize error:', e); }
       // 缠论随 resize 重绘
@@ -2397,6 +2512,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       if (rChart) rChart.remove();
       if (kChart) kChart.remove();
       if (aChart) aChart.remove();
+      if (axChart) axChart.remove();
     };
   }, []);
 
@@ -2854,6 +2970,25 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
                       {levelTouch.volumeSignal}
                     </span>
                   )}
+                  {adxState?.lastADX != null && (
+                    <span
+                      className="px-1 py-0.5 rounded font-semibold"
+                      style={{
+                        background: adxState.lastADX > 25
+                          ? 'rgba(251, 191, 36, 0.25)'
+                          : adxState.lastADX < 20
+                          ? 'rgba(100, 116, 139, 0.25)'
+                          : 'transparent',
+                        color: adxState.lastADX > 25
+                          ? 'rgba(251, 191, 36, 1)'
+                          : adxState.lastADX < 20
+                          ? 'rgba(148, 163, 184, 1)'
+                          : 'rgba(100, 116, 139, 1)',
+                      }}
+                    >
+                      ADX {adxState.lastADX.toFixed(0)} {adxState.lastADX > 25 ? '趋势' : adxState.lastADX < 20 ? '震荡' : '中性'}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -2890,6 +3025,33 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         <div ref={atrChartRef} className="w-full" style={{ height: '80px' }} />
         <span className="absolute top-1.5 left-3 text-[10px] text-dark-400 pointer-events-none">
           ATR({periods.atrPeriod})
+        </span>
+      </div>
+
+      {/* ADX 副图（趋势强度，始终可见，全屏时隐藏） */}
+      <div className={`relative border-t border-dark-700/30 ${isFullscreen ? 'hidden' : ''}`}>
+        <div ref={adxChartRef} className="w-full" style={{ height: '80px' }} />
+        <span className="absolute top-1.5 left-3 text-[10px] text-dark-400 pointer-events-none">
+          ADX(14)
+          {adxState?.lastADX != null && (
+            <span
+              className="ml-1.5 px-1 py-0.5 rounded text-[9px] font-semibold"
+              style={{
+                background: adxState.lastADX > 25
+                  ? 'rgba(251, 191, 36, 0.2)'
+                  : adxState.lastADX < 20
+                  ? 'rgba(100, 116, 139, 0.2)'
+                  : 'transparent',
+                color: adxState.lastADX > 25
+                  ? 'rgba(251, 191, 36, 1)'
+                  : adxState.lastADX < 20
+                  ? 'rgba(148, 163, 184, 1)'
+                  : 'rgba(100, 116, 139, 1)',
+              }}
+            >
+              {adxState.lastADX > 25 ? '趋势' : adxState.lastADX < 20 ? '震荡' : '中性'}
+            </span>
+          )}
         </span>
       </div>
 
