@@ -195,7 +195,7 @@ export default function SignalPanel({ klines, refreshKey, precision, symbol = 'E
         || ab9.cross.find(c => c.dir === 'up' && c.lineNo >= 9);
       const volNote = ab9.volumeRatio >= 1.15 ? '· 放量' : ab9.volumeRatio <= 0.85 ? '· 缩量' : '';
       items.push({
-        key: 'ab9', name: 'AB9线',
+        key: 'ab9', name: '九线测算',
         verdict: broken ? 'osc' : ab9.direction === 'up' ? 'bull' : 'bear',
         value: keyCross
           ? `${keyCross.dir === 'up' ? '升破' : '跌破'}${keyCross.lineNo}线(${keyCross.label})`

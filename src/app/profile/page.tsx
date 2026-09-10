@@ -277,11 +277,11 @@ export default function ProfilePage() {
                   开关状态会自动保存，打开K线图时生效。建议只开启一种画线，避免图表上同时显示两种画线造成干扰。
                 </p>
                 <div className="bg-dark-800/50 rounded-lg p-4 space-y-4">
-                  {/* AB9线开关 */}
+                  {/* 九线测算开关 */}
                   <div className="flex items-center justify-between">
                     <div>
-                      <div className="text-sm text-white font-medium">AB9线</div>
-                      <div className="text-xs text-dark-400 mt-0.5">自动绘制AB9九条价格线</div>
+                      <div className="text-sm text-white font-medium">九线测算</div>
+                      <div className="text-xs text-dark-400 mt-0.5">自动绘制九条价格线</div>
                     </div>
                     <button
                       type="button"
@@ -298,11 +298,11 @@ export default function ProfilePage() {
                     </button>
                   </div>
 
-                  {/* AB9标签开关 */}
+                  {/* 九线标签开关 */}
                   <div className={`flex items-center justify-between ${!prefAB9 ? 'opacity-40' : ''}`}>
                     <div>
-                      <div className="text-sm text-white font-medium">AB9标签</div>
-                      <div className="text-xs text-dark-400 mt-0.5">在AB9线上显示序号标签</div>
+                      <div className="text-sm text-white font-medium">九线标签</div>
+                      <div className="text-xs text-dark-400 mt-0.5">在九条价格线上显示序号标签</div>
                     </div>
                     <button
                       type="button"

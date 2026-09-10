@@ -2576,10 +2576,10 @@ export function calcDirectionSignal(klines: KlineData[]): DirectionSignal | null
     if (decision !== 'neutral' && !trendFlowsWith(ab9Dir) && ab9.strength === '趋势破坏') {
       decision = 'neutral';
       confidence = 35;
-      reasons.push('AB9结构破坏');
+      reasons.push('九线结构破坏');
     } else if (decision !== 'neutral' && trendFlowsWith(ab9Dir) && ab9.strength === '较强趋势') {
       confidence += 8;
-      reasons.push('AB9较强顺势');
+      reasons.push('九线较强顺势');
     }
   }
 

@@ -137,8 +137,8 @@ export default function GannPanel({ klines, refreshKey = 0, precision = 2, symbo
           note={g.timeCycles ? `自波段两端外推变盘窗口，已标于图上` : '--'} />
       </Section>
 
-      <Section title="回调位 · AB9 八分结合">
-        <Card name="AB9 回调位 4/5/6线" verdict="osc"
+      <Section title="回调位 · 九线测算 · 八分结合">
+        <Card name="九线测算 回调位 4/5/6线" verdict="osc"
           value={`4线 ${fmt(lineOf(4))} · 5线 ${fmt(lineOf(5))} · 6线 ${fmt(lineOf(6))}`}
           note="江恩八分回调档（回落/反弹参考）" />
         <Card name="当前回调深度" verdict={depthVerdict}

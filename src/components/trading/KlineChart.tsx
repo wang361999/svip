@@ -2492,7 +2492,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   });
   const layerMenu = [
     {
-      key: 'AB9', label: 'AB9 江恩九线', active: showAutoAB9,
+      key: 'AB9', label: '九线测算', active: showAutoAB9,
       on: () => { const v = !showAutoAB9; setShowAutoAB9(v); saveOverlayPrefs({ ...currentOverlayPrefs(), AB9: v }); saveUserPref('prefAB9', v); setOpenMenu(null); },
     },
     {
