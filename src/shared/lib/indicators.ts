@@ -1795,9 +1795,9 @@ function resolveABPoints(klines: KlineData[]): ResolvedAB | null {
 // ========== AB9线（江恩八分法趋势强度）==========
 
 export interface AB9Line {
-  /** 线号 1-9 */
+  /** 线号 1-9（1线=0% 波段起点，9线=100% 波段终点） */
   lineNo: number;
-  /** 比例系数（1/8 ~ 9/8） */
+  /** 比例系数（0/8 ~ 8/8） */
   ratio: number;
   /** 对应价格 */
   price: number;
@@ -1834,9 +1834,9 @@ export interface AB9Analysis {
   slope: number;
   /** 量能支撑：当前 vs AB段平均成交量，>1 表示放量 */
   volumeRatio: number;
-  /** 当前价上方最近的内部线号（阻力参考）。null=上方无内部线或处于扩展区 */
+  /** 当前价上方最近的内部线号（阻力参考）。null=上方无内部线 */
   refLineResistance: number | null;
-  /** 当前价下方最近的内部线号（支撑参考）。null=下方无内部线或处于扩展区 */
+  /** 当前价下方最近的内部线号（支撑参考）。null=下方无内部线 */
   refLineSupport: number | null;
 }
 
@@ -1857,21 +1857,20 @@ export interface AB9Cross {
 /**
  * AB9线算法（江恩八分法）
  *
- * 上升趋势：A=低点，B=高点，9线从A往B方向画
- *   1线 = A + H × 1/8
- *   2线 = A + H × 2/8
+ * 上升趋势：A=低点，B=高点，9条水平线覆盖 A→B 全程 8 等份边界
+ *   1线 = A + H × 0/8 = A（0%）
+ *   2线 = A + H × 1/8（12.5%）
  *   ...
- *   8线 = A + H × 8/8 = B
- *   9线 = A + H × 9/8（扩展）
+ *   9线 = A + H × 8/8 = B（100%）
  *
  * 下降趋势：A=高点，B=低点，9线从A往B方向画
  *
  * 强度判断：
  *   上升趋势回调时：
- *     - 在5线（5/8 = 0.625）之上企稳 = 较强趋势
- *     - 在4-5线之间 = 一般趋势
- *     - 跌破4线（中轴） = 较弱趋势
- *     - 跌破3线 = 趋势破坏
+ *     - 在6线（6/8 = 0.625）之上企稳 = 较强趋势
+ *     - 在5-6线之间 = 一般趋势
+ *     - 跌破5线（中轴） = 较弱趋势
+ *     - 跌破4线 = 趋势破坏
  */
 export function calcAB9Lines(klines: KlineData[]): AB9Analysis | null {
   if (!klines || klines.length < 30) return null;
@@ -1883,13 +1882,13 @@ export function calcAB9Lines(klines: KlineData[]): AB9Analysis | null {
   if (!resolved) return null;
   const selected = resolved.selected;
 
-  // 3. 计算9条线
+  // 3. 计算9条线：8等份边界 0%~100%（1线=0%起点A，9线=100%终点B）
   const pointA = selected.startPrice;
   const pointB = selected.endPrice;
   const height = Math.abs(pointB - pointA);
   const lines: AB9Line[] = [];
 
-  for (let i = 1; i <= 9; i++) {
+  for (let i = 0; i <= 8; i++) {
     const ratio = i / 8;
     let price: number;
     if (selected.direction === 'up') {
@@ -1897,7 +1896,7 @@ export function calcAB9Lines(klines: KlineData[]): AB9Analysis | null {
     } else {
       price = pointA - height * ratio;
     }
-    lines.push({ lineNo: i, ratio, price, label: `${i}线` });
+    lines.push({ lineNo: i + 1, ratio, price, label: `${i + 1}线` });
   }
 
   // 4. 判断当前价在哪条线附近
@@ -1926,56 +1925,56 @@ export function calcAB9Lines(klines: KlineData[]): AB9Analysis | null {
     }
   }
   if (!betweenLines) {
-    // 超出9线范围
+    // 超出9线（波段）范围
     if (selected.direction === 'up' && currentPrice > lines[lines.length - 1].price) {
-      betweenLines = `9线之上（扩展区）`;
+      betweenLines = `9线之上（突破波段）`;
     } else if (selected.direction === 'up' && currentPrice < lines[0].price) {
-      betweenLines = `1线之下（破位）`;
+      betweenLines = `1线之下（跌破波段起点）`;
     } else if (selected.direction === 'down' && currentPrice < lines[lines.length - 1].price) {
-      betweenLines = `9线之下（扩展区）`;
+      betweenLines = `9线之下（突破波段）`;
     } else {
-      betweenLines = `1线之上（破位）`;
+      betweenLines = `1线之上（跌破波段起点）`;
     }
   }
 
   // 强度判定
   if (selected.direction === 'up') {
     // 上升趋势回调
-    const line5 = lines[4].price; // 5线 = 5/8 = 0.625
-    const line4 = lines[3].price; // 4线 = 4/8 = 0.500
-    const line3 = lines[2].price; // 3线 = 3/8 = 0.375
+    const line6 = lines[5].price; // 6线 = 6/8 = 0.625
+    const line5 = lines[4].price; // 5线 = 5/8 = 0.500 中轴
+    const line4 = lines[3].price; // 4线 = 4/8 = 0.375
 
-    if (currentPrice >= line5) {
+    if (currentPrice >= line6) {
       trendStrength = '较强趋势';
-      advice = '回调在5线（5/8）之上，趋势强劲，积极做多';
-    } else if (currentPrice >= line4) {
+      advice = '回调在6线（6/8）之上，趋势强劲，积极做多';
+    } else if (currentPrice >= line5) {
       trendStrength = '一般趋势';
-      advice = '回调在4-5线之间，趋势一般，谨慎做多';
-    } else if (currentPrice >= line3) {
+      advice = '回调在5-6线之间，趋势一般，谨慎做多';
+    } else if (currentPrice >= line4) {
       trendStrength = '较弱趋势';
-      advice = '跌破4线中轴，趋势转弱，观望或减仓';
+      advice = '跌破5线中轴，趋势转弱，观望或减仓';
     } else {
       trendStrength = '趋势破坏';
-      advice = '跌破3线，上升趋势可能已破坏，离场观望';
+      advice = '跌破4线，上升趋势可能已破坏，离场观望';
     }
   } else {
     // 下降趋势反弹
+    const line6 = lines[5].price;
     const line5 = lines[4].price;
     const line4 = lines[3].price;
-    const line3 = lines[2].price;
 
-    if (currentPrice <= line5) {
+    if (currentPrice <= line6) {
       trendStrength = '较强趋势';
-      advice = '反弹在5线之下，下跌强劲，积极做空';
-    } else if (currentPrice <= line4) {
+      advice = '反弹在6线之下，下跌强劲，积极做空';
+    } else if (currentPrice <= line5) {
       trendStrength = '一般趋势';
-      advice = '反弹在4-5线之间，趋势一般，谨慎做空';
-    } else if (currentPrice <= line3) {
+      advice = '反弹在5-6线之间，趋势一般，谨慎做空';
+    } else if (currentPrice <= line4) {
       trendStrength = '较弱趋势';
-      advice = '突破4线中轴，下跌转弱，观望或减空';
+      advice = '突破5线中轴，下跌转弱，观望或减空';
     } else {
       trendStrength = '趋势破坏';
-      advice = '突破3线，下降趋势可能已破坏，离场观望';
+      advice = '突破4线，下降趋势可能已破坏，离场观望';
     }
   }
 
@@ -2007,21 +2006,20 @@ export function calcAB9Lines(klines: KlineData[]): AB9Analysis | null {
       if (wasAbove !== isAbove) {
         const dir: 'up' | 'down' = isAbove ? 'up' : 'down';
         let label: string;
-        if (line.lineNo === 4) label = '中轴';
-        else if (line.lineNo <= 3) label = '趋势破坏区';
-        else if (line.lineNo >= 8) label = '突破/扩展区';
+        if (line.lineNo === 5) label = '中轴';
+        else if (line.lineNo <= 4) label = '趋势破坏区';
+        else if (line.lineNo >= 8) label = '突破区';
         else label = `${line.lineNo}线`;
         cross.push({ dir, lineNo: line.lineNo, from: prevClose, to: currentPrice, label, time: prevTime });
       }
     }
   }
 
-  // 支撑/阻力参考：按当前价上下分段取最近的内部线（排除9线扩展位，作为风控参考更稳妥的参数）
+  // 支撑/阻力参考：按当前价上下分段取最近的线（1线=波段起点、9线=波段终点均为有效结构位）
   let refLineResistance: number | null = null;
   let refLineSupport: number | null = null;
   let bestR = Infinity, bestS = Infinity;
   for (const line of lines) {
-    if (line.lineNo === 9) continue; // 扩展位一般不止损参考
     if (line.price >= currentPrice) {
       const gap = line.price - currentPrice;
       if (gap < bestR) { bestR = gap; refLineResistance = line.lineNo; }

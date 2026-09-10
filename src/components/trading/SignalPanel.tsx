@@ -190,9 +190,9 @@ export default function SignalPanel({ klines, refreshKey, precision, symbol = 'E
     const ab9 = calcAB9Lines(klines);
     if (ab9) {
       const broken = ab9.strength === '趋势破坏';
-      // 挑出最近的关键穿越（中轴/破坏区优先）
-      const keyCross = ab9.cross.find(c => c.dir === 'down' && c.lineNo <= 4)
-        || ab9.cross.find(c => c.dir === 'up' && c.lineNo >= 8);
+      // 挑出最近的关键穿越（跌破中轴5线/破坏区看空，升破波段终点9线看多）
+      const keyCross = ab9.cross.find(c => c.dir === 'down' && c.lineNo <= 5)
+        || ab9.cross.find(c => c.dir === 'up' && c.lineNo >= 9);
       const volNote = ab9.volumeRatio >= 1.15 ? '· 放量' : ab9.volumeRatio <= 0.85 ? '· 缩量' : '';
       items.push({
         key: 'ab9', name: 'AB9线',
