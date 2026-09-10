@@ -335,6 +335,81 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     price: number;
   } | null>(null);
 
+  // 原油信号拖拽位置（持久化到 localStorage）
+  const OIL_BADGE_POS_KEY = 'kline-oil-badge-pos-v1';
+  const [oilBadgePos, setOilBadgePos] = useState<{ x: number; y: number } | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const raw = window.localStorage.getItem(OIL_BADGE_POS_KEY);
+      if (!raw) return null;
+      const p = JSON.parse(raw);
+      if (typeof p.x === 'number' && typeof p.y === 'number') return { x: p.x, y: p.y };
+    } catch {}
+    return null;
+  });
+  const oilBadgeDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
+
+  const onOilBadgeMouseDown = useCallback((e: ReactMouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const parent = (e.currentTarget as HTMLElement).parentElement?.parentElement;
+    if (!parent) return;
+    const rect = parent.getBoundingClientRect();
+    const cur = oilBadgePos ?? { x: 12, y: 10 };
+    oilBadgeDragRef.current = { startX: e.clientX, startY: e.clientY, origX: cur.x, origY: cur.y };
+  }, [oilBadgePos]);
+
+  const onOilBadgeTouchStart = useCallback((e: ReactTouchEvent) => {
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const parent = (e.currentTarget as HTMLElement).parentElement?.parentElement;
+    if (!parent) return;
+    const rect = parent.getBoundingClientRect();
+    const cur = oilBadgePos ?? { x: 12, y: 10 };
+    oilBadgeDragRef.current = { startX: t.clientX, startY: t.clientY, origX: cur.x, origY: cur.y };
+  }, [oilBadgePos]);
+
+  useEffect(() => {
+    const onMove = (clientX: number, clientY: number) => {
+      const drag = oilBadgeDragRef.current;
+      if (!drag) return;
+      const parent = mainChartRef.current?.parentElement;
+      if (!parent) return;
+      const rect = parent.getBoundingClientRect();
+      let nx = drag.origX + (clientX - drag.startX);
+      let ny = drag.origY + (clientY - drag.startY);
+      nx = Math.max(0, Math.min(nx, rect.width - 30));
+      ny = Math.max(0, Math.min(ny, rect.height - 20));
+      setOilBadgePos({ x: nx, y: ny });
+    };
+    const onMouseMove = (e: MouseEvent) => onMove(e.clientX, e.clientY);
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      onMove(e.touches[0].clientX, e.touches[0].clientY);
+    };
+    const onEnd = () => {
+      if (oilBadgeDragRef.current) {
+        oilBadgeDragRef.current = null;
+        setOilBadgePos(prev => {
+          if (prev) {
+            try { window.localStorage.setItem(OIL_BADGE_POS_KEY, JSON.stringify(prev)); } catch {}
+          }
+          return prev;
+        });
+      }
+    };
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onEnd);
+    window.addEventListener('touchmove', onTouchMove, { passive: false });
+    window.addEventListener('touchend', onEnd);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onEnd);
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', onEnd);
+    };
+  }, []);
+
   // VWAP（主图线）
   const vwapSeries = useRef<ISeriesApi<'Line'> | null>(null);
 
@@ -3038,9 +3113,14 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
               </div>
             );
           })()}
-          {/* 原油多空观望信号（常驻左上角） */}
+          {/* 原油多空观望信号（可拖拽） */}
           {oilSignal && (
-            <div className="absolute top-2.5 left-3 z-[4] pointer-events-none">
+            <div
+              className="absolute z-[4] cursor-grab active:cursor-grabbing"
+              style={oilBadgePos ? { left: oilBadgePos.x, top: oilBadgePos.y } : { top: 10, left: 12 }}
+              onMouseDown={onOilBadgeMouseDown}
+              onTouchStart={onOilBadgeTouchStart}
+            >
               <div
                 className="flex items-center gap-1.5 px-2 py-1 rounded-md border"
                 style={{
