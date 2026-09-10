@@ -921,9 +921,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
               lineWidth: 1,
               lineStyle: 2,
               axisLabelVisible: true,
-              title: isNear
-                ? ` ${line.lineNo}线 ${touchInfo!.isAbove ? '阻力' : '支撑'}${touchInfo!.volumeSignal ? ' ' + touchInfo!.volumeSignal : ''}`
-                : ` ${line.lineNo}线`,
+              title: ` ${line.lineNo}线`,
             });
             autoPriceLinesRef.current.push(pl);
           } catch {}
@@ -2812,7 +2810,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           )}
           {/* 九线触及反馈角标：实时距离 + 成交量配合 */}
           {levelTouch && levelTouch.status !== '远离' && (
-            <div className="absolute top-2.5 right-3 z-[4] pointer-events-none">
+            <div className="absolute top-2.5 right-1 z-[4] pointer-events-none">
               <div
                 className="px-2.5 py-1.5 rounded-md border text-[11px] font-mono tabular-nums flex flex-col gap-0.5"
                 style={{
@@ -2886,7 +2884,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           )}
           {/* ADX 趋势状态灯（常驻右上角；触及反馈显示时让位避免重复） */}
           {(!levelTouch || levelTouch.status === '远离') && adxState?.lastADX != null && (
-            <div className="absolute top-2.5 right-3 z-[4] pointer-events-none">
+            <div className="absolute top-2.5 right-1 z-[4] pointer-events-none">
               <div
                 className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border"
                 style={{
