@@ -1765,12 +1765,16 @@ interface ResolvedAB {
  * 注意：不能用数组引用做缓存 key——实时路径会原地改写同一数组（push / 改 last，不换引用），
  * 引用级缓存会让 AB9/江恩画线在整个会话内冻结在首载值，直到切币种/周期。
  * 改为按 length + 最后一根 time/close 生成内容签名，且仅缓存最近一条（Map 始终 O(1)）。
+ * 签名必须带 K 线时间间隔（step）：4h 与 1d 在 UTC 整点对齐、K 线数相同、
+ * 收盘价相同（如 500 根、00:00 收盘价一致）时，length:time:close 三字段会完全碰撞，
+ * 导致后计算的周期复用前一周期的 A/B 点，9 线整组锚错波段。
  */
 const abPointCache = new Map<string, ResolvedAB>();
 
 function resolveABPoints(klines: KlineData[]): ResolvedAB | null {
   const last = klines[klines.length - 1];
-  const sig = `${klines.length}:${last.time}:${last.close}`;
+  const step = klines.length > 1 ? klines[1].time - klines[0].time : 0;
+  const sig = `${step}:${klines.length}:${last.time}:${last.close}`;
   const cached = abPointCache.get(sig);
   if (cached) return cached;
 
