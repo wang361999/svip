@@ -911,19 +911,15 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
         for (const line of ab9Result.lines) {
           const color = AB9_COLORS[line.lineNo];
           if (!color) continue;
-          // 触及反馈：当前价触及的线加粗高亮
+          // 触及反馈：保持统一线宽和彩色，触及信息由右上角角标呈现
           const touchInfo = calcLevelTouch(ab9Result, klines);
           const isNear = touchInfo && touchInfo.nearestLine === line.lineNo && touchInfo.status !== '远离';
           try {
             const pl = series.createPriceLine({
               price: line.price,
-              color: isNear
-                ? (touchInfo!.isAbove
-                  ? 'rgba(246, 70, 93, 1)'   // 阻力位触及：高亮红
-                  : 'rgba(34, 197, 94, 1)')   // 支撑位触及：高亮绿
-                : color.replace(/[\d.]+\)$/, '0.85)'),
-              lineWidth: isNear ? 2 : 1,
-              lineStyle: isNear ? 0 : 2,
+              color: isNear ? color.replace(/[\d.]+\)$/, '1)') : color.replace(/[\d.]+\)$/, '0.85)'),
+              lineWidth: 1,
+              lineStyle: 2,
               axisLabelVisible: true,
               title: isNear
                 ? ` ${line.lineNo}线 ${touchInfo!.isAbove ? '阻力' : '支撑'}${touchInfo!.volumeSignal ? ' ' + touchInfo!.volumeSignal : ''}`
