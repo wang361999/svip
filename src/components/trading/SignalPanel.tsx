@@ -12,6 +12,8 @@ import {
   calcMACD,
   calcBollinger,
   calcATRArray,
+  calcRSIArray,
+  calcEMAArray,
   detectFractals,
 } from '@/shared/lib/indicators';
 
@@ -113,12 +115,19 @@ export default function SignalPanel({ klines, refreshKey, precision, symbol = 'E
     const last = klines[n - 1];
     const price = last.close;
 
-    const pros: Evidence[] = [];   // A 级实证依据
+    const pros: Evidence[] = [];   // A 级实证依据（无前视口径：确认根入场）
     const warns: string[] = [];    // B 级末端风险（不投票，只提示勿追）
+    const notes: string[] = [];    // 结构参考（不投票）
     const supCand: number[] = [];  // 支撑候选价
     const resCand: number[] = [];  // 阻力候选价
 
-    // ---- A 级：缠论分型（回测：顶分型后10根跌65.8% / 底分型后涨62.7%）----
+    // 周期识别（多个新信号只在特定周期有效，回测确认不可跨周期乱用）
+    const barMs = n >= 2 ? klines[1].time - klines[0].time : 0;
+    const is4h = barMs === 4 * 3600 * 1000;
+    const is1d = barMs === 24 * 3600 * 1000;
+    const bb = calcBollinger(klines, 20);
+
+    // ---- 分型：无前视复核后顶分型仅小幅优势(权重降到1.0)；底分型前后反转，降级为纯结构参考 ----
     const frac = detectFractals(klines, FRACTAL_STRENGTH);
     const confirmBound = n - 1 - FRACTAL_STRENGTH;
     const confirmedHighs = frac.fractalHighs.filter((f) => f.idx <= confirmBound);
@@ -139,14 +148,14 @@ export default function SignalPanel({ klines, refreshKey, precision, symbol = 'E
         : null;
     if (latestFractal) {
       const barsAgo = n - 1 - latestFractal.f.idx;
-      pros.push(
-        latestFractal.kind === 'top'
-          ? { vote: 'short', weight: 1.5, text: `冲高回落结构（顶分型 ${pf(latestFractal.f.price)}，${barsAgo}根前确认）：历史出现后10根下跌概率66%` }
-          : { vote: 'long', weight: 1.5, text: `止跌回升结构（底分型 ${pf(latestFractal.f.price)}，${barsAgo}根前确认）：历史出现后10根上涨概率63%` },
-      );
+      if (latestFractal.kind === 'top') {
+        pros.push({ vote: 'short', weight: 1.0, text: `冲高回落结构（顶分型 ${pf(latestFractal.f.price)}，${barsAgo}根前确认）：确认后10根偏弱约51%，优势不大但方向稳定，作辅助票` });
+      } else {
+        notes.push(`近期有底分型 ${pf(latestFractal.f.price)}（${barsAgo}根前确认）：实测抄底胜率不稳定，不投多票，只把它当支撑位参考`);
+      }
     }
 
-    // ---- A 级：MACD 顶背离（回测10根下跌率77.5%，样本40）----
+    // ---- A 级：MACD DIF 顶背离（无前视复核：确认后10根下跌率62.5%，lift+14.8pp，两段稳定）----
     const macd = calcMACD(klines, 12, 26, 9);
     if (macd) {
       const highsAsc = [...confirmedHighs].sort((a, b) => a.idx - b.idx);
@@ -156,8 +165,76 @@ export default function SignalPanel({ klines, refreshKey, precision, symbol = 'E
         const da = macd.dif[a.idx];
         const db = macd.dif[b.idx];
         if (da != null && db != null && klines[b.idx].close > klines[a.idx].close && db < da && n - 1 - b.idx <= DIV_RECENT_BARS) {
-          pros.push({ vote: 'short', weight: 2.0, text: `价格创新高但上涨动能减弱（MACD顶背离，${n - 1 - b.idx}根前确认）：历史后续10根下跌概率78%` });
+          pros.push({ vote: 'short', weight: 2.0, text: `价格创新高但上涨动能减弱（MACD顶背离，${n - 1 - b.idx}根前确认）：确认后10根下跌概率62.5%，是目前最稳的见顶信号` });
         }
+      }
+    }
+
+    // ---- A 级（4h 限定）：RSI 顶背离·超买区（lift+19.8pp，两段+19/+20 稳定，n=58）----
+    if (is4h) {
+      const rsiArr = calcRSIArray(klines, 14);
+      const i = n - 1;
+      const rNow = rsiArr[i];
+      if (rNow != null && i >= 70) {
+        const s1 = i - 5, s0 = i - 12;
+        const h1 = Math.max(...klines.slice(s1, i + 1).map((x) => x.high));
+        const h0 = Math.max(...klines.slice(s0, s1).map((x) => x.high));
+        const rh1 = Math.max(...rsiArr.slice(s1, i + 1).filter((x): x is number => x != null));
+        const rh0 = Math.max(...rsiArr.slice(s0, s1).filter((x): x is number => x != null));
+        if (isFinite(h0) && isFinite(rh0) && h1 > h0 && rh1 < rh0 - 2 && rNow > 55) {
+          pros.push({ vote: 'short', weight: 1.8, text: `价格还在涨但 RSI 已经顶不住（RSI顶背离，当前${rNow.toFixed(0)}）：4h周期确认后10根下跌率约66%，比顶分型更早预警` });
+        }
+        // ---- A 级（4h 限定）：缩量止跌（lift+15.5pp，两段+12/+19 稳定，n=66）----
+        const ema20Arr = calcEMAArray(klines, 20);
+        const k0 = klines[i];
+        let volSum = 0;
+        for (let j = i - 19; j <= i; j++) volSum += klines[j].volume;
+        const volMa = volSum / 20;
+        if (k0.close < ema20Arr[i] && k0.volume < 0.6 * volMa && k0.low > klines[i - 1].low && k0.close < klines[i - 3].close) {
+          pros.push({ vote: 'long', weight: 1.3, text: `下跌中成交量缩到均量6成以下且价格不再创新低（抛压枯竭）：4h周期确认后10根上涨率约70%，是较早的企稳提示` });
+        }
+      }
+
+      // ---- 避雷（4h 限定）：波动率收缩后的突破多为假突破（向上lift-21.8pp/向下-16.6pp，两段稳定）----
+      if (bb) {
+        const bw: number[] = [];
+        for (let j = 0; j < n; j++) {
+          const u = bb.upperSeries[j - 19]?.value;
+          const l = bb.lowerSeries[j - 19]?.value;
+          const md = bb.middleSeries[j - 19]?.value;
+          bw.push(u != null && l != null && md ? (u - l) / md : NaN);
+        }
+        let squeeze = false;
+        let since = -1;
+        let breakDir: 'up' | 'down' | null = null;
+        let breakAgo = 99;
+        for (let j = 60; j < n; j++) {
+          if (!isFinite(bw[j])) continue;
+          let cnt = 0, tot = 0;
+          for (let q = Math.max(0, j - 59); q <= j; q++) { if (isFinite(bw[q])) { tot++; if (bw[q] <= bw[j]) cnt++; } }
+          if (tot && cnt / tot <= 0.2) { squeeze = true; since = j; }
+          if (squeeze && j - since <= 5) {
+            const hh = Math.max(...klines.slice(j - 20, j).map((x) => x.high));
+            const ll = Math.min(...klines.slice(j - 20, j).map((x) => x.low));
+            if (klines[j].close > hh) { breakDir = 'up'; breakAgo = n - 1 - j; squeeze = false; }
+            else if (klines[j].close < ll) { breakDir = 'down'; breakAgo = n - 1 - j; squeeze = false; }
+          }
+        }
+        if (breakDir && breakAgo <= 3) {
+          warns.push(`刚发生"盘整收缩后${breakDir === 'up' ? '向上' : '向下'}突破"——4h周期这种突破历史上多数是假突破（向上追多少亏21.8%优势），别追，等回踩确认`);
+        }
+      }
+    }
+
+    // ---- A 级（1d 限定）：流星线·涨后长上影（lift+10.8pp，两段+7.6/+12.4 稳定，n=63）----
+    if (is1d) {
+      const k0 = klines[n - 1];
+      const body = Math.abs(k0.close - k0.open);
+      const rng = Math.max(1e-12, k0.high - k0.low);
+      const upperW = k0.high - Math.max(k0.close, k0.open);
+      const lowerW = Math.min(k0.close, k0.open) - k0.low;
+      if (k0.close > klines[n - 4].close && upperW >= 2 * body && lowerW <= 0.25 * rng && body > 0) {
+        pros.push({ vote: 'short', weight: 1.2, text: `日线上涨后收出长上影流星线（冲高被砸回）：日线确认后10根下跌率约60%，是较早的日线见顶提示` });
       }
     }
 
@@ -197,7 +274,6 @@ export default function SignalPanel({ klines, refreshKey, precision, symbol = 'E
     if (ab9 && ab9.direction === 'up' && ab9.strength !== '趋势破坏') {
       warns.push('九线测算显示上升波段已走一段——实测此时追高后续平均倒亏约6%');
     }
-    const bb = calcBollinger(klines, 20);
     if (bb) {
       supCand.push(bb.lower);
       resCand.push(bb.upper);
@@ -280,7 +356,7 @@ export default function SignalPanel({ klines, refreshKey, precision, symbol = 'E
 
     return {
       price, pf, action, longRatio, longN, shortN, headline,
-      pros, warns, entry, stop, target, rr, stopDistPct, posPct,
+      pros, warns, notes, entry, stop, target, rr, stopDistPct, posPct,
       nearSupport, nearResist, atr,
       cloudBottom, cloudTop,
     };
@@ -399,6 +475,20 @@ export default function SignalPanel({ klines, refreshKey, precision, symbol = 'E
               <li key={i} className="flex gap-1.5 text-[10.5px] leading-snug text-amber-200/80">
                 <span className="text-amber-400 shrink-0">⚠</span>
                 <span>{w}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* 结构参考（不投票） */}
+      {model.notes.length > 0 && (
+        <div className="px-3 pb-2.5">
+          <ul className="flex flex-col gap-1">
+            {model.notes.map((t, i) => (
+              <li key={i} className="flex gap-1.5 text-[10.5px] leading-snug text-dark-400">
+                <span className="text-dark-500 shrink-0">·</span>
+                <span>{t}</span>
               </li>
             ))}
           </ul>
