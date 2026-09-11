@@ -41,10 +41,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/data/macro-live.json src/data/oil-history.json
+          git add src/data/macro-live.json
           if git diff --cached --quiet; then
             echo "数据无变化，跳过提交"
           else
-            git commit -m "chore(data): 自动更新宏观数据（FRED）与原油日K（CNBC）"
+            git commit -m "chore(data): 自动更新宏观数据（FRED）"
             git push
           fi

@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   calcMACD, calcRSIArray, calcKDJ, calcBollinger, calcEMAArray,
   calcSuperTrend, calcADX,
@@ -127,7 +129,8 @@ function emit(agg: Agg) {
   return { n: s.n, w5, w10, w20, r10 };
 }
 
-const files = ['data/BTCUSDT-4h.json', 'data/ETHUSDT-4h.json', 'data/BTCUSDT-1d.json', 'data/ETHUSDT-1d.json'];
+const here = path.dirname(fileURLToPath(import.meta.url));
+const files = ['BTCUSDT-4h.json', 'ETHUSDT-4h.json', 'BTCUSDT-1d.json', 'ETHUSDT-1d.json'].map((f) => path.join(here, 'data', f));
 const globalAgg: Record<string, Agg> = {};
 let globalBaseSum = { n: 0, win10: 0, ret10: 0 };
 

@@ -13,11 +13,6 @@
  *   claims      ICSA       初请失业金（周度）
  *   corePce     PCEPILFE   核心 PCE 指数（月度）
  *
- * 同时从 CNBC 图表接口（ts-api harmony）拉取 WTI/布伦特近两年日K，
- * 取最近 30 个交易日收盘写入 src/data/oil-history.json
- * → /api/crude-oil 运行时优先直连同一接口，本文件作为兜底
- *   （防 Vercel 出口 IP 被 Akamai 封锁，与 macro-live.json 同模式）
- *
  * 拉取策略：有 FRED_API_KEY 时用 JSON API，否则用 CSV（两者都尝试，取先成功的）
  */
 import fs from 'node:fs';
@@ -34,8 +29,6 @@ const SERIES = {
 };
 
 const OUT_PATH = 'src/data/macro-live.json';
-const OIL_HISTORY_PATH = 'src/data/oil-history.json';
-const OIL_HISTORY_MAX_DAYS = 30;
 
 /** 通过 FRED CSV 端点拉取（GitHub Actions runner 可正常访问） */
 async function fetchCsv(id) {
@@ -99,70 +92,6 @@ async function fetchSeries(id) {
   return fetchCsv(id);
 }
 
-// ---------- 原油日K历史（CNBC ts-api 图表接口，无需 key） ----------
-
-/**
- * 拉取 CNBC 图表日K（ts-api harmony 端点，返回近两年日线 bar）
- * bar 结构：{ open, high, low, close, volume, tradeTime, tradeTimeinMills }
- * 按时间升序返回 [{date, price}]，取最近 maxDays 个交易日
- */
-async function fetchOilDailyCloses(symbol, maxDays) {
-  const url =
-    'https://ts-api.cnbc.com/harmony/app/charts/1Y.json?symbol=' + encodeURIComponent(symbol);
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
-      Accept: 'application/json',
-    },
-    signal: AbortSignal.timeout(20000),
-  });
-  if (!res.ok) throw new Error(`ts-api HTTP ${res.status}`);
-  const bars = (await res.json())?.barData?.priceBars;
-  if (!Array.isArray(bars) || bars.length === 0) throw new Error('ts-api 响应结构异常');
-
-  const pts = [];
-  for (const b of bars) {
-    const price = parseFloat(b?.close);
-    const ms = Number(b?.tradeTimeinMills);
-    if (!(price > 0) || !Number.isFinite(ms) || ms <= 0) continue;
-    pts.push({ date: new Date(ms).toISOString().slice(0, 10), price });
-  }
-  if (pts.length === 0) throw new Error('无有效日线');
-  return pts.slice(-maxDays);
-}
-
-/**
- * 更新原油日K历史文件（失败时保留旧数据，不中断宏观数据更新）
- * /api/crude-oil 运行时优先直连 ts-api，此文件仅作 Vercel IP 被封时的兜底
- */
-async function updateOilHistory() {
-  let old = { fetchedAt: '', wti: [], brent: [] };
-  try {
-    old = JSON.parse(fs.readFileSync(OIL_HISTORY_PATH, 'utf8'));
-  } catch {
-    // 无旧文件（首次运行）
-  }
-
-  const out = { fetchedAt: new Date().toISOString(), wti: old.wti || [], brent: old.brent || [] };
-  await Promise.all(
-    [
-      ['wti', '@CL.1'], // WTI 前月合约
-      ['brent', '@LCO.1'], // 布伦特前月合约
-    ].map(async ([key, symbol]) => {
-      try {
-        out[key] = await fetchOilDailyCloses(symbol, OIL_HISTORY_MAX_DAYS);
-        const last = out[key].at(-1);
-        console.log(`✓ oil-history ${key}: ${out[key].length} 天，最新 ${last.date} = ${last.price}`);
-      } catch (e) {
-        console.warn(`✗ oil-history ${key}（${symbol}）: ${e.message}，保留旧数据`);
-      }
-    }),
-  );
-
-  fs.mkdirSync('src/data', { recursive: true });
-  fs.writeFileSync(OIL_HISTORY_PATH, JSON.stringify(out) + '\n');
-}
-
 async function main() {
   const out = { fetchedAt: new Date().toISOString(), series: {} };
   const failures = [];
@@ -193,9 +122,6 @@ async function main() {
   }
 
   const ok = Object.keys(out.series).length;
-
-  // 原油结算价累积（失败自吞，不影响宏观数据更新与退出码）
-  await updateOilHistory();
 
   if (ok === 0) {
     console.error('全部序列拉取失败，退出');

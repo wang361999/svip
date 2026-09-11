@@ -1,5 +1,7 @@
 import fs from 'node:fs';
-import { calcMACD, calcRSIArray, calcKDJ, calcBollinger, calcEMAArray, calcSuperTrend, calcADX } from './svip/src/shared/lib/indicators';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { calcMACD, calcRSIArray, calcKDJ, calcBollinger, calcEMAArray, calcSuperTrend, calcADX } from '../../src/shared/lib/indicators';
 
 type K = { time: number; open: number; high: number; low: number; close: number; volume: number };
 function load(file: string): K[] {
@@ -58,7 +60,8 @@ function run(kl: K[]) {
 }
 
 const pct = (x: number) => (x * 100).toFixed(1) + '%';
-const files = ['data/BTCUSDT-4h.json', 'data/ETHUSDT-4h.json', 'data/BTCUSDT-1d.json', 'data/ETHUSDT-1d.json'];
+const here = path.dirname(fileURLToPath(import.meta.url));
+const files = ['BTCUSDT-4h.json', 'ETHUSDT-4h.json', 'BTCUSDT-1d.json', 'ETHUSDT-1d.json'].map((f) => path.join(here, 'data', f));
 const G: Record<string, ScoreLayer> = { B1: { n: 0, win10: 0, ret10: 0, win20: 0 }, B2: { n: 0, win10: 0, ret10: 0, win20: 0 }, B3: { n: 0, win10: 0, ret10: 0, win20: 0 }, S1: { n: 0, win10: 0, ret10: 0, win20: 0 }, S2: { n: 0, win10: 0, ret10: 0, win20: 0 }, S3: { n: 0, win10: 0, ret10: 0, win20: 0 } };
 const Gall: ScoreLayer = { n: 0, win10: 0, ret10: 0, win20: 0 };
 

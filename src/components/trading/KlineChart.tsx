@@ -326,93 +326,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
   // ADX 状态（趋势/震荡过滤，仅计算不画副图）
   const [adxState, setAdxState] = useState<ADXData | null>(null);
 
-  // 原油多空观望信号（CNBC 实时数据）
-  const [oilSignal, setOilSignal] = useState<{
-    signal: 'long' | 'short' | 'neutral';
-    label: string;
-    color: string;
-    changePct3d: number;
-    price: number;
-    changePct?: number;    // 当日实时涨跌%（CNBC，相对昨收）
-    lastTime?: number;     // 交易所行情时间（毫秒）
-    marketStatus?: string; // REG_MKT=盘中 CLOSED=休市等
-  } | null>(null);
-
-  // 原油信号拖拽位置（持久化到 localStorage）
-  const OIL_BADGE_POS_KEY = 'kline-oil-badge-pos-v1';
-  const [oilBadgePos, setOilBadgePos] = useState<{ x: number; y: number } | null>(() => {
-    if (typeof window === 'undefined') return null;
-    try {
-      const raw = window.localStorage.getItem(OIL_BADGE_POS_KEY);
-      if (!raw) return null;
-      const p = JSON.parse(raw);
-      if (typeof p.x === 'number' && typeof p.y === 'number') return { x: p.x, y: p.y };
-    } catch {}
-    return null;
-  });
-  const oilBadgeDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
-
-  const onOilBadgeMouseDown = useCallback((e: ReactMouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const parent = (e.currentTarget as HTMLElement).parentElement?.parentElement;
-    if (!parent) return;
-    const rect = parent.getBoundingClientRect();
-    const cur = oilBadgePos ?? { x: 12, y: 10 };
-    oilBadgeDragRef.current = { startX: e.clientX, startY: e.clientY, origX: cur.x, origY: cur.y };
-  }, [oilBadgePos]);
-
-  const onOilBadgeTouchStart = useCallback((e: ReactTouchEvent) => {
-    if (e.touches.length !== 1) return;
-    const t = e.touches[0];
-    const parent = (e.currentTarget as HTMLElement).parentElement?.parentElement;
-    if (!parent) return;
-    const rect = parent.getBoundingClientRect();
-    const cur = oilBadgePos ?? { x: 12, y: 10 };
-    oilBadgeDragRef.current = { startX: t.clientX, startY: t.clientY, origX: cur.x, origY: cur.y };
-  }, [oilBadgePos]);
-
-  useEffect(() => {
-    const onMove = (clientX: number, clientY: number) => {
-      const drag = oilBadgeDragRef.current;
-      if (!drag) return;
-      const parent = mainChartRef.current?.parentElement;
-      if (!parent) return;
-      const rect = parent.getBoundingClientRect();
-      let nx = drag.origX + (clientX - drag.startX);
-      let ny = drag.origY + (clientY - drag.startY);
-      nx = Math.max(0, Math.min(nx, rect.width - 30));
-      ny = Math.max(0, Math.min(ny, rect.height - 20));
-      setOilBadgePos({ x: nx, y: ny });
-    };
-    const onMouseMove = (e: MouseEvent) => onMove(e.clientX, e.clientY);
-    const onTouchMove = (e: TouchEvent) => {
-      if (e.touches.length !== 1) return;
-      onMove(e.touches[0].clientX, e.touches[0].clientY);
-    };
-    const onEnd = () => {
-      if (oilBadgeDragRef.current) {
-        oilBadgeDragRef.current = null;
-        setOilBadgePos(prev => {
-          if (prev) {
-            try { window.localStorage.setItem(OIL_BADGE_POS_KEY, JSON.stringify(prev)); } catch {}
-          }
-          return prev;
-        });
-      }
-    };
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onEnd);
-    window.addEventListener('touchmove', onTouchMove, { passive: false });
-    window.addEventListener('touchend', onEnd);
-    return () => {
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onEnd);
-      window.removeEventListener('touchmove', onTouchMove);
-      window.removeEventListener('touchend', onEnd);
-    };
-  }, []);
-
   // VWAP（主图线）
   const vwapSeries = useRef<ISeriesApi<'Line'> | null>(null);
 
@@ -975,42 +888,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       if (adxData) setAdxState(adxData);
     }
   }, [indicators, periods]);
-
-  // 原油信号：CNBC 实时行情，60 秒轮询（页面隐藏时暂停，切回时立即刷新）
-  useEffect(() => {
-    let active = true;
-    const fetchOil = async () => {
-      if (document.hidden) return;
-      try {
-        const resp = await fetch('/api/crude-oil');
-        if (!resp.ok) return;
-        const json = await resp.json();
-        if (active && json.success && json.data) {
-          setOilSignal({
-            signal: json.data.signal,
-            label: json.data.label,
-            color: json.data.color,
-            changePct3d: json.data.changePct3d,
-            price: json.data.price,
-            changePct: json.data.changePct,
-            lastTime: json.data.lastTime,
-            marketStatus: json.data.marketStatus,
-          });
-        }
-      } catch {
-        // 静默失败，不影响主图
-      }
-    };
-    fetchOil();
-    const timer = setInterval(fetchOil, 60 * 1000);
-    const onVisible = () => { if (!document.hidden) fetchOil(); };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      active = false;
-      clearInterval(timer);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
-  }, []);
 
   // 徽章切换指标时立即重绘
   // 修复：此前徽章只改 state 不触发重绘，必须等K线收盘或刷新页面才生效
@@ -3126,57 +3003,6 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
               </div>
             );
           })()}
-          {/* 原油多空观望信号（可拖拽，CNBC 实时数据） */}
-          {oilSignal && (
-            <div
-              className="absolute z-[4] cursor-grab active:cursor-grabbing"
-              style={oilBadgePos ? { left: oilBadgePos.x, top: oilBadgePos.y } : { top: 10, left: 12 }}
-              onMouseDown={onOilBadgeMouseDown}
-              onTouchStart={onOilBadgeTouchStart}
-              title={`CNBC 实时 · ${oilSignal.marketStatus === 'REG_MKT' ? '交易中' : '休市/盘外'}${
-                oilSignal.lastTime ? ' · 行情时间 ' + new Date(oilSignal.lastTime).toLocaleTimeString() : ''
-              }`}
-            >
-              <div
-                className="flex items-center gap-1.5 px-2 py-1 rounded-md border"
-                style={{
-                  borderColor: oilSignal.color.replace('1)', '0.3)'),
-                  background: 'rgba(15, 20, 30, 0.85)',
-                }}
-              >
-                <span
-                  className="w-2 h-2 rounded-full"
-                  style={{ backgroundColor: oilSignal.color }}
-                />
-                <span className="text-[10px] font-bold" style={{ color: oilSignal.color }}>
-                  {oilSignal.label}
-                </span>
-                <span className="text-[9px] text-dark-400 font-mono tabular-nums">
-                  ${oilSignal.price.toFixed(2)}
-                </span>
-                {/* 当日实时涨跌%（CNBC，相对昨收） */}
-                {typeof oilSignal.changePct === 'number' && Number.isFinite(oilSignal.changePct) && (
-                  <span
-                    className="text-[9px] font-mono tabular-nums"
-                    style={{
-                      color:
-                        oilSignal.changePct > 0
-                          ? 'rgba(34, 197, 94, 0.8)'
-                          : oilSignal.changePct < 0
-                            ? 'rgba(246, 70, 93, 0.8)'
-                            : 'rgba(148, 163, 184, 0.8)',
-                    }}
-                  >
-                    {oilSignal.changePct > 0 ? '+' : ''}{oilSignal.changePct.toFixed(2)}%
-                  </span>
-                )}
-                <span className="text-[9px] text-dark-500 font-mono tabular-nums" style={{ color: oilSignal.changePct3d > 0 ? 'rgba(34, 197, 94, 0.8)' : oilSignal.changePct3d < 0 ? 'rgba(246, 70, 93, 0.8)' : 'rgba(148, 163, 184, 0.8)' }}>
-                  {oilSignal.changePct3d > 0 ? '+' : ''}{oilSignal.changePct3d.toFixed(1)}%
-                </span>
-                <span className="text-[8px] text-dark-500">原油</span>
-              </div>
-            </div>
-          )}
         </div>
       </div>
 
