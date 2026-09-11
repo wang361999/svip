@@ -1,9 +1,10 @@
 import { neon, NeonQueryFunction } from '@neondatabase/serverless';
 import { createHandler } from '@/shared/api/handler';
 import { apiSuccess } from '@/shared/api/response';
-import { ForbiddenError } from '@/shared/api/errors';
+import { ForbiddenError, RateLimitError } from '@/shared/api/errors';
 import { NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
+import { rateLimit, getClientIp } from '@/shared/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -11,7 +12,9 @@ export const maxDuration = 60;
 /** neon() 默认返回的 SQL 查询函数类型 */
 type SqlFn = NeonQueryFunction<false, false>;
 
-const INIT_KEY = process.env.INIT_KEY || 'eth-trading-init-2024';
+// 安全加固：初始化密钥只从环境变量读取，不再内置默认值。
+// 数据库为空（首次部署）时无需密钥；库非空时必须提供与 INIT_KEY 一致的 key 才能重复初始化。
+const INIT_KEY = process.env.INIT_KEY || '';
 
 /** 单条 SQL 执行结果 */
 interface SqlResult {
@@ -227,19 +230,10 @@ const CREATE_TABLE_STATEMENTS: { label: string; sql: string }[] = [
 ];
 
 /**
- * 解析数据库连接串
- * 优先级：body.databaseUrl > query.databaseUrl > 环境变量 DATABASE_URL
+ * 解析数据库连接串 — 安全加固：只允许服务端 DATABASE_URL 环境变量
+ * 不再接受请求体 / query 传入的连接串（防 SSRF 与外部库写入）
  */
-function resolveDatabaseUrl(
-  queryDbUrl: string | null,
-  bodyDbUrl?: string,
-): { url: string | null; source: string } {
-  if (bodyDbUrl && bodyDbUrl.trim()) {
-    return { url: bodyDbUrl.trim(), source: 'request_body' };
-  }
-  if (queryDbUrl && queryDbUrl.trim()) {
-    return { url: queryDbUrl.trim(), source: 'query_param' };
-  }
+function resolveDatabaseUrl(): { url: string | null; source: string } {
   if (process.env.DATABASE_URL) {
     return { url: process.env.DATABASE_URL, source: 'env' };
   }
@@ -312,6 +306,16 @@ function genId(): string {
   });
 }
 
+/** 生成管理员初始密码：优先 INIT_ADMIN_PASSWORD 环境变量，否则随机生成（仅本次返回一次） */
+function resolveAdminPassword(): string {
+  const fromEnv = process.env.INIT_ADMIN_PASSWORD?.trim();
+  if (fromEnv) return fromEnv;
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('');
+}
+
 /** 逐条写入管理员账户 */
 async function ensureAdmin(sql: SqlFn): Promise<DataResult> {
   const t0 = Date.now();
@@ -320,14 +324,21 @@ async function ensureAdmin(sql: SqlFn): Promise<DataResult> {
     if (existing.length > 0) {
       return { step: 'admin', ok: true, message: '管理员账户已存在，跳过创建', durationMs: Date.now() - t0 };
     }
-    const password = await bcrypt.hash('admin', 12);
+    // 安全加固：不再使用硬编码弱口令 admin/admin，初始密码随机生成且只在本次响应中出现一次
+    const initialPassword = resolveAdminPassword();
+    const password = await bcrypt.hash(initialPassword, 12);
     const id = genId();
     const now = new Date().toISOString();
     await sql`
       INSERT INTO "User" ("id", "email", "username", "password", "role", "membership", "prefAB9", "prefAB9Labels", "createdAt", "updatedAt")
       VALUES (${id}, 'admin@ethtrading.com', 'admin', ${password}, 'admin', 'vip', 'true', 'true', ${now}, ${now})
     `;
-    return { step: 'admin', ok: true, message: '管理员账户创建成功 (admin@ethtrading.com / admin)', durationMs: Date.now() - t0 };
+    return {
+      step: 'admin',
+      ok: true,
+      message: `管理员账户创建成功，初始密码 ${initialPassword}（仅显示一次，请立即登录修改）`,
+      durationMs: Date.now() - t0,
+    };
   } catch (err) {
     return {
       step: 'admin',
@@ -415,24 +426,24 @@ async function ensureDefaultSymbols(sql: SqlFn): Promise<DataResult> {
 
 /**
  * POST /api/init — 一键初始化数据库
- * 使用 @neondatabase/serverless 走 HTTP 连接（Neon 官方推荐方式）
- * databaseUrl 可通过 body / query 传入，也可直接走环境变量
+ * 安全加固：连接串只从服务端 DATABASE_URL 读取；同一 IP 限流防爆破。
+ * 可选 query: key=<INIT_KEY>（仅当数据库已非空、需要重复初始化时才必须提供）
  */
 export const POST = createHandler(async ({ req }) => {
-  const { searchParams } = new URL(req.url);
-  const key = searchParams.get('key');
-  const queryDbUrl = searchParams.get('databaseUrl');
-
-  // 尝试从 body 读取 databaseUrl
-  let bodyDbUrl: string | undefined;
-  try {
-    const body = await req.json();
-    bodyDbUrl = body?.databaseUrl;
-  } catch {
-    // body 不是 JSON 或为空
+  // 防爆破：同一 IP 10 分钟内最多 5 次初始化尝试
+  const ip = getClientIp(req);
+  const { allowed, retryAfterMs } = await rateLimit(`init:${ip}`, 5, 10 * 60 * 1000);
+  if (!allowed) {
+    throw new RateLimitError(
+      'INIT_TOO_MANY_ATTEMPTS',
+      `尝试次数过多，请 ${Math.ceil(retryAfterMs / 1000)} 秒后再试`,
+    );
   }
 
-  const { url: dbUrl, source } = resolveDatabaseUrl(queryDbUrl, bodyDbUrl);
+  const { searchParams } = new URL(req.url);
+  const key = searchParams.get('key');
+
+  const { url: dbUrl, source } = resolveDatabaseUrl();
 
   if (!dbUrl) {
     return NextResponse.json(
@@ -440,7 +451,7 @@ export const POST = createHandler(async ({ req }) => {
         success: false,
         error: {
           code: 'DB_URL_MISSING',
-          message: '未提供数据库连接串，请在页面上粘贴 Neon 连接串，或配置 DATABASE_URL 环境变量',
+          message: '服务端未配置 DATABASE_URL 环境变量',
         },
         data: { stage: 'resolve_url' },
       },
@@ -526,20 +537,16 @@ export const POST = createHandler(async ({ req }) => {
 });
 
 /**
- * GET /api/init — 检查数据库初始化状态
+ * GET /api/init — 检查数据库初始化状态（连接串只从服务端环境变量读取）
  */
-export const GET = createHandler(async ({ req }) => {
-  const { searchParams } = new URL(req.url);
-  const key = searchParams.get('key');
-  const queryDbUrl = searchParams.get('databaseUrl');
-
-  const { url: dbUrl, source } = resolveDatabaseUrl(queryDbUrl);
+export const GET = createHandler(async () => {
+  const { url: dbUrl, source } = resolveDatabaseUrl();
 
   if (!dbUrl) {
     return NextResponse.json(
       {
         success: false,
-        error: { code: 'DB_URL_MISSING', message: '未提供数据库连接串' },
+        error: { code: 'DB_URL_MISSING', message: '服务端未配置 DATABASE_URL 环境变量' },
         data: { stage: 'resolve_url' },
       },
       { status: 400 },
@@ -560,8 +567,6 @@ export const GET = createHandler(async ({ req }) => {
       { status: 503 },
     );
   }
-
-  await requireInitKeyOrEmpty(sql, key);
 
   let userCount = 0;
   let settingsCount = 0;

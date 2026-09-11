@@ -3,7 +3,8 @@
 import { useState, useEffect } from 'react';
 import { apiGet, apiPost } from '@/shared/api/client';
 
-// 首次部署时数据库为空不需要密钥，已初始化后由后端校验
+// 安全说明：数据库连接串只允许通过服务端 DATABASE_URL 环境变量提供，
+// 页面不再接受、也不再内嵌任何连接串或初始化密钥。
 
 interface StageDetails {
   index?: number;
@@ -43,36 +44,25 @@ interface InitResponse {
 
 export default function InitPage() {
   const [status, setStatus] = useState<'idle' | 'checking' | 'initializing' | 'done' | 'error'>('idle');
-  const [dbUrl, setDbUrl] = useState('postgresql://neondb_owner:npg_93uJZaQediCT@ep-bitter-sky-av7121gm-pooler.c-11.us-east-1.aws.neon.tech/neondb?channel_binding=require&sslmode=require');
   const [initResult, setInitResult] = useState<InitResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [alreadyInit, setAlreadyInit] = useState(false);
-  const [envDbConfigured, setEnvDbConfigured] = useState(false);
 
-  // 检查是否已通过环境变量配置了 DATABASE_URL
+  // 检查数据库初始化状态（连接串完全由服务端环境变量提供）
   useEffect(() => {
     checkStatus();
   }, []);
 
-  const INIT_KEY = 'eth-trading-init-2024';
-
-  const checkStatus = async (urlToCheck?: string) => {
+  const checkStatus = async () => {
     setStatus('checking');
     setError(null);
     try {
-      const parts = [urlToCheck ? `databaseUrl=${encodeURIComponent(urlToCheck)}` : '', `key=${INIT_KEY}`].filter(Boolean);
-      const params = parts.length ? `?${parts.join('&')}` : '';
       const data = await apiGet<{
         initialized: boolean;
         userCount: number;
         settingsCount: number;
         message: string;
-        urlSource?: string;
-      }>(`/api/init${params}`);
-
-      if (data.urlSource && data.urlSource !== 'none') {
-        setEnvDbConfigured(true);
-      }
+      }>('/api/init');
 
       if (data.initialized) {
         setAlreadyInit(true);
@@ -80,9 +70,9 @@ export default function InitPage() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : '';
       if (msg.includes('DB_URL_MISSING')) {
-        setEnvDbConfigured(false);
+        setError('服务端未配置 DATABASE_URL 环境变量，请在 Vercel 环境变量中配置后重试');
       } else if (msg.includes('DB_CONNECT_FAILED')) {
-        setError('数据库连接失败，请检查连接串是否正确');
+        setError('数据库连接失败，请检查服务端 DATABASE_URL 配置');
       }
     } finally {
       setStatus('idle');
@@ -90,19 +80,12 @@ export default function InitPage() {
   };
 
   const handleInit = async () => {
-    if (!dbUrl.trim() && !envDbConfigured) {
-      setError('请粘贴 Neon 数据库连接串');
-      return;
-    }
-
     setStatus('initializing');
     setError(null);
     setInitResult(null);
 
     try {
-      const body = dbUrl.trim() ? { databaseUrl: dbUrl.trim() } : {};
-      const data = await apiPost<InitResponse>(`/api/init?key=${INIT_KEY}`, body);
-
+      const data = await apiPost<InitResponse>('/api/init', {});
       setStatus('done');
       setInitResult(data);
       if (data.overallOk) {
@@ -125,28 +108,7 @@ export default function InitPage() {
               <span className="text-white font-bold text-2xl">ETH</span>
             </div>
             <h1 className="text-2xl font-bold text-white mb-1">ETH Trading Tool</h1>
-            <p className="text-dark-400 text-sm">数据库初始化向导 — 粘贴连接串，一键搞定</p>
-          </div>
-
-          {/* 数据库连接串输入框 */}
-          <div className="mb-4">
-            <label className="block text-sm text-dark-300 mb-2">
-              Neon 数据库连接串
-              {envDbConfigured && (
-                <span className="ml-2 text-green-400 text-xs">(已通过环境变量配置，可不填)</span>
-              )}
-            </label>
-            <textarea
-              value={dbUrl}
-              onChange={(e) => setDbUrl(e.target.value)}
-              placeholder="postgresql://user:password@ep-xxxxx.us-east-2.aws.neon.tech/eth_trading?sslmode=require"
-              className="w-full bg-dark-800 border border-dark-600 rounded-lg px-3 py-2.5 text-sm text-white placeholder-dark-500 focus:outline-none focus:border-blue-500 resize-none"
-              rows={3}
-              disabled={status === 'initializing'}
-            />
-            <p className="text-xs text-dark-500 mt-1.5">
-              在 Neon Dashboard → Connection Details → 复制 Connection String 粘贴到这里
-            </p>
+            <p className="text-dark-400 text-sm">数据库初始化向导 — 使用服务端环境变量 DATABASE_URL</p>
           </div>
 
           {/* 错误提示 */}
@@ -249,14 +211,14 @@ export default function InitPage() {
           {/* 初始化按钮 */}
           <button
             onClick={handleInit}
-            disabled={status === 'initializing' || (alreadyInit && status === 'idle' && !dbUrl.trim())}
+            disabled={status === 'initializing' || status === 'checking' || alreadyInit}
             className="btn-primary w-full py-3 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {status === 'initializing'
               ? '正在初始化...'
               : status === 'checking'
               ? '检测中...'
-              : alreadyInit && !dbUrl.trim()
+              : alreadyInit
               ? '已初始化完成'
               : '一键初始化数据库'}
           </button>
@@ -270,8 +232,8 @@ export default function InitPage() {
 
           {/* 底部信息 */}
           <div className="mt-6 text-dark-500 text-xs space-y-1 text-center">
-            <p>初始化后会自动创建 6 张表 + 管理员账户 + 默认网站设置</p>
-            <p>管理员账号: admin@ethtrading.com / admin（登录后请去 /profile 改密码）</p>
+            <p>初始化会自动创建数据表 + 管理员账户 + 默认网站设置</p>
+            <p>管理员初始密码取自 INIT_ADMIN_PASSWORD 环境变量（未配置则随机生成，仅显示一次），登录后请立即修改</p>
           </div>
         </div>
       </div>

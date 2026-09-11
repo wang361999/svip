@@ -47,6 +47,30 @@ const nextConfig = {
           { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
           { key: 'X-DNS-Prefetch-Control', value: 'on' },
           { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+          // 强制 HTTPS（2 年，含子域名，预加载）
+          {
+            key: 'Strict-Transport-Security',
+            value: 'max-age=63072000; includeSubDomains; preload',
+          },
+          // 内容安全策略：
+          // - Next.js 生产运行时含少量内联引导脚本，script/style 暂需 unsafe-inline（无 nonce 方案下的常见折中）
+          // - 禁止 object/embed，限制 frame 祖先与 base 跳转，XSS 主要危害面仍被收敛
+          {
+            key: 'Content-Security-Policy',
+            value: [
+              "default-src 'self'",
+              "script-src 'self' 'unsafe-inline'",
+              "style-src 'self' 'unsafe-inline'",
+              "img-src 'self' data: blob: https:",
+              "font-src 'self' data:",
+              "connect-src 'self' https: wss:",
+              "object-src 'none'",
+              "frame-ancestors 'self'",
+              "base-uri 'self'",
+              "form-action 'self'",
+              'upgrade-insecure-requests',
+            ].join('; '),
+          },
         ],
       },
     ];

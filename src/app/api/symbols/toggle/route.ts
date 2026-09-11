@@ -8,6 +8,7 @@ import { apiSuccess } from '@/shared/api/response';
 import { prisma } from '@/shared/lib/prisma';
 import { z } from 'zod';
 import { withZod } from '@/shared/api/validate';
+import { requireAdmin } from '@/shared/api/auth-guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,6 +19,7 @@ const toggleSchema = z.object({
 });
 
 export const POST = createHandler(async ({ req }) => {
+  requireAdmin();
   const body = await req.json();
   const input = withZod(toggleSchema, body);
 

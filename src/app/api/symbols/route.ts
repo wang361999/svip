@@ -11,6 +11,7 @@ import { apiError } from '@/shared/api/response';
 import { prisma } from '@/shared/lib/prisma';
 import { z } from 'zod';
 import { withZod } from '@/shared/api/validate';
+import { requireAdmin } from '@/shared/api/auth-guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -108,8 +109,9 @@ export const GET = createHandler(async ({ req }) => {
   return apiSuccess(symbols);
 });
 
-/** POST - 添加币种 or 从 Binance 导入 */
+/** POST - 添加币种 or 从 Binance 导入（管理员） */
 export const POST = createHandler(async ({ req }) => {
+  requireAdmin();
   const { searchParams } = new URL(req.url);
   const action = searchParams.get('action');
 
