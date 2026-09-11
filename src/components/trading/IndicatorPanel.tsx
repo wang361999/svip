@@ -39,7 +39,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div>
       <div className="px-3 pt-2.5 pb-1 text-[10px] uppercase tracking-wider text-dark-500">{title}</div>
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 px-3 pb-3">{children}</div>
+      <div className="grid grid-cols-2 gap-2 px-3 pb-3">{children}</div>
     </div>
   );
 }
@@ -124,7 +124,7 @@ export default function IndicatorPanel({ klines, refreshKey = 0, precision = 2, 
     nineIsBuy, nineCnt, nineVd, chanLast, chanSig, chanVd } = memo;
 
   if (!cur) {
-    return <div className="border-b border-dark-700/50 bg-dark-900/60 px-3 py-3 text-xs text-dark-400">指标面板 · 等待K线数据</div>;
+    return <div className="rounded-xl border border-dark-700/60 bg-dark-800/30 px-3 py-3 text-xs text-dark-400">指标 · 等待K线数据</div>;
   }
 
   const up = [...(ema20 != null ? [ema20] : []), ema60 != null ? ema60 : 0].filter((x) => x > 0);
@@ -140,9 +140,9 @@ export default function IndicatorPanel({ klines, refreshKey = 0, precision = 2, 
     : `系统读数中性（多空均衡），等均线方向或 MACD 柱${(macdCross ?? '')}明确`;
 
   return (
-    <div className="border-b border-dark-700/50 bg-dark-900/60">
-      <div className="flex items-center gap-3 flex-wrap px-3 pt-2">
-        <span className="text-xs font-semibold text-slate-200">指标面板{symbol ? ` · ${symbol}` : ''}</span>
+    <div className="rounded-xl border border-cyan-500/20 bg-dark-800/30 overflow-hidden">
+      <div className="flex items-center gap-2 flex-wrap px-3 pt-2.5 pb-1 border-b border-dark-700/40">
+        <span className="text-xs font-semibold text-slate-200">指标{symbol ? ` · ${symbol}` : ''}</span>
         <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${CHIP[bullN >= bearN ? 'bull' : 'bear'].chip}`}>
           现价 {fmt(cur)}
         </span>

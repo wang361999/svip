@@ -442,7 +442,7 @@ export default function SignalPanel({ klines, refreshKey, precision, symbol = 'E
     list.length ? (
       <div>
         <div className={`px-3 pt-2.5 pb-1 text-[10px] uppercase tracking-wider ${accent ?? 'text-dark-500'}`}>{title}</div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 px-3 pb-3">
+        <div className="grid grid-cols-2 gap-2 px-3 pb-3">
           {list.map((r) => <Card key={r.key} r={r} />)}
         </div>
       </div>
@@ -450,8 +450,8 @@ export default function SignalPanel({ klines, refreshKey, precision, symbol = 'E
 
   if (rows.length === 0) {
     return (
-      <div className="border-b border-dark-700/50 px-4 py-3 text-xs text-dark-400">
-        信号面板 · 等待K线数据…
+      <div className="rounded-xl border border-dark-700/60 bg-dark-800/30 px-4 py-3 text-xs text-dark-400">
+        信号 · 等待K线数据…
       </div>
     );
   }
@@ -459,10 +459,10 @@ export default function SignalPanel({ klines, refreshKey, precision, symbol = 'E
   const cRows = rows.filter((r) => r.grade === 'C');
 
   return (
-    <div className="border-b border-dark-700/50 bg-dark-900/60">
+    <div className="rounded-xl border border-emerald-500/20 bg-dark-800/30 overflow-hidden">
       {/* 汇总头：多空综合只由 A 级实证信号决定 */}
-      <div className="flex items-center gap-3 flex-wrap px-3 pt-2">
-        <span className="text-xs font-semibold text-slate-200">信号面板</span>
+      <div className="flex items-center gap-2 flex-wrap px-3 pt-2.5 pb-1 border-b border-dark-700/40">
+        <span className="text-xs font-semibold text-slate-200">信号</span>
         {weighted ? (
           <>
             <div className="flex h-1.5 w-28 rounded-full overflow-hidden">

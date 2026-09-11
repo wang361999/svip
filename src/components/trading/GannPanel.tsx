@@ -36,7 +36,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div>
       <div className="px-3 pt-2.5 pb-1 text-[10px] uppercase tracking-wider text-dark-500">{title}</div>
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 px-3 pb-3">{children}</div>
+      <div className="grid grid-cols-2 gap-2 px-3 pb-3">{children}</div>
     </div>
   );
 }
@@ -102,7 +102,7 @@ export default function GannPanel({ klines, refreshKey = 0, precision = 2, symbo
 
   if (!g.fan && !g.thirds) {
     return (
-      <div className="border-b border-dark-700/50 bg-dark-900/60 px-3 py-3 text-xs text-dark-400">
+      <div className="rounded-xl border border-dark-700/60 bg-dark-800/30 px-3 py-3 text-xs text-dark-400">
         江恩工具箱 · 等待K线结构（需≥30根）
       </div>
     );
@@ -118,8 +118,8 @@ export default function GannPanel({ klines, refreshKey = 0, precision = 2, symbo
   }
 
   return (
-    <div className="border-b border-dark-700/50 bg-dark-900/60">
-      <div className="flex items-center gap-3 flex-wrap px-3 pt-2">
+    <div className="rounded-xl border border-purple-500/20 bg-dark-800/30 overflow-hidden">
+      <div className="flex items-center gap-2 flex-wrap px-3 pt-2.5 pb-1 border-b border-dark-700/40">
         <span className="text-xs font-semibold text-slate-200">江恩工具箱{symbol ? ` · ${symbol}` : ''}</span>
         <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${CHIP[dir].chip}`}>
           {g.fan ? (g.fan.direction === 'up' ? '上升波段' : '下降波段') : '波段结构'}{' '}
