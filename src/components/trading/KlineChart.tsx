@@ -2334,12 +2334,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             ctx.fillText(bullish ? '底背离' : '顶背离', x, bullish ? y - 8 : y + 10);
           }
 
-          // 5. 顶部置信度横幅（方向 + 置信度 + 主信号）
+          // 5. 顶部读数横幅（回测：合成器"转多"稳定反向、"转空"无效，
+          //    故不再给红绿方向暗示；喊多时用琥珀色提示末端风险，仅作读数参考）
           const dirColor =
-            synth.direction === 'up' ? 'rgba(14, 203, 129, ' :
-            synth.direction === 'down' ? 'rgba(246, 70, 93, ' : 'rgba(148, 163, 184, ';
-          const dirText = synth.direction === 'up' ? '偏多' : synth.direction === 'down' ? '偏空' : '震荡';
-          const bannerW = 168;
+            synth.direction === 'up' ? 'rgba(245, 158, 11, ' : 'rgba(148, 163, 184, ';
+          const dirText = synth.direction === 'up' ? '喊多·防见顶' : synth.direction === 'down' ? '喊空·弱' : '震荡';
+          const bannerW = 178;
           const bannerH = 24 + synth.signals.length * 13;
           const bx = 64;
           const by = 4;
@@ -2350,12 +2350,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
           ctx.strokeStyle = dirColor + '0.5)';
           ctx.lineWidth = 1;
           ctx.stroke();
-          // 方向 + 置信度
+          // 读数 + 置信度（标注"参考"，不作为方向依据）
           ctx.font = 'bold 11px -apple-system, sans-serif';
           ctx.textAlign = 'left';
           ctx.textBaseline = 'top';
           ctx.fillStyle = dirColor + '1)';
-          ctx.fillText(`预测 ${dirText} · 置信${synth.confidence}`, bx + 8, by + 6);
+          ctx.fillText(`合成器 ${dirText} · ${synth.confidence}`, bx + 8, by + 6);
           // 信号文本
           ctx.font = '9px -apple-system, sans-serif';
           ctx.fillStyle = 'rgba(226, 232, 240, 0.85)';

@@ -31,7 +31,11 @@ const TREND_STYLES: Record<string, { text: string; bg: string; dot: string }> = 
   '强空头': { text: 'text-red-400', bg: 'bg-red-500/10 border-red-500/30', dot: 'bg-red-400' },
 };
 
-/** 汇总：多数周期同向 → 共振/主导；多空接近 → 分歧/震荡 */
+/**
+ * 汇总：多数周期同向 → 结构一致；多空接近 → 分歧。
+ * 注意：回测显示高低点结构的"转多/转空"无稳定方向预测力（前后半程反转），
+ * 因此这里只表述"结构排列"，不输出可跟单的多空结论。
+ */
 function summarize(rows: TrendRow[]): { text: string; className: string } {
   const valid = rows.filter((r) => r.signal);
   if (valid.length === 0) return { text: '暂无数据', className: 'text-dark-400' };
@@ -39,15 +43,15 @@ function summarize(rows: TrendRow[]): { text: string; className: string } {
   const bears = valid.filter((r) => r.signal!.direction === 'bearish').length;
   const neutrals = valid.length - bulls - bears;
 
-  if (bulls === valid.length) return { text: `多头共振 ${bulls}/${valid.length}`, className: 'text-green-400' };
-  if (bears === valid.length) return { text: `空头共振 ${bears}/${valid.length}`, className: 'text-red-400' };
+  if (bulls === valid.length) return { text: `结构一致偏多 ${bulls}/${valid.length}`, className: 'text-green-400' };
+  if (bears === valid.length) return { text: `结构一致偏空 ${bears}/${valid.length}`, className: 'text-red-400' };
   if (bulls > bears && bulls >= Math.ceil(valid.length / 2)) {
-    return { text: `多头主导 ${bulls}多/${bears}空`, className: 'text-green-400' };
+    return { text: `结构偏多 ${bulls}多/${bears}空`, className: 'text-green-400' };
   }
   if (bears > bulls && bears >= Math.ceil(valid.length / 2)) {
-    return { text: `空头主导 ${bears}空/${bulls}多`, className: 'text-red-400' };
+    return { text: `结构偏空 ${bears}空/${bulls}多`, className: 'text-red-400' };
   }
-  return { text: `多空分歧 ${bulls}多/${bears}空/${neutrals}震荡`, className: 'text-amber-400' };
+  return { text: `结构分歧 ${bulls}多/${bears}空/${neutrals}震荡`, className: 'text-amber-400' };
 }
 
 function loadCollapsed(): boolean {
@@ -173,7 +177,7 @@ export default function MultiTrendCard() {
       {/* 图例说明 */}
       {!collapsed && (
         <div className="flex items-center gap-4 mt-2.5 text-dark-500 text-xs">
-          <span>评级：高低点结构 + 最近波段方向（结构法，不用均线）</span>
+          <span>高低点结构排列（回测：结构翻转无稳定方向预测力，主要用于定位 H/L 位，勿单凭此跟单）</span>
           <span className="hidden sm:inline">数据仅供参考，不构成投资建议</span>
         </div>
       )}
