@@ -1171,8 +1171,13 @@ export function detectFractals(klines: KlineData[], strength = 3): {
       if (klines[i].high < klines[i - j].high || klines[i].high <= klines[i + j].high) isHigh = false;
       if (klines[i].low > klines[i - j].low || klines[i].low >= klines[i + j].low) isLow = false;
     }
-    if (isHigh) fractalHighs.push({ idx: i, price: klines[i].high });
-    if (isLow) fractalLows.push({ idx: i, price: klines[i].low });
+    // 同一根K线同时满足顶与底（强趋势大实体K线包住左右各 strength 根）时，
+    // 两者都不记：它是趋势爆发而非局部拐点；标准缠论分型同样要求顶分型那根
+    // 的低点不能同时为窗口最低。否则该根会同时进入高/低列表，selectSwing
+    // 会把同一根K线配成"时间跨度0、方向恒为 down"的假波段——实测连续大阳线
+    // 时 4h 约 2~3% 的窗口触发，九线在上涨中被错误锚成下降波段。
+    if (isHigh && !isLow) fractalHighs.push({ idx: i, price: klines[i].high });
+    if (isLow && !isHigh) fractalLows.push({ idx: i, price: klines[i].low });
   }
 
   // —— 尾部未确认区补齐（缓解最近 strength 根无法确认为分形的固有滞后）——
@@ -1267,6 +1272,9 @@ function selectSwing(
     const b = sorted[i];
     for (let j = i - 1; j >= 0; j--) {
       if (sorted[j].type === b.type) continue;
+      // 双保险：A/B 不允许是同一根K线（正常情况下 detectFractals 已排除
+      // 同根既是顶又是底；投影补齐等路径仍可能产生同 idx 点）
+      if (sorted[j].idx === b.idx) continue;
       const range = Math.abs(b.price - sorted[j].price);
       const base = Math.min(b.price, sorted[j].price);
       if ((range / base) * 100 >= AB_MIN_SWING_PCT) {
