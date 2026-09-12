@@ -4,7 +4,7 @@ import HomeClient from './HomeClient';
 export default async function HomePage() {
   let settings = {
     siteTitle: 'ETH Trading Tool',
-    siteSubtitle: '回测验证的 BTC / ETH 手动交易决策系统 · 信号 · 结构位 · 风控',
+    siteSubtitle: '个人技术研究用途 · 不提供投资建议 · 不构成任何交易服务',
   };
 
   try {
