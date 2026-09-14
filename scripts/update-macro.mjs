@@ -49,7 +49,12 @@ async function fetchBlsBulk() {
   const ids = Object.values(BLS_MAP);
   const res = await fetch('https://api.bls.gov/v2/timeseries/data/', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      // Akamai 会拦无 UA/非浏览器 UA 的请求（runner 实测裸 fetch 403）
+      'User-Agent': UA,
+    },
     body: JSON.stringify({ seriesid: ids, startyear: '2024', endyear: String(new Date().getFullYear()) }),
     signal: AbortSignal.timeout(20000),
   });
