@@ -1,17 +1,20 @@
 name: Update macro data
 
-# 自动拉取美联储 FRED 宏观数据 → 提交到仓库 → Vercel 自动部署
-# 背景：FRED（Akamai CDN）在网络层丢弃 Vercel 出口 IP 的连接，
-#       GitHub Actions runner（Azure IP）可正常访问，故用定时任务中转
+# 自动拉取宏观官方数据（BLS 优先 + FRED 兜底）→ 提交到仓库 → Vercel 自动部署
+# 背景：
+#   - FRED CSV 端点（Akamai CDN）实测从 GitHub runner 与 Vercel 出口均被网络层丢弃
+#     （2026-09 复盘：工作流 8/26 创建起 33/33 次运行全部超时，数据靠手动补）
+#   - 故月度序列（非农/失业率/CPI/核心CPI）改走 BLS 公共 API v2（无需 key）
+#   - claims（初请）与 corePce（PCE）只有 FRED 有：仍尝试 FRED，失败沿用旧数据并告警
 #
-# 调度策略：
-# - 工作日每 30 分钟跑一次（覆盖美东 8:30 数据发布窗口）
-# - 每天凌晨全量刷新
+# 调度策略（BLS 无 key 限额 25 次查询/天，一次运行 1 次 POST → 上限 8 次/天，留足余量）：
+# - 工作日每 2 小时一次，覆盖美东 8:30 数据发布窗口
+# - 周末每天一次，保持基础新鲜度
 on:
   schedule:
-    # 工作日每 30 分钟（12:00-21:30 UTC = 美东 8:00-17:30），覆盖非农/CPI/PCE/初请发布窗口
-    - cron: '0,30 12-21 * * 1-5'
-    # 周末每天一次（12:30 UTC），保持数据新鲜
+    # 工作日 12/14/16/18/20/22 点（UTC，= 美东 8/10/12/14/16/18 点）
+    - cron: '0 12,14,16,18,20,22 * * 1-5'
+    # 周末每天一次（12:30 UTC）
     - cron: '30 12 * * 6,0'
   workflow_dispatch: # 支持手动触发
 
@@ -25,6 +28,7 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
 
@@ -32,7 +36,7 @@ jobs:
         with:
           node-version: 20
 
-      - name: Fetch FRED data
+      - name: Fetch macro data (BLS + FRED)
         env:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: node scripts/update-macro.mjs
@@ -45,6 +49,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "数据无变化，跳过提交"
           else
-            git commit -m "chore(data): 自动更新宏观数据（FRED）"
+            git commit -m "chore(data): 自动更新宏观数据（BLS+FRED）"
             git push
           fi
