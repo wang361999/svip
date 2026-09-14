@@ -136,8 +136,8 @@ async function fetchFred(id) {
   return fetchCsv(id);
 }
 
-/** 月度序列最大容忍陈旧天数（正常每月一更，发布窗口±2周） */
-const STALE_DAYS = { monthly: 45, weekly: 16 };
+/** 月度序列最大容忍陈旧天数（数据点按参考月1日计：8月数据点=08-01，但9月中旬才发布 → 合法最老约75天） */
+const STALE_DAYS = { monthly: 80, weekly: 16 };
 
 function daysSince(dateStr) {
   return Math.floor((Date.now() - new Date(`${dateStr}T00:00:00Z`).getTime()) / 86_400_000);
@@ -146,6 +146,7 @@ function daysSince(dateStr) {
 async function main() {
   const out = { fetchedAt: new Date().toISOString(), series: {} };
   const failures = [];
+  const freshKeys = new Set(); // 本次真实拉取成功的序列
 
   // 1) BLS 批量（payroll/unemployment/cpi/coreCpi）
   let bls = null;
@@ -166,6 +167,7 @@ async function main() {
         const pts = bls.get(blsId);
         if (pts && pts.length > 0) {
           out.series[key] = pts;
+          freshKeys.add(key);
           console.log(`✓ ${key}（BLS ${blsId}）：${pts.length} 点，最新 ${pts.at(-1).date} = ${pts.at(-1).value}`);
           return;
         }
@@ -174,6 +176,7 @@ async function main() {
       try {
         const pts = await fetchFred(fredId);
         out.series[key] = pts;
+        freshKeys.add(key);
         console.log(`✓ ${key}（FRED ${fredId}）：${pts.length} 点，最新 ${pts.at(-1).date} = ${pts.at(-1).value}`);
       } catch (e) {
         failures.push(`${key}: ${e.message}`);
@@ -183,8 +186,11 @@ async function main() {
   );
 
   // 3) 失败序列沿用旧数据
+  let oldFetchedAt = null;
+  let freshCount = 0; // 本次真实拉取成功的序列数
   try {
     const old = JSON.parse(fs.readFileSync(OUT_PATH, 'utf8'));
+    oldFetchedAt = old.fetchedAt || null;
     for (const key of Object.keys(SERIES)) {
       if (!out.series[key] && old.series?.[key]) {
         out.series[key] = old.series[key];
@@ -194,12 +200,18 @@ async function main() {
   } catch {
     // 无旧文件
   }
+  for (const key of Object.keys(SERIES)) {
+    if (freshKeys.has(key)) freshCount++;
+  }
 
   const ok = Object.keys(out.series).length;
   if (ok === 0) {
     console.error('全部序列拉取失败，退出');
     process.exit(1);
   }
+
+  // 全部沿用旧数据时保留原 fetchedAt → 文件无变化 → 不产生空提交
+  if (freshCount === 0 && oldFetchedAt) out.fetchedAt = oldFetchedAt;
 
   // 4) 陈旧告警（GitHub Actions annotation，页面上 bundledAt 可见快照时间）
   let staleCount = 0;
