@@ -95,6 +95,8 @@ const CROSSHAIR_LABEL_BG = '#3d4451';
 interface KlineChartProps {
   isFullscreen?: boolean;
   onToggleFullscreen?: () => void;
+  /** 小窗模式（/trading/mini 弹出窗口）：只显示K线主图，隐藏副图与读数卡片，主图占满窗口高度 */
+  isMini?: boolean;
 }
 
 // ========== 指标显示开关：前台徽章直接管控 ==========
@@ -288,7 +290,7 @@ function drawGannSuite(
   }
 }
 
-export default function KlineChart({ isFullscreen = false, onToggleFullscreen }: KlineChartProps) {
+export default function KlineChart({ isFullscreen = false, onToggleFullscreen, isMini = false }: KlineChartProps) {
   const mainChartRef = useRef<HTMLDivElement>(null);
   const macdChartRef = useRef<HTMLDivElement>(null);
   const rsiChartRef = useRef<HTMLDivElement>(null);
@@ -2635,8 +2637,20 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
     },
   ];
 
+  // 小窗模式：弹出独立迷你窗口只看K线（币种/周期经 localStorage 自动继承当前选择）
+  const openMiniWindow = useCallback(() => {
+    const w = 480, h = 680;
+    const left = Math.max(0, Math.round((window.screen.width - w) / 2));
+    const top = Math.max(0, Math.round((window.screen.height - h) / 4));
+    window.open(
+      '/trading/mini',
+      'svip-mini-kline',
+      `width=${w},height=${h},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=no`
+    );
+  }, []);
+
   return (
-    <div className="glass-card overflow-hidden">
+    <div className={`overflow-hidden ${isMini ? 'h-full flex flex-col !rounded-none border-0' : 'glass-card'}`}>
       {/* 工具栏 */}
       <div ref={toolbarRef} className="flex flex-wrap items-center justify-between gap-y-2 gap-x-3 px-3 py-2 border-b border-dark-700/50">
         {/* 左：币种 + 周期 */}
@@ -2747,6 +2761,19 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             </div>
           )}
 
+          {/* 小窗按钮：弹出仅含K线的迷你窗口 */}
+          {!isMini && !isFullscreen && (
+            <button
+              onClick={openMiniWindow}
+              className="px-2 py-1.5 rounded-md text-dark-400 hover:text-white hover:bg-dark-700/50 transition-all"
+              title="小窗模式（仅K线）"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.5 3H21v7.5M21 3l-7 7M10.5 21H3v-7.5M3 21l7-7" />
+              </svg>
+            </button>
+          )}
+
           {/* 全屏按钮 */}
           <button
             onClick={onToggleFullscreen}
@@ -2789,7 +2816,11 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
             </div>
           </div>
         )}
-        <div className="relative w-full overflow-hidden" style={{ height: isFullscreen ? 'calc(100vh - 40px)' : '620px' }}>
+        {/* 小窗模式用 flex-1 填满剩余高度（工具栏窄窗口换行也不裁切图表） */}
+        <div
+          className={`relative w-full overflow-hidden ${isMini ? 'flex-1 min-h-0' : ''}`}
+          style={{ height: isMini ? undefined : isFullscreen ? 'calc(100vh - 40px)' : '620px' }}
+        >
           {/* 币种水印：图表背景透明，水印置于K线之下透出（专业图表标配） */}
           <div
             className="absolute inset-0 flex items-center justify-center pointer-events-none select-none overflow-hidden"
@@ -2970,7 +3001,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       </div>
 
       {/* MACD 副图（全屏时隐藏） */}
-      <div className={`relative border-t border-dark-700/30 ${isFullscreen ? 'hidden' : ''}`}>
+      <div className={`relative border-t border-dark-700/30 ${(isFullscreen || isMini) ? 'hidden' : ''}`}>
         <div ref={macdChartRef} className="w-full" style={{ height: '120px' }} />
         <span className="absolute top-1.5 left-3 text-[10px] text-dark-400 pointer-events-none">
           MACD({periods.macdFast},{periods.macdSlow},{periods.macdSignal})
@@ -2978,7 +3009,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       </div>
 
       {/* RSI 副图（全屏时隐藏） */}
-      <div className={`relative border-t border-dark-700/30 ${isFullscreen ? 'hidden' : ''}`}>
+      <div className={`relative border-t border-dark-700/30 ${(isFullscreen || isMini) ? 'hidden' : ''}`}>
         <div ref={rsiChartRef} className="w-full" style={{ height: '100px' }} />
         <span className="absolute top-1.5 left-3 text-[10px] text-dark-400 pointer-events-none">
           RSI({periods.rsiPeriod})
@@ -2986,7 +3017,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       </div>
 
       {/* KDJ 副图（全屏时隐藏） */}
-      <div className={`relative border-t border-dark-700/30 ${isFullscreen ? 'hidden' : ''}`}>
+      <div className={`relative border-t border-dark-700/30 ${(isFullscreen || isMini) ? 'hidden' : ''}`}>
         <div ref={kdjChartRef} className="w-full" style={{ height: '100px' }} />
         <span className="absolute top-1.5 left-3 text-[10px] text-dark-400 pointer-events-none">
           KDJ({periods.kdjN},{periods.kdjK},{periods.kdjD})
@@ -2994,34 +3025,36 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen }:
       </div>
 
       {/* ATR 副图（全屏时隐藏） */}
-      <div className={`relative border-t border-dark-700/30 ${isFullscreen ? 'hidden' : ''}`}>
+      <div className={`relative border-t border-dark-700/30 ${(isFullscreen || isMini) ? 'hidden' : ''}`}>
         <div ref={atrChartRef} className="w-full" style={{ height: '80px' }} />
         <span className="absolute top-1.5 left-3 text-[10px] text-dark-400 pointer-events-none">
           ATR({periods.atrPeriod})
         </span>
       </div>
 
-      {/* 信号 / 江恩 / 指标 常驻读数卡片（真实读数，无需开关） */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 items-start gap-3 p-3 border-t border-dark-700/50">
-        <SignalPanel
-          klines={allKlinesRef.current}
-          refreshKey={panelTick}
-          precision={pricePrecision}
-          symbol={symbol}
-        />
-        <GannPanel
-          klines={allKlinesRef.current}
-          refreshKey={panelTick}
-          precision={pricePrecision}
-          symbol={symbol}
-        />
-        <IndicatorPanel
-          klines={allKlinesRef.current}
-          refreshKey={panelTick}
-          precision={pricePrecision}
-          symbol={symbol}
-        />
-      </div>
+      {/* 信号 / 江恩 / 指标 常驻读数卡片（真实读数，无需开关；小窗模式隐藏） */}
+      {!isMini && (
+        <div className="grid grid-cols-1 xl:grid-cols-3 items-start gap-3 p-3 border-t border-dark-700/50">
+          <SignalPanel
+            klines={allKlinesRef.current}
+            refreshKey={panelTick}
+            precision={pricePrecision}
+            symbol={symbol}
+          />
+          <GannPanel
+            klines={allKlinesRef.current}
+            refreshKey={panelTick}
+            precision={pricePrecision}
+            symbol={symbol}
+          />
+          <IndicatorPanel
+            klines={allKlinesRef.current}
+            refreshKey={panelTick}
+            precision={pricePrecision}
+            symbol={symbol}
+          />
+        </div>
+      )}
     </div>
   );
 }
