@@ -33,6 +33,7 @@ import {
 
 
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { createRoot } from 'react-dom/client';
 import type { MouseEvent as ReactMouseEvent, TouchEvent as ReactTouchEvent } from 'react';
 import {
   createChart,
@@ -95,7 +96,7 @@ const CROSSHAIR_LABEL_BG = '#3d4451';
 interface KlineChartProps {
   isFullscreen?: boolean;
   onToggleFullscreen?: () => void;
-  /** 小窗模式（/trading/mini 弹出窗口）：只显示K线主图，隐藏副图与读数卡片，主图占满窗口高度 */
+  /** 悬浮窗模式（Document Picture-in-Picture 置顶小窗）：只显示K线主图，隐藏副图与读数卡片，主图占满窗口高度 */
   isMini?: boolean;
 }
 
@@ -2637,17 +2638,63 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen, i
     },
   ];
 
-  // 小窗模式：弹出独立迷你窗口只看K线（币种/周期经 localStorage 自动继承当前选择）
-  const openMiniWindow = useCallback(() => {
-    const w = 480, h = 680;
-    const left = Math.max(0, Math.round((window.screen.width - w) / 2));
-    const top = Math.max(0, Math.round((window.screen.height - h) / 4));
-    window.open(
-      '/trading/mini',
-      'svip-mini-kline',
-      `width=${w},height=${h},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=no`
-    );
-  }, []);
+  // 悬浮窗（Document Picture-in-Picture）：置顶于所有软件之上的迷你K线窗，无需任何 API key。
+  // 与弹窗方案的本质区别：PiP 窗口与主页面同属一个 JS 上下文 ——
+  //  - 币种/周期经共享 zustand store 实时联动（主窗切换，悬浮窗即时跟随，无需 storage 事件）
+  //  - fetchKlines 模块级 TTL 缓存共享，悬浮窗首屏加载直接命中缓存，零额外出站请求
+  const [pipWin, setPipWin] = useState<Window | null>(null);
+
+  const openPipWindow = useCallback(async () => {
+    if (!('documentPictureInPicture' in window)) return;
+    // 已开着 → 聚焦即可
+    if (pipWin && !pipWin.closed) { pipWin.focus(); return; }
+    try {
+      const pip = await (window as any).documentPictureInPicture.requestWindow({
+        width: 480,
+        height: 680,
+      });
+      // 复制样式表：Next 生产构建为内联 <style>（读 cssRules）；跨域/外链 sheet 兜底 <link>
+      for (const sheet of Array.from(document.styleSheets) as CSSStyleSheet[]) {
+        try {
+          const css = Array.from(sheet.cssRules).map((r) => r.cssText).join('\n');
+          const style = pip.document.createElement('style');
+          style.textContent = css;
+          pip.document.head.appendChild(style);
+        } catch {
+          if (sheet.href) {
+            const link = pip.document.createElement('link');
+            link.rel = 'stylesheet';
+            link.href = sheet.href;
+            pip.document.head.appendChild(link);
+          }
+        }
+      }
+      // 暗色底与正文字色（Tailwind 类随样式表一起生效）
+      pip.document.body.className = document.body.className;
+      pip.document.title = 'K线悬浮窗';
+      // 必须用独立 React root：PiP 文档的事件不冒泡到主文档，createPortal 会让点击等交互全部失效
+      const root = createRoot(pip.document.body);
+      root.render(
+        <div className="h-screen w-screen overflow-hidden bg-dark-950">
+          <KlineChart
+            isMini
+            onToggleFullscreen={() => {
+              try {
+                if (pip.document.fullscreenElement) pip.document.exitFullscreen();
+                else pip.document.documentElement.requestFullscreen?.();
+              } catch {}
+            }}
+          />
+        </div>
+      );
+      // 用户关闭悬浮窗（或浏览器自动关闭）→ 卸载 root（K线组件 cleanup 会断开自己的 WS）
+      pip.addEventListener('pagehide', () => {
+        try { root.unmount(); } catch {}
+        setPipWin(null);
+      }, { once: true });
+      setPipWin(pip);
+    } catch {}
+  }, [pipWin]);
 
   return (
     <div className={`overflow-hidden ${isMini ? 'h-full flex flex-col !rounded-none border-0' : 'glass-card'}`}>
@@ -2761,12 +2808,12 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen, i
             </div>
           )}
 
-          {/* 小窗按钮：弹出仅含K线的迷你窗口 */}
-          {!isMini && !isFullscreen && (
+          {/* 悬浮窗按钮：置顶迷你K线窗（Document PiP；Safari 等不支持的浏览器自动隐藏） */}
+          {!isMini && !isFullscreen && 'documentPictureInPicture' in window && (
             <button
-              onClick={openMiniWindow}
+              onClick={openPipWindow}
               className="px-2 py-1.5 rounded-md text-dark-400 hover:text-white hover:bg-dark-700/50 transition-all"
-              title="小窗模式（仅K线）"
+              title="悬浮窗（置顶小窗，仅K线）"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.5 3H21v7.5M21 3l-7 7M10.5 21H3v-7.5M3 21l7-7" />
