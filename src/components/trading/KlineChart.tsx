@@ -706,11 +706,17 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen, i
         macdHist.current.setData(histData);
         macdDif.current.setData(difData);
         macdDea.current.setData(deaData);
-        // —— MACD 多空信号标记 ——
-        // 金叉：DIF 上穿 DEA（多头，绿色升箭头）；死叉：DIF 下穿 DEA（空头，红色降箭头）。
+        // —— MACD 多空信号标记（按回测区分信号质量）——
+        // ETH/BTC 4h+1d 各 1000 根、4 组参数 × 3 持有期回测（2026-09，详见 macd-opt.mjs）：
+        //   水下金叉（DIF<0 处金叉）：标准参数 lift +0.2pp、慢参数 19/39/9 达 +3.8pp 且最差场景仅 -4.6pp
+        //     —— 四组参数全部为正，是唯一稳健的多头信号
+        //   水上金叉（DIF>0 处金叉）：全参数负期望（标准 -0.5pp，快/慢参数 -5~-7pp）—— 追高陷阱，弱参考
+        //   水上死叉（DIF>0 处死叉）：标准参数作为做空信号 lift -3.2pp（多为上涨中继洗盘，杀跌易被打脸），
+        //     慢参数下 +4.5pp —— 作离场/减仓警告看，不建议直接追空
+        //   水下死叉（DIF<0 处死叉）：标准参数 lift -5.0pp —— 超卖区滞后信号，勿恐慌追空
+        // 视觉规则：实心大箭头 = 高质量信号（水下金叉/水上死叉）；暗淡小箭头 = 低质量信号（弱参考）。
         // 交叉发生的柱子 hist 刚好过零（金叉 hist>0 / 死叉 hist<0），标记分别落在
         // 零轴下方/上方，天然贴近 DIF/DEA 交点，视觉与交叉位置对齐。
-        // 置于零轴上下而非柱体上下，避免死叉柱（负值）上方标记被顶到 0 线以上过远。
         const crossMk: SeriesMarker<Time>[] = [];
         for (let i = 1; i < klines.length; i++) {
           const d0 = macdData.dif[i - 1], e0 = macdData.dea[i - 1];
@@ -719,11 +725,23 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen, i
           const t = klines[i].time as Time;
           // 金叉（前根 DIF≤DEA 且当前根 DIF>DEA）
           if (d0 <= e0 && d1 > e1) {
-            crossMk.push({ time: t, position: 'belowBar', color: '#34d399', shape: 'arrowUp', size: 1 });
+            if (d1 < 0) {
+              // 水下金叉：高质量多头信号，实心大箭头
+              crossMk.push({ time: t, position: 'belowBar', color: '#34d399', shape: 'arrowUp', size: 2 });
+            } else {
+              // 水上金叉：追高风险（负期望），暗淡小箭头弱提示
+              crossMk.push({ time: t, position: 'belowBar', color: 'rgba(52, 211, 153, 0.35)', shape: 'arrowUp', size: 1 });
+            }
           }
           // 死叉（前根 DIF≥DEA 且当前根 DIF<DEA）
           else if (d0 >= e0 && d1 < e1) {
-            crossMk.push({ time: t, position: 'aboveBar', color: '#f87171', shape: 'arrowDown', size: 1 });
+            if (d1 > 0) {
+              // 水上死叉：高质量空头警告，实心大箭头
+              crossMk.push({ time: t, position: 'aboveBar', color: '#f87171', shape: 'arrowDown', size: 2 });
+            } else {
+              // 水下死叉：超卖滞后信号（弱参考），暗淡小箭头
+              crossMk.push({ time: t, position: 'aboveBar', color: 'rgba(248, 113, 113, 0.35)', shape: 'arrowDown', size: 1 });
+            }
           }
         }
         macdHist.current.setMarkers(crossMk);
@@ -3073,6 +3091,13 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen, i
         <div ref={macdChartRef} className="w-full" style={{ height: '120px' }} />
         <span className="absolute top-1.5 left-3 text-[10px] text-dark-400 pointer-events-none">
           MACD({periods.macdFast},{periods.macdSlow},{periods.macdSignal})
+        </span>
+        {/* 标记图例：大箭头=回测有效信号，小淡箭头=弱参考（回测口径见 updateIndicators 注释） */}
+        <span className="absolute top-1.5 right-3 text-[9px] text-dark-500 pointer-events-none flex items-center gap-2">
+          <span><span className="text-emerald-400 font-bold">▲</span> 水下金叉</span>
+          <span><span className="text-emerald-400/40">▲</span> 水上金叉(追高)</span>
+          <span><span className="text-red-400 font-bold">▼</span> 水上死叉</span>
+          <span><span className="text-red-400/40">▼</span> 水下死叉(滞后)</span>
         </span>
       </div>
 
