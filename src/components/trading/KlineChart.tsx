@@ -706,6 +706,27 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen, i
         macdHist.current.setData(histData);
         macdDif.current.setData(difData);
         macdDea.current.setData(deaData);
+        // —— MACD 多空信号标记 ——
+        // 金叉：DIF 上穿 DEA（多头，绿色升箭头）；死叉：DIF 下穿 DEA（空头，红色降箭头）。
+        // 交叉发生的柱子 hist 刚好过零（金叉 hist>0 / 死叉 hist<0），标记分别落在
+        // 零轴下方/上方，天然贴近 DIF/DEA 交点，视觉与交叉位置对齐。
+        // 置于零轴上下而非柱体上下，避免死叉柱（负值）上方标记被顶到 0 线以上过远。
+        const crossMk: SeriesMarker<Time>[] = [];
+        for (let i = 1; i < klines.length; i++) {
+          const d0 = macdData.dif[i - 1], e0 = macdData.dea[i - 1];
+          const d1 = macdData.dif[i], e1 = macdData.dea[i];
+          if (d0 == null || e0 == null || d1 == null || e1 == null) continue;
+          const t = klines[i].time as Time;
+          // 金叉（前根 DIF≤DEA 且当前根 DIF>DEA）
+          if (d0 <= e0 && d1 > e1) {
+            crossMk.push({ time: t, position: 'belowBar', color: '#34d399', shape: 'arrowUp', size: 1 });
+          }
+          // 死叉（前根 DIF≥DEA 且当前根 DIF<DEA）
+          else if (d0 >= e0 && d1 < e1) {
+            crossMk.push({ time: t, position: 'aboveBar', color: '#f87171', shape: 'arrowDown', size: 1 });
+          }
+        }
+        macdHist.current.setMarkers(crossMk);
       }
       // 显示 MACD 副图
       if (macdChartRef.current?.parentElement) {
@@ -713,7 +734,7 @@ export default function KlineChart({ isFullscreen = false, onToggleFullscreen, i
       }
     } else {
       // 关闭 MACD：清空数据并隐藏副图面板
-      if (macdHist.current) macdHist.current.setData([]);
+      if (macdHist.current) { macdHist.current.setData([]); macdHist.current.setMarkers([]); }
       if (macdDif.current) macdDif.current.setData([]);
       if (macdDea.current) macdDea.current.setData([]);
       if (macdChartRef.current?.parentElement) {
